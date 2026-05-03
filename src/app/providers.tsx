@@ -7,9 +7,7 @@ import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
 import { SolflareWalletAdapter } from "@solana/wallet-adapter-solflare";
 
 import "@solana/wallet-adapter-react-ui/styles.css";
-
-const RPC_ENDPOINT =
-  process.env.NEXT_PUBLIC_HELIUS_RPC_URL || "https://api.mainnet-beta.solana.com";
+import { RPC_URL } from "@/lib/rpc";
 
 export function Providers({ children }: { children: ReactNode }) {
   // Standard wallets (Phantom, Backpack, etc.) auto-register via the Wallet Standard;
@@ -20,7 +18,7 @@ export function Providers({ children }: { children: ReactNode }) {
   );
 
   return (
-    <ConnectionProvider endpoint={RPC_ENDPOINT}>
+    <ConnectionProvider endpoint={RPC_URL}>
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>{children}</WalletModalProvider>
       </WalletProvider>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { Automation, Execution } from "@/lib/types";
+import type { Automation } from "@/lib/types";
 import { resolveAppearance, useTweaks } from "@/hooks/useTweaks";
 import { BrandMark } from "@/components/BrandMark";
 import { WalletPill } from "@/components/WalletPill";
@@ -12,6 +12,7 @@ import { ConditionalBuilder, type BuilderResult } from "@/components/builder/Con
 import { SavedList } from "@/components/SavedList";
 import { ActiveStrategiesPage } from "@/components/ActiveStrategiesPage";
 import { DepositSheet } from "@/components/DepositSheet";
+import { hexToRgba } from "@/lib/format";
 import { Plus } from "@/components/icons";
 
 type View = "compose" | "active";
@@ -24,14 +25,12 @@ function initialView(): View {
 export default function Page() {
   const [tweaks, setTweak] = useTweaks();
   const [automations, setAutomations] = useState<Automation[]>([]);
-  const [executions] = useState<Execution[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [showBuilder, setShowBuilder] = useState(true);
   const [pendingDeposit, setPendingDeposit] = useState<BuilderResult | null>(null);
   const [view, setView] = useState<View>("compose");
 
-  // Hydrate view from hash on mount and listen for changes.
   useEffect(() => {
     setView(initialView());
     const onHash = () => setView(initialView());
@@ -44,17 +43,15 @@ export default function Page() {
     if (window.location.hash !== wanted) window.history.replaceState(null, "", wanted);
   }, [view]);
 
-  // Apply appearance + accent tokens to <html>.
   useEffect(() => {
     const root = document.documentElement;
     root.setAttribute("data-appearance", resolveAppearance(tweaks.appearance));
-    if (tweaks.accent && tweaks.accent !== "#007AFF") {
+    const fill = tweaks.accent && tweaks.accent.toUpperCase() !== "#007AFF"
+      ? hexToRgba(tweaks.accent, 0.15)
+      : null;
+    if (fill) {
       root.style.setProperty("--accent", tweaks.accent);
-      const hex = tweaks.accent.replace("#", "");
-      const r = parseInt(hex.slice(0, 2), 16);
-      const g = parseInt(hex.slice(2, 4), 16);
-      const b = parseInt(hex.slice(4, 6), 16);
-      root.style.setProperty("--accent-fill", `rgba(${r}, ${g}, ${b}, 0.15)`);
+      root.style.setProperty("--accent-fill", fill);
     } else {
       root.style.removeProperty("--accent");
       root.style.removeProperty("--accent-fill");
@@ -90,10 +87,6 @@ export default function Page() {
         running: true,
         runs: 0,
         lastCheck: "just now",
-        ifChoice: data.ifChoice,
-        ifValue: data.ifValue,
-        thenChoice: data.thenChoice,
-        thenValue: data.thenValue,
       };
       setAutomations((prev) => [newA, ...prev]);
       setToast("Saved · running (read-only demo)");
@@ -209,7 +202,6 @@ export default function Page() {
         ) : (
           <ActiveStrategiesPage
             automations={automations}
-            executions={executions}
             onToggle={handleToggle}
             onDelete={handleDelete}
           />

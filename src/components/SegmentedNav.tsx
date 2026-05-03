@@ -4,6 +4,8 @@ import { useEffect, useLayoutEffect, useRef, type PointerEvent as ReactPointerEv
 
 type Option<T extends string> = { value: T; label: string };
 
+type ButtonRect<T> = { value: T; left: number; width: number; center: number };
+
 const SPRING = "transform 360ms cubic-bezier(0.32, 0.72, 0, 1)";
 
 export function SegmentedNav<T extends string>({
@@ -26,10 +28,27 @@ export function SegmentedNav<T extends string>({
   const dragStartXRef = useRef(0);
   const dragLeftRef = useRef(0);
   const dragWidthRef = useRef(0);
+  // Button rects captured at pointerdown so pointermove doesn't trigger layout reads at 60Hz.
+  const rectsCacheRef = useRef<ButtonRect<T>[]>([]);
 
   const forEachThumb = (cb: (el: HTMLSpanElement) => void) => {
     if (thumbVisualRef.current) cb(thumbVisualRef.current);
     if (thumbHitRef.current) cb(thumbHitRef.current);
+  };
+
+  const snapshotButtons = (): ButtonRect<T>[] => {
+    const c = containerRef.current;
+    if (!c) return [];
+    const cRect = c.getBoundingClientRect();
+    const out: ButtonRect<T>[] = [];
+    for (const o of options) {
+      const btn = buttonRefs.current[o.value];
+      if (!btn) continue;
+      const r = btn.getBoundingClientRect();
+      const left = r.left - cRect.left;
+      out.push({ value: o.value, left, width: r.width, center: left + r.width / 2 });
+    }
+    return out;
   };
 
   const positionThumb = (animate: boolean) => {
@@ -72,40 +91,27 @@ export function SegmentedNav<T extends string>({
     prevRect.current = next;
   };
 
+  // Latest positionThumb closure, exposed via a ref so the once-only resize listener
+  // always calls the current `value` without needing it as a dep.
+  const positionThumbRef = useRef(positionThumb);
+  positionThumbRef.current = positionThumb;
+
   useLayoutEffect(() => {
     positionThumb(prevRect.current !== null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, options.length]);
 
   useEffect(() => {
-    const onResize = () => positionThumb(false);
+    const onResize = () => positionThumbRef.current(false);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  }, []);
 
-  // Snapshot every button's geometry relative to the container, sorted by render order.
-  const snapshotButtons = (): Array<{ value: T; left: number; width: number; center: number }> => {
-    const c = containerRef.current;
-    if (!c) return [];
-    const cRect = c.getBoundingClientRect();
-    const out: Array<{ value: T; left: number; width: number; center: number }> = [];
-    for (const o of options) {
-      const btn = buttonRefs.current[o.value];
-      if (!btn) continue;
-      const r = btn.getBoundingClientRect();
-      const left = r.left - cRect.left;
-      out.push({ value: o.value, left, width: r.width, center: left + r.width / 2 });
-    }
-    return out;
-  };
-
-  // Given the cursor's horizontal delta from drag-start, return the morphed thumb geometry:
-  // its center follows the cursor (clamped to span between first/last button centers), and
-  // its width interpolates linearly between the two adjacent button widths.
+  // Thumb center follows the cursor (clamped between first/last button centers); width
+  // interpolates linearly between the two adjacent button widths.
   const computeMorph = (cursorDeltaX: number): { left: number; width: number } | null => {
     if (!prevRect.current) return null;
-    const rects = snapshotButtons();
+    const rects = rectsCacheRef.current;
     if (rects.length === 0) return null;
 
     const activeCenter = prevRect.current.left + prevRect.current.width / 2;
@@ -134,6 +140,7 @@ export function SegmentedNav<T extends string>({
     dragStartXRef.current = e.clientX;
     dragLeftRef.current = prevRect.current.left;
     dragWidthRef.current = prevRect.current.width;
+    rectsCacheRef.current = snapshotButtons();
     forEachThumb((t) => {
       t.style.transition = "none";
     });
@@ -190,15 +197,15 @@ export function SegmentedNav<T extends string>({
     }
 
     if (closest !== value) {
-      // Hand off to the FLIP effect: prevRect now reflects the morphed visual state, so
-      // the tab-change animation departs from exactly where the cursor let go.
+      // FLIP departs from the morphed visual state, so prevRect must reflect where the
+      // cursor let go before onChange triggers the position effect.
       prevRect.current = { left: finalLeft, width: finalWidth };
       onChange(closest);
       return;
     }
 
-    // Same tab — animate transform back to identity. Force a reflow first so the browser
-    // commits the SPRING transition before reading the new transform value.
+    // Force a reflow so the browser commits the SPRING transition before the next
+    // transform write triggers it.
     forEachThumb((t) => {
       t.style.transition = SPRING;
     });

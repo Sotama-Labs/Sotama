@@ -5,38 +5,18 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { useSolPrice } from "@/hooks/useSolPrice";
-import { fmt, shortAddress } from "@/lib/format";
-import { CLUSTER } from "@/lib/rpc";
+import { fmt, fmtUSD, shortAddress } from "@/lib/format";
+import { CLUSTER, CLUSTER_LABEL } from "@/lib/rpc";
 import { Popover } from "./builder/Popover";
-import { Check, Chevron } from "./icons";
-
-function CopyGlyph({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 14 14" fill="none">
-      <rect x="3.25" y="3.25" width="7.5" height="7.5" rx="1.6" stroke="currentColor" strokeWidth="1.2" />
-      <path
-        d="M5.25 3.25 V2.4 a1 1 0 0 1 1-1 H10.6 a1 1 0 0 1 1 1 V8.6"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
-
-const CLUSTER_LABEL: Record<string, string> = {
-  "mainnet-beta": "Mainnet",
-  devnet: "Devnet",
-};
+import { Check, Chevron, CopyGlyph } from "./icons";
 
 export function WalletPill() {
   const { publicKey, connected, connecting, disconnect, wallet } = useWallet();
   const { setVisible } = useWalletModal();
   const addr = publicKey?.toBase58() ?? null;
-  const { sol } = useWalletBalance(addr);
-  const { price } = useSolPrice();
   const [open, setOpen] = useState(false);
+  const { sol } = useWalletBalance(addr, { enabled: open });
+  const { price } = useSolPrice({ enabled: open });
   const [hover, setHover] = useState(false);
   const [disconnectHover, setDisconnectHover] = useState(false);
   const [addrHover, setAddrHover] = useState(false);
@@ -110,7 +90,7 @@ export function WalletPill() {
 
   const active = hover || open;
   const usd = sol != null && price != null ? sol * price : null;
-  const clusterLabel = CLUSTER_LABEL[CLUSTER] ?? CLUSTER;
+  const clusterLabel = CLUSTER_LABEL[CLUSTER];
   const isDevnet = CLUSTER === "devnet";
   const clusterAccent = isDevnet ? "var(--orange)" : "var(--green)";
   const walletIcon = wallet?.adapter.icon;
@@ -199,9 +179,7 @@ export function WalletPill() {
               fontVariantNumeric: "tabular-nums",
             }}
           >
-            {usd == null
-              ? "—"
-              : `≈ $${usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`}
+            {usd == null ? "—" : `≈ $${fmtUSD(usd)} USD`}
           </div>
         </div>
 
@@ -291,7 +269,7 @@ export function WalletPill() {
                   minWidth: 0,
                 }}
               >
-                {addr ? `${addr.slice(0, 8)}…${addr.slice(-8)}` : ""}
+                {shortAddress(addr, 8)}
               </span>
               <span
                 style={{

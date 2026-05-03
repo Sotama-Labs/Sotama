@@ -30,11 +30,6 @@ export type Automation = {
   running: boolean;
   runs: number;
   lastCheck: string;
-  // Legacy compatibility for the saved-list / deposit-sheet fall-throughs.
-  ifChoice?: TriggerOption | null;
-  ifValue?: string | number | null;
-  thenChoice?: ActionOption | null;
-  thenValue?: string | number | null;
 };
 
 export type Execution = {

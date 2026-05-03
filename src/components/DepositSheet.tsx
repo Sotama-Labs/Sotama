@@ -1,19 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { ActionOption, Slot } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import type { ActionOption } from "@/lib/types";
+import { fmt } from "@/lib/format";
 import type { BuilderResult } from "./builder/ConditionalBuilder";
 import { Spinner } from "./icons";
 
 const SOLANA_NETWORK_FEE_SOL = 0.000045;
 const PROTOCOL_FEE_BPS = 20;
-
-function fmtNum(n: number | null | undefined, dec = 4): string {
-  if (n == null || isNaN(n)) return "—";
-  if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  if (n >= 1) return n.toFixed(dec >= 4 ? 4 : 2);
-  return n.toFixed(dec);
-}
 
 function tokenFor(actionId: ActionOption["id"]): { from: "SOL" | "USDC" } {
   if (actionId === "swap_sol_usdc") return { from: "SOL" };
@@ -62,6 +56,7 @@ export function DepositSheet({
   onConfirm: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -70,14 +65,16 @@ export function DepositSheet({
       if (e.key === "Escape") onCancel();
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      cleanupRef.current?.();
+      cleanupRef.current = null;
+    };
   }, [open, onCancel]);
 
   if (!open || !automation) return null;
 
-  const actionsList: Slot<ActionOption>[] = automation.actions?.length
-    ? automation.actions
-    : [{ choice: automation.thenChoice, value: automation.thenValue } as Slot<ActionOption>];
+  const actionsList = automation.actions;
 
   const byToken: Record<string, number> = {};
   actionsList.forEach((s) => {
@@ -103,8 +100,15 @@ export function DepositSheet({
 
   const handleConfirm = async () => {
     setConfirming(true);
-    await new Promise((r) => setTimeout(r, 1100));
-    onConfirm();
+    const settled = await new Promise<boolean>((resolve) => {
+      const id = window.setTimeout(() => resolve(true), 1100);
+      cleanupRef.current = () => {
+        window.clearTimeout(id);
+        resolve(false);
+      };
+    });
+    cleanupRef.current = null;
+    if (settled) onConfirm();
   };
 
   return (
@@ -148,14 +152,14 @@ export function DepositSheet({
 
         <div style={{ padding: "0.5rem 1.25rem 1.25rem", textAlign: "center" }}>
           <div className="hig-large-title" style={{ color: "var(--label-primary)", fontFeatureSettings: '"tnum"' }}>
-            {fmtNum(primaryAmount, 4)}
+            {fmt(primaryAmount, 4)}
             <span className="hig-title-2" style={{ color: "var(--label-secondary)", marginLeft: "0.375rem" }}>
               {primaryToken}
             </span>
           </div>
           {tokens.length > 1 && (
             <div className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.25rem" }}>
-              + {fmtNum(byToken[tokens.find((t) => t !== primaryToken)!], 4)} {tokens.find((t) => t !== primaryToken)}
+              + {fmt(byToken[tokens.find((t) => t !== primaryToken)!], 4)} {tokens.find((t) => t !== primaryToken)}
             </div>
           )}
         </div>
@@ -174,7 +178,7 @@ export function DepositSheet({
               key={`dep-${t}`}
               label={tokens.length > 1 ? `Deposit (${t})` : "Deposit"}
               sub="Returned if cancelled"
-              value={`${fmtNum(byToken[t], 4)} ${t}`}
+              value={`${fmt(byToken[t], 4)} ${t}`}
             />
           ))}
           {tokens.map((t) => (
@@ -182,7 +186,7 @@ export function DepositSheet({
               key={`fee-${t}`}
               label={tokens.length > 1 ? `Sotama fee (${t})` : "Sotama fee"}
               sub={`${(PROTOCOL_FEE_BPS / 100).toFixed(2)}% of swap`}
-              value={`${fmtNum(protocolFeeByToken[t], 4)} ${t}`}
+              value={`${fmt(protocolFeeByToken[t], 4)} ${t}`}
             />
           ))}
           <FeeRow
@@ -204,7 +208,7 @@ export function DepositSheet({
             <div style={{ textAlign: "right", fontFeatureSettings: '"tnum"' }}>
               {tokens.map((t) => (
                 <div key={`tot-${t}`} className="hig-headline">
-                  {fmtNum(totalByToken[t], 4)} {t}
+                  {fmt(totalByToken[t], 4)} {t}
                 </div>
               ))}
               <div

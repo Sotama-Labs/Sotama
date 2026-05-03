@@ -2,6 +2,7 @@
 
 import { useState, type RefObject } from "react";
 import { Slot } from "./Slot";
+import { XMark } from "../icons";
 
 export function SlotWithRemove({
   slotRef,
@@ -53,9 +54,7 @@ export function SlotWithRemove({
             cursor: "pointer",
           }}
         >
-          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-            <path d="M1.5 1.5 L6.5 6.5 M6.5 1.5 L1.5 6.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          </svg>
+          <XMark />
         </button>
       )}
     </span>

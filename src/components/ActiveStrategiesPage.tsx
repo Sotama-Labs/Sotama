@@ -1,9 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Automation, Execution, Slot } from "@/lib/types";
+import type { Automation, Execution } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import { AutomationRow } from "./SavedList";
+import { ArrowRight, InfoCircle } from "./icons";
 
 const SAMPLE_AUTOMATIONS: Automation[] = [
   {
@@ -195,15 +196,7 @@ function ExecutionRow({ e, isLast }: { e: Execution; isLast: boolean }) {
           justifyContent: "center",
         }}
       >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <path
-            d="M2.5 7 L11.5 7 M8 3.5 L11.5 7 L8 10.5"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+        <ArrowRight />
       </span>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div
@@ -245,26 +238,25 @@ function ExecutionRow({ e, isLast }: { e: Execution; isLast: boolean }) {
   );
 }
 
+const NOOP = () => {};
+
 export function ActiveStrategiesPage({
   automations,
-  executions,
   onToggle,
   onDelete,
 }: {
   automations: Automation[];
-  executions: Execution[];
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const items = automations.length > 0 ? automations : SAMPLE_AUTOMATIONS;
-  const exec = executions.length > 0 ? executions : SAMPLE_EXECUTIONS;
   const isDemo = automations.length === 0;
+  const items = isDemo ? SAMPLE_AUTOMATIONS : automations;
+  const exec = isDemo ? SAMPLE_EXECUTIONS : [];
 
   const running = useMemo(() => items.filter((a) => a.running), [items]);
   const paused = useMemo(() => items.filter((a) => !a.running), [items]);
-
-  const noopToggle = () => {};
-  const noopDelete = () => {};
+  const toggle = isDemo ? NOOP : onToggle;
+  const del = isDemo ? NOOP : onDelete;
 
   return (
     <div
@@ -292,10 +284,7 @@ export function ActiveStrategiesPage({
             gap: "0.5rem",
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.4" />
-            <path d="M7 4 V8 M7 10 V10.01" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
+          <InfoCircle />
           <span className="hig-footnote" style={{ fontWeight: 500 }}>
             Showing sample data. Compose a strategy to replace this view.
           </span>
@@ -320,8 +309,8 @@ export function ActiveStrategiesPage({
               <AutomationRow
                 key={a.id}
                 a={a}
-                onToggle={isDemo ? noopToggle : onToggle}
-                onDelete={isDemo ? noopDelete : onDelete}
+                onToggle={toggle}
+                onDelete={del}
                 isLast={i === running.length - 1}
               />
             ))}
@@ -345,8 +334,8 @@ export function ActiveStrategiesPage({
               <AutomationRow
                 key={a.id}
                 a={a}
-                onToggle={isDemo ? noopToggle : onToggle}
-                onDelete={isDemo ? noopDelete : onDelete}
+                onToggle={toggle}
+                onDelete={del}
                 isLast={i === paused.length - 1}
               />
             ))}

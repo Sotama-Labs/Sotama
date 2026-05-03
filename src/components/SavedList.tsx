@@ -2,15 +2,8 @@
 
 import { Fragment, useState } from "react";
 import type { Automation, Slot } from "@/lib/types";
+import { formatSlotValue } from "@/lib/format";
 import { Plus } from "./icons";
-
-function formatChoice(slot: Slot): string {
-  const c = slot.choice;
-  if (!c) return "—";
-  if (!c.needsValue) return c.label;
-  if (c.valueType === "price") return `${c.label} $${slot.value}`;
-  return `${c.label} ${slot.value} ${c.unit}`;
-}
 
 function AutomationRow({
   a,
@@ -25,14 +18,11 @@ function AutomationRow({
 }) {
   const [hover, setHover] = useState(false);
 
-  const triggers = a.triggers?.length ? a.triggers : [{ choice: a.ifChoice ?? null, value: a.ifValue ?? null } as Slot];
-  const actions = a.actions?.length ? a.actions : [{ choice: a.thenChoice ?? null, value: a.thenValue ?? null } as Slot];
-
   const renderChain = (slots: Slot[]) =>
     slots.map((s, i) => (
       <Fragment key={i}>
         {i > 0 && <span style={{ color: "var(--label-secondary)" }}> and </span>}
-        <span>{formatChoice(s)}</span>
+        <span>{formatSlotValue(s) ?? "—"}</span>
       </Fragment>
     ));
 
@@ -72,9 +62,9 @@ function AutomationRow({
           }}
         >
           <span style={{ color: "var(--label-secondary)" }}>If </span>
-          {renderChain(triggers)}
+          {renderChain(a.triggers)}
           <span style={{ color: "var(--label-secondary)" }}> then </span>
-          {renderChain(actions)}
+          {renderChain(a.actions)}
         </div>
         <div className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.125rem" }}>
           {a.running ? `Running · last checked ${a.lastCheck}` : "Paused"}

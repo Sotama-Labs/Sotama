@@ -4,6 +4,8 @@ import { createRef, useRef, useState, type RefObject } from "react";
 import type { ActionOption, Automation, Option, Slot, TriggerOption } from "@/lib/types";
 import { ACTIONS, TRIGGERS } from "@/lib/catalog";
 import { useSolPrice } from "@/hooks/useSolPrice";
+import { formatSlotValue } from "@/lib/format";
+import { Check } from "../icons";
 import { Popover } from "./Popover";
 import { PopoverList } from "./PopoverList";
 import { ValueDetail } from "./ValueDetail";
@@ -15,32 +17,20 @@ type Side = "if" | "then";
 export type BuilderResult = {
   triggers: Slot<TriggerOption>[];
   actions: Slot<ActionOption>[];
-  ifChoice: TriggerOption | null;
-  ifValue: string | number | null;
-  thenChoice: ActionOption | null;
-  thenValue: string | number | null;
 };
 
 function emptySlot<O extends Option>(): Slot<O> {
   return { choice: null, value: null };
 }
 
-function migrateInitial(initial: Automation | null | undefined): {
+function seedFrom(initial: Automation | null | undefined): {
   triggers: Slot<TriggerOption>[];
   actions: Slot<ActionOption>[];
 } {
-  if (!initial) return { triggers: [emptySlot<TriggerOption>()], actions: [emptySlot<ActionOption>()] };
   return {
-    triggers: initial.triggers?.length ? initial.triggers : [emptySlot<TriggerOption>()],
-    actions: initial.actions?.length ? initial.actions : [emptySlot<ActionOption>()],
+    triggers: initial?.triggers?.length ? initial.triggers : [emptySlot<TriggerOption>()],
+    actions: initial?.actions?.length ? initial.actions : [emptySlot<ActionOption>()],
   };
-}
-
-function formatSlot(slot: Slot): string | null {
-  if (!slot.choice) return null;
-  if (!slot.value) return slot.choice.label;
-  if (slot.choice.valueType === "price") return `${slot.choice.label} $${slot.value}`;
-  return `${slot.choice.label} ${slot.value} ${slot.choice.unit}`;
 }
 
 function slotReady(s: Slot): boolean {
@@ -54,14 +44,14 @@ export function ConditionalBuilder({
   initialState?: Automation | null;
   onSave: (data: BuilderResult) => void;
 }) {
-  const seed = migrateInitial(initialState);
-  const [triggers, setTriggers] = useState<Slot<TriggerOption>[]>(seed.triggers);
-  const [actions, setActions] = useState<Slot<ActionOption>[]>(seed.actions);
+  const [triggers, setTriggers] = useState<Slot<TriggerOption>[]>(() => seedFrom(initialState).triggers);
+  const [actions, setActions] = useState<Slot<ActionOption>[]>(() => seedFrom(initialState).actions);
   const [open, setOpen] = useState<{ side: Side; index: number } | null>(null);
   const [stage, setStage] = useState<"list" | "detail">("list");
   const [stagedChoice, setStagedChoice] = useState<Option | null>(null);
 
-  const { price: solPrice } = useSolPrice();
+  const needsLivePrice = !!open && stage === "detail" && stagedChoice?.valueType === "price";
+  const { price: solPrice } = useSolPrice({ enabled: needsLivePrice });
 
   const refsRef = useRef<Record<string, RefObject<HTMLButtonElement>>>({});
   const refFor = (side: Side, idx: number): RefObject<HTMLButtonElement> => {
@@ -101,21 +91,10 @@ export function ConditionalBuilder({
   };
 
   const addSlot = (side: Side) => {
-    if (side === "if") {
-      let newIndex = -1;
-      setTriggers((prev) => {
-        newIndex = prev.length;
-        return [...prev, emptySlot<TriggerOption>()];
-      });
-      requestAnimationFrame(() => requestAnimationFrame(() => openSlot("if", newIndex)));
-    } else {
-      let newIndex = -1;
-      setActions((prev) => {
-        newIndex = prev.length;
-        return [...prev, emptySlot<ActionOption>()];
-      });
-      requestAnimationFrame(() => requestAnimationFrame(() => openSlot("then", newIndex)));
-    }
+    const newIndex = (side === "if" ? triggers : actions).length;
+    if (side === "if") setTriggers((prev) => [...prev, emptySlot<TriggerOption>()]);
+    else setActions((prev) => [...prev, emptySlot<ActionOption>()]);
+    requestAnimationFrame(() => requestAnimationFrame(() => openSlot(side, newIndex)));
   };
 
   const removeSlot = (side: Side, idx: number) => {
@@ -148,14 +127,7 @@ export function ConditionalBuilder({
 
   const handleSave = () => {
     if (!ready) return;
-    onSave({
-      triggers,
-      actions,
-      ifChoice: triggers[0].choice,
-      ifValue: triggers[0].value,
-      thenChoice: actions[0].choice,
-      thenValue: actions[0].value,
-    });
+    onSave({ triggers, actions });
   };
 
   const renderChain = (
@@ -191,7 +163,7 @@ export function ConditionalBuilder({
               slotRef={refFor(side, i)}
               active={isOpen}
               hasValue={slotReady(slot)}
-              value={formatSlot(slot)}
+              value={formatSlotValue(slot)}
               placeholder={placeholder}
               showRemove={slots.length > 1}
               onClick={() => (isOpen ? closePopover() : openSlot(side, i))}
@@ -290,15 +262,7 @@ export function ConditionalBuilder({
             (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
           }}
         >
-          <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
-            <path
-              d="M3.5 8.5 L6.5 11.5 L12.5 5.5"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          <Check size={20} strokeWidth={2} />
         </button>
       </div>
 

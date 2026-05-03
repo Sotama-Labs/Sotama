@@ -1,5 +1,7 @@
 "use client";
 
+import { CheckCircle } from "./icons";
+
 export function Toast({ message }: { message: string }) {
   if (!message) return null;
   return (
@@ -29,10 +31,7 @@ export function Toast({ message }: { message: string }) {
         letterSpacing: "-0.016em",
       }}
     >
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <circle cx="8" cy="8" r="7" fill="var(--green)" />
-        <path d="M5 8.2 L7 10 L11.5 5.5" stroke="white" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
+      <CheckCircle />
       {message}
     </div>
   );

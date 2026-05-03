@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ButtonHTMLAttributes } from "react";
+import { Plus } from "../icons";
 
 export function AddButton({ onClick, ...rest }: ButtonHTMLAttributes<HTMLButtonElement>) {
   const [hover, setHover] = useState(false);
@@ -42,9 +43,7 @@ export function AddButton({ onClick, ...rest }: ButtonHTMLAttributes<HTMLButtonE
         willChange: "transform",
       }}
     >
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ display: "block" }} aria-hidden="true">
-        <path d="M6 2 V10 M2 6 H10" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-      </svg>
+      <Plus size={12} />
     </button>
   );
 }
