@@ -1,0 +1,344 @@
+/* ─────────────────────────────────────────────────────────────────────
+   HIG-aligned tokens, type scale, materials.
+   References: Apple HIG > Foundations > Color, Typography, Materials.
+   ───────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* San Francisco system stack. Browsers on Apple platforms render SF natively. */
+  --hig-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, sans-serif;
+  --hig-font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro", system-ui, sans-serif;
+  --hig-mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+
+  /* ── iOS Dynamic Colors — Light ─────────────────────────────────── */
+  /* Labels — full-opacity primary for crisp contrast (HIG dynamic colors) */
+  --label-primary: rgba(0, 0, 0, 1.0);
+  --label-secondary: rgba(60, 60, 67, 0.68);
+  --label-tertiary: rgba(60, 60, 67, 0.36);
+  --label-quaternary: rgba(60, 60, 67, 0.18);
+
+  /* Backgrounds — three-tier hierarchy (systemBackground / secondary / tertiary) */
+  --bg-system: #ffffff;
+  --bg-system-2: #f2f2f7;
+  --bg-system-3: #ffffff;
+  --bg-grouped: #f2f2f7;
+  --bg-grouped-2: #ffffff;
+
+  /* Fills — for control surfaces over backgrounds */
+  --fill-1: rgba(120, 120, 128, 0.20);
+  --fill-2: rgba(120, 120, 128, 0.16);
+  --fill-3: rgba(118, 118, 128, 0.12);
+  --fill-4: rgba(116, 116, 128, 0.08);
+
+  /* Separators */
+  --separator: rgba(60, 60, 67, 0.29);
+  --separator-opaque: #c6c6c8;
+  --hairline: rgba(0, 0, 0, 0.12);
+
+  /* Semantic system colors — iOS exact values */
+  --accent: #007AFF;        /* systemBlue */
+  --accent-pressed: #0062cc;
+  --accent-fill: rgba(0, 122, 255, 0.15);
+  --green: #34C759;
+  --orange: #FF9500;
+  --red: #FF3B30;
+  --indigo: #5856D6;
+  --teal: #5AC8FA;
+
+  /* Materials — translucent surfaces (chrome / sidebar / menu / popover) */
+  /* Approximated for browser. Use backdrop-filter where supported. */
+  --material-chrome: rgba(255, 255, 255, 0.78);
+  --material-thick: rgba(246, 246, 246, 0.80);
+  --material-popover: rgba(245, 245, 245, 0.85);
+
+  /* Shadows — subtle, layered */
+  --shadow-1: 0 0 0 0.5px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-2: 0 0 0 0.5px rgba(0,0,0,0.06), 0 2px 6px rgba(0,0,0,0.08), 0 12px 32px rgba(0,0,0,0.06);
+  --shadow-popover: 0 0 0 0.5px rgba(0,0,0,0.10), 0 6px 24px rgba(0,0,0,0.14), 0 24px 56px rgba(0,0,0,0.18);
+
+  /* Corner radii — HIG control sizing */
+  --radius-control-s: 6px;
+  --radius-control-m: 8px;
+  --radius-control-l: 10px;
+  --radius-card: 12px;
+  --radius-sheet: 14px;
+
+  /* Liquid Glass slot tokens — light (mirrors [data-appearance="light"]) */
+  --slot-fill: rgba(120, 120, 128, 0.18);
+  --slot-fill-hover: rgba(120, 120, 128, 0.26);
+  --slot-shadow:
+    inset 0 0.5px 0 rgba(255,255,255,0.65),
+    inset 0 -0.5px 0 rgba(0,0,0,0.12),
+    0 0 0 0.5px rgba(0,0,0,0.10),
+    0 1px 2px rgba(0,0,0,0.05);
+  --slot-shadow-active:
+    inset 0 0.5px 0 rgba(255,255,255,0.7),
+    inset 0 -0.5px 0 rgba(0,0,0,0.10),
+    0 0 0 0.5px var(--accent),
+    0 0 0 4px var(--accent-fill);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --label-primary: rgba(255, 255, 255, 1.0);
+    --label-secondary: rgba(235, 235, 245, 0.68);
+    --label-tertiary: rgba(235, 235, 245, 0.36);
+    --label-quaternary: rgba(235, 235, 245, 0.20);
+
+    --bg-system: #000000;
+    --bg-system-2: #1c1c1e;
+    --bg-system-3: #2c2c2e;
+    --bg-grouped: #000000;
+    --bg-grouped-2: #1c1c1e;
+
+    --fill-1: rgba(120, 120, 128, 0.36);
+    --fill-2: rgba(120, 120, 128, 0.32);
+    --fill-3: rgba(118, 118, 128, 0.24);
+    --fill-4: rgba(118, 118, 128, 0.18);
+
+    --separator: rgba(84, 84, 88, 0.65);
+    --separator-opaque: #38383a;
+    --hairline: rgba(255, 255, 255, 0.10);
+
+    --accent: #0A84FF;
+    --accent-pressed: #409CFF;
+    --accent-fill: rgba(10, 132, 255, 0.22);
+    --green: #30D158;
+    --orange: #FF9F0A;
+    --red: #FF453A;
+    --indigo: #5E5CE6;
+
+    --material-chrome: rgba(36, 36, 38, 0.78);
+    --material-thick: rgba(28, 28, 30, 0.82);
+    --material-popover: rgba(44, 44, 46, 0.85);
+
+    --shadow-1: 0 0 0 0.5px rgba(255,255,255,0.06), 0 1px 2px rgba(0,0,0,0.4);
+    --shadow-2: 0 0 0 0.5px rgba(255,255,255,0.06), 0 2px 6px rgba(0,0,0,0.30), 0 16px 40px rgba(0,0,0,0.50);
+    --shadow-popover: 0 0 0 0.5px rgba(255,255,255,0.08), 0 8px 32px rgba(0,0,0,0.50), 0 32px 64px rgba(0,0,0,0.60);
+
+    /* Liquid Glass slot tokens — dark (mirrors [data-appearance="dark"]) */
+    --slot-fill: rgba(255, 255, 255, 0.09);
+    --slot-fill-hover: rgba(255, 255, 255, 0.14);
+    --slot-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.14),
+      inset 0 -1px 0 rgba(255,255,255,0.05),
+      inset 0 0 0 0.5px rgba(255,255,255,0.10),
+      0 1px 2px rgba(0,0,0,0.40),
+      0 0 0 0.5px rgba(0,0,0,0.45);
+    --slot-shadow-active:
+      inset 0 1px 0 rgba(255,255,255,0.16),
+      inset 0 -1px 0 rgba(255,255,255,0.06),
+      inset 0 0 0 0.5px rgba(255,255,255,0.12),
+      0 0 0 0.5px var(--accent),
+      0 0 0 4px var(--accent-fill);
+  }
+}
+
+/* Explicit overrides via [data-appearance] */
+[data-appearance="light"] { color-scheme: light; }
+[data-appearance="light"] {
+  --label-primary: rgba(0, 0, 0, 1.0);
+  --label-secondary: rgba(60, 60, 67, 0.68);
+  --label-tertiary: rgba(60, 60, 67, 0.36);
+  --label-quaternary: rgba(60, 60, 67, 0.18);
+  --bg-system: #ffffff;
+  --bg-system-2: #f2f2f7;
+  --bg-system-3: #ffffff;
+  --bg-grouped: #f2f2f7;
+  --bg-grouped-2: #ffffff;
+  --fill-1: rgba(120, 120, 128, 0.20);
+  --fill-2: rgba(120, 120, 128, 0.16);
+  --fill-3: rgba(118, 118, 128, 0.12);
+  --fill-4: rgba(116, 116, 128, 0.08);
+  --separator: rgba(60, 60, 67, 0.29);
+  --separator-opaque: #c6c6c8;
+  --accent: #007AFF;
+  --accent-fill: rgba(0, 122, 255, 0.15);
+  --material-chrome: rgba(255, 255, 255, 0.78);
+  --material-popover: rgba(245, 245, 245, 0.85);
+  --shadow-2: 0 0 0 0.5px rgba(0,0,0,0.06), 0 2px 6px rgba(0,0,0,0.08), 0 12px 32px rgba(0,0,0,0.06);
+  --shadow-popover: 0 0 0 0.5px rgba(0,0,0,0.10), 0 6px 24px rgba(0,0,0,0.14), 0 24px 56px rgba(0,0,0,0.18);
+
+  /* Liquid Glass slot tokens — light */
+  --slot-fill: rgba(120, 120, 128, 0.18);
+  --slot-fill-hover: rgba(120, 120, 128, 0.26);
+  --slot-shadow:
+    inset 0 0.5px 0 rgba(255,255,255,0.65),
+    inset 0 -0.5px 0 rgba(0,0,0,0.12),
+    0 0 0 0.5px rgba(0,0,0,0.10),
+    0 1px 2px rgba(0,0,0,0.05);
+  --slot-shadow-active:
+    inset 0 0.5px 0 rgba(255,255,255,0.7),
+    inset 0 -0.5px 0 rgba(0,0,0,0.10),
+    0 0 0 0.5px var(--accent),
+    0 0 0 4px var(--accent-fill);
+}
+
+[data-appearance="dark"] { color-scheme: dark; }
+[data-appearance="dark"] {
+  --label-primary: rgba(255, 255, 255, 1.0);
+  --label-secondary: rgba(235, 235, 245, 0.68);
+  --label-tertiary: rgba(235, 235, 245, 0.36);
+  --label-quaternary: rgba(235, 235, 245, 0.20);
+  --bg-system: #000000;
+  --bg-system-2: #1c1c1e;
+  --bg-system-3: #2c2c2e;
+  --bg-grouped: #000000;
+  --bg-grouped-2: #1c1c1e;
+  --fill-1: rgba(120, 120, 128, 0.36);
+  --fill-2: rgba(120, 120, 128, 0.32);
+  --fill-3: rgba(118, 118, 128, 0.24);
+  --fill-4: rgba(118, 118, 128, 0.18);
+  --separator: rgba(84, 84, 88, 0.65);
+  --separator-opaque: #38383a;
+  --accent: #0A84FF;
+  --accent-fill: rgba(10, 132, 255, 0.22);
+  --material-chrome: rgba(36, 36, 38, 0.78);
+  --material-popover: rgba(44, 44, 46, 0.85);
+  --shadow-2: 0 0 0 0.5px rgba(255,255,255,0.06), 0 2px 6px rgba(0,0,0,0.30), 0 16px 40px rgba(0,0,0,0.50);
+  --shadow-popover: 0 0 0 0.5px rgba(255,255,255,0.08), 0 8px 32px rgba(0,0,0,0.50), 0 32px 64px rgba(0,0,0,0.60);
+
+  /* Liquid Glass slot tokens — dark
+     Dark glass = slightly brighter translucent fill (the glass picks up
+     ambient warmth), a soft top highlight (NOT a hard white line — that
+     reads plasticky), and a brighter bottom rim where light wraps under
+     the lozenge. Outer ring is bright too so the edge defines itself
+     against the dark surround. */
+  --slot-fill: rgba(255, 255, 255, 0.09);
+  --slot-fill-hover: rgba(255, 255, 255, 0.14);
+  --slot-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(255,255,255,0.05),
+    inset 0 0 0 0.5px rgba(255,255,255,0.10),
+    0 1px 2px rgba(0,0,0,0.40),
+    0 0 0 0.5px rgba(0,0,0,0.45);
+  --slot-shadow-active:
+    inset 0 1px 0 rgba(255,255,255,0.16),
+    inset 0 -1px 0 rgba(255,255,255,0.06),
+    inset 0 0 0 0.5px rgba(255,255,255,0.12),
+    0 0 0 0.5px var(--accent),
+    0 0 0 4px var(--accent-fill);
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--hig-font);
+  background: var(--bg-grouped);
+  color: var(--label-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01"; /* SF stylistic — six/nine without descender */
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+}
+
+input, select { font-family: inherit; color: inherit; }
+
+/* ── HIG Text Styles ────────────────────────────────────────────────
+   Official iOS scale; sizes in pt ≈ px on standard density.
+   Use SF Pro Display ≥ 20pt; SF Pro Text < 20pt.
+   ─────────────────────────────────────────────────────────────────── */
+.hig-large-title {
+  font-family: var(--hig-font-display);
+  font-size: 2.125rem; line-height: 2.5625rem;
+  font-weight: 700; letter-spacing: 0.011em;
+}
+.hig-title-1 {
+  font-family: var(--hig-font-display);
+  font-size: 1.75rem; line-height: 2.125rem;
+  font-weight: 700; letter-spacing: 0.013em;
+}
+.hig-title-2 {
+  font-family: var(--hig-font-display);
+  font-size: 1.375rem; line-height: 1.75rem;
+  font-weight: 700; letter-spacing: 0.016em;
+}
+.hig-title-3 {
+  font-family: var(--hig-font-display);
+  font-size: 1.25rem; line-height: 1.5625rem;
+  font-weight: 600; letter-spacing: 0.019em;
+}
+.hig-headline {
+  font-family: var(--hig-font);
+  font-size: 1.0625rem; line-height: 1.375rem;
+  font-weight: 600; letter-spacing: -0.024em;
+}
+.hig-body {
+  font-family: var(--hig-font);
+  font-size: 1.0625rem; line-height: 1.375rem;
+  font-weight: 400; letter-spacing: -0.024em;
+}
+.hig-callout {
+  font-family: var(--hig-font);
+  font-size: 1rem; line-height: 1.3125rem;
+  font-weight: 400; letter-spacing: -0.020em;
+}
+.hig-subheadline {
+  font-family: var(--hig-font);
+  font-size: 0.9375rem; line-height: 1.25rem;
+  font-weight: 400; letter-spacing: -0.016em;
+}
+.hig-footnote {
+  font-family: var(--hig-font);
+  font-size: 0.8125rem; line-height: 1.125rem;
+  font-weight: 400; letter-spacing: -0.008em;
+}
+.hig-caption-1 {
+  font-family: var(--hig-font);
+  font-size: 0.75rem; line-height: 1rem;
+  font-weight: 400; letter-spacing: 0;
+}
+.hig-caption-2 {
+  font-family: var(--hig-font);
+  font-size: 0.6875rem; line-height: 0.8125rem;
+  font-weight: 400; letter-spacing: 0.006em;
+}
+
+/* ── Animations ────────────────────────────────────────────────────── */
+@keyframes hig-pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes hig-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes hig-spin { to { transform: rotate(360deg); } }
+@keyframes hig-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.popover-anim { animation: hig-pop-in 200ms cubic-bezier(0.32, 0.72, 0, 1); transform-origin: top center; }
+.fade-slide { animation: hig-fade-in 240ms cubic-bezier(0.32, 0.72, 0, 1); }
+.pulse-dot { animation: hig-pulse 1.6s ease-in-out infinite; }
+
+/* Focus ring (HIG-style 3px translucent accent) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield !important;
+  appearance: textfield !important;
+}
+
+button:focus-visible, input:focus-visible {
+  outline: 3px solid var(--accent-fill);
+  outline-offset: 1px;
+  border-radius: var(--radius-control-m);
+}

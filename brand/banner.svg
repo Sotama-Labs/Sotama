@@ -1,0 +1,31 @@
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" width="1500" height="500">
+            
+            <!-- Carbon Void Canvas -->
+            <rect width="1500" height="500" fill="#0A0B0C" />
+
+            <!-- 
+                ==================== CENTERED TYPOGRAPHY ==================== 
+                Completely isolated. Pure white. Standard ASCII.
+            -->
+            <g transform="translate(750, 230)">
+                <!-- Main Brand Headline -->
+                <text x="0" y="0" 
+                      font-family="'SF Pro Display', 'Inter', 'Helvetica Neue', Helvetica, -apple-system, sans-serif" 
+                      font-size="120" 
+                      font-weight="900" 
+                      fill="#FFFFFF" 
+                      text-anchor="middle" 
+                      text-rendering="geometricPrecision">SOTAMA</text>
+                      
+                <!-- Tagline -->
+                <text x="0" y="80" 
+                      font-family="'SF Pro Display', 'Inter', 'Helvetica Neue', Helvetica, -apple-system, sans-serif" 
+                      font-size="24" 
+                      font-weight="700" 
+                      fill="#FFFFFF" 
+                      opacity="0.8" 
+                      text-anchor="middle" 
+                      text-rendering="geometricPrecision">Zero Emotion, Pure Logic.</text>
+            </g>
+
+        </svg>
