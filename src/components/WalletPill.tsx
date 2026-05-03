@@ -14,24 +14,9 @@ export function WalletPill() {
   const addr = publicKey?.toBase58() ?? null;
   const { sol } = useWalletBalance(addr);
   const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState(false);
   const [disconnectHover, setDisconnectHover] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
-
-  const baseStyle = {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.625rem",
-    padding: "0.4375rem 0.875rem 0.4375rem 0.625rem",
-    background: "var(--material-chrome)",
-    backdropFilter: "saturate(180%) blur(40px)",
-    WebkitBackdropFilter: "saturate(180%) blur(40px)",
-    border: "0.5px solid var(--separator)",
-    borderRadius: "0.625rem",
-    boxShadow: "var(--shadow-1)",
-    cursor: "pointer",
-    color: "var(--label-primary)",
-    fontFamily: "var(--hig-font)",
-  } as const;
 
   if (!connected) {
     return (
@@ -39,7 +24,21 @@ export function WalletPill() {
         onClick={() => setVisible(true)}
         aria-label="Connect wallet"
         title={connecting ? "Connecting…" : "Connect a Solana wallet"}
-        style={baseStyle}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "0.625rem",
+          padding: "0.4375rem 0.875rem 0.4375rem 0.625rem",
+          background: "var(--material-chrome)",
+          backdropFilter: "saturate(180%) blur(40px)",
+          WebkitBackdropFilter: "saturate(180%) blur(40px)",
+          border: "0.5px solid var(--separator)",
+          borderRadius: "0.625rem",
+          boxShadow: "var(--shadow-1)",
+          cursor: "pointer",
+          color: "var(--label-primary)",
+          fontFamily: "var(--hig-font)",
+        }}
       >
         <span
           style={{
@@ -65,27 +64,39 @@ export function WalletPill() {
     );
   }
 
+  const active = hover || open;
+
   return (
     <>
       <button
         ref={anchorRef}
         onClick={() => setOpen((v) => !v)}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        onFocus={() => setHover(true)}
+        onBlur={() => setHover(false)}
         aria-label="Wallet menu"
         aria-expanded={open}
         aria-haspopup="menu"
         title={wallet?.adapter.name ?? "Wallet"}
-        style={baseStyle}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "0.625rem",
+          padding: "0.4375rem 0.875rem 0.4375rem 0.625rem",
+          background: active ? "var(--material-chrome)" : "transparent",
+          backdropFilter: active ? "saturate(180%) blur(40px)" : "none",
+          WebkitBackdropFilter: active ? "saturate(180%) blur(40px)" : "none",
+          border: "0.5px solid",
+          borderColor: active ? "var(--separator)" : "transparent",
+          borderRadius: "0.625rem",
+          boxShadow: active ? "var(--shadow-1)" : "none",
+          cursor: "pointer",
+          color: "var(--label-primary)",
+          fontFamily: "var(--hig-font)",
+          transition: "background 160ms ease, border-color 160ms ease, box-shadow 160ms ease",
+        }}
       >
-        <span
-          className="pulse-dot"
-          style={{
-            width: "0.625rem",
-            height: "0.625rem",
-            borderRadius: "999px",
-            background: "var(--green)",
-            flexShrink: 0,
-          }}
-        />
         <span
           className="hig-footnote"
           style={{
@@ -98,13 +109,15 @@ export function WalletPill() {
         >
           {shortAddress(addr)}
         </span>
-        <span className="hig-footnote" style={{ color: "var(--label-tertiary)", fontSize: "1rem", lineHeight: "1.25rem" }}>
-          ·
-        </span>
-        <span className="hig-footnote" style={{ color: "var(--label-secondary)", fontSize: "1rem", lineHeight: "1.25rem" }}>
-          {sol == null ? "…" : `${fmt(sol, 2)} SOL`}
-        </span>
-        <span style={{ display: "inline-flex", color: "var(--label-tertiary)", marginLeft: "0.125rem" }}>
+        <span
+          style={{
+            display: "inline-flex",
+            color: "var(--label-tertiary)",
+            marginLeft: "0.125rem",
+            opacity: active ? 1 : 0,
+            transition: "opacity 160ms ease",
+          }}
+        >
           <Chevron size={9} dir={open ? "up" : "down"} />
         </span>
       </button>
