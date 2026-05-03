@@ -3,8 +3,8 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Sotama — Automations",
-  description: "Zero Emotion. Pure Logic. Automate Solana strategies with one-sentence rules.",
+  title: "Sotama",
+  description: "Automate Solana strategies with one-sentence rules.",
   icons: { icon: "/logo-mark.svg" },
 };
 
