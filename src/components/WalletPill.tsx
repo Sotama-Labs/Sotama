@@ -208,8 +208,16 @@ export function WalletPill() {
         <div style={{ height: "0.5px", background: "var(--separator)", marginInline: "0.75rem" }} />
 
         {/* Identity */}
-        <div style={{ padding: "1rem 1.25rem 1.125rem", display: "flex", flexDirection: "column", gap: "0.625rem" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+        <div style={{ paddingTop: "1rem", paddingBottom: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "0.5rem",
+              padding: "0 1.25rem",
+            }}
+          >
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
               {walletIcon && (
                 <img
@@ -250,52 +258,53 @@ export function WalletPill() {
             </span>
           </div>
 
-          <button
-            onClick={onCopy}
-            onMouseEnter={() => setAddrHover(true)}
-            onMouseLeave={() => setAddrHover(false)}
-            aria-label={copied ? "Address copied" : "Copy address"}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "0.625rem",
-              width: "100%",
-              padding: "0.5rem 0.625rem",
-              margin: "-0.5rem -0.625rem",
-              background: addrHover ? "var(--accent-fill)" : "transparent",
-              border: "none",
-              borderRadius: "0.5rem",
-              cursor: "pointer",
-              transition: "background 120ms ease",
-              color: "var(--label-primary)",
-            }}
-          >
-            <span
-              className="hig-footnote"
+          <div style={{ padding: "0 0.5rem" }}>
+            <button
+              onClick={onCopy}
+              onMouseEnter={() => setAddrHover(true)}
+              onMouseLeave={() => setAddrHover(false)}
+              aria-label={copied ? "Address copied" : "Copy address"}
               style={{
-                fontFamily: "var(--hig-mono)",
-                fontSize: "0.8125rem",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "0.625rem",
+                width: "100%",
+                padding: "0.4375rem 0.75rem",
+                background: addrHover ? "var(--accent-fill)" : "transparent",
+                border: "none",
+                borderRadius: "0.5rem",
+                cursor: "pointer",
+                transition: "background 120ms ease",
                 color: "var(--label-primary)",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                minWidth: 0,
               }}
             >
-              {addr ? `${addr.slice(0, 8)}…${addr.slice(-8)}` : ""}
-            </span>
-            <span
-              style={{
-                display: "inline-flex",
-                color: copied ? "var(--green)" : addrHover ? "var(--accent)" : "var(--label-tertiary)",
-                transition: "color 120ms ease",
-                flexShrink: 0,
-              }}
-            >
-              {copied ? <Check size={13} /> : <CopyGlyph size={13} />}
-            </span>
-          </button>
+              <span
+                className="hig-footnote"
+                style={{
+                  fontFamily: "var(--hig-mono)",
+                  fontSize: "0.8125rem",
+                  color: "var(--label-primary)",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  minWidth: 0,
+                }}
+              >
+                {addr ? `${addr.slice(0, 8)}…${addr.slice(-8)}` : ""}
+              </span>
+              <span
+                style={{
+                  display: "inline-flex",
+                  color: copied ? "var(--green)" : addrHover ? "var(--accent)" : "var(--label-tertiary)",
+                  transition: "color 120ms ease",
+                  flexShrink: 0,
+                }}
+              >
+                {copied ? <Check size={13} /> : <CopyGlyph size={13} />}
+              </span>
+            </button>
+          </div>
         </div>
 
         <div style={{ height: "0.5px", background: "var(--separator)", marginInline: "0.75rem" }} />
@@ -314,7 +323,7 @@ export function WalletPill() {
               display: "flex",
               alignItems: "center",
               width: "100%",
-              padding: "0.625rem 0.875rem",
+              padding: "0.5625rem 0.75rem",
               background: disconnectHover ? "var(--red)" : "transparent",
               color: disconnectHover ? "white" : "var(--red)",
               textAlign: "left",
