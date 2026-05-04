@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type RefObject } from "react";
+import { useState, type ReactNode, type RefObject } from "react";
 import { Slot } from "./Slot";
 import { XMark } from "../icons";
 
@@ -8,7 +8,7 @@ export function SlotWithRemove({
   slotRef,
   active,
   hasValue,
-  value,
+  content,
   placeholder,
   onClick,
   showRemove,
@@ -17,7 +17,7 @@ export function SlotWithRemove({
   slotRef: RefObject<HTMLButtonElement>;
   active: boolean;
   hasValue: boolean;
-  value: string | null;
+  content: ReactNode;
   placeholder: string;
   onClick: () => void;
   showRemove: boolean;
@@ -30,7 +30,14 @@ export function SlotWithRemove({
       onMouseLeave={() => setHover(false)}
       style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", position: "relative" }}
     >
-      <Slot ref={slotRef} active={active} hasValue={hasValue} value={value} placeholder={placeholder} onClick={onClick} />
+      <Slot
+        ref={slotRef}
+        active={active}
+        hasValue={hasValue}
+        content={content}
+        placeholder={placeholder}
+        onClick={onClick}
+      />
       {showRemove && (
         <button
           onClick={(e) => {

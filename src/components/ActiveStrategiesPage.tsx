@@ -2,68 +2,76 @@
 
 import { useMemo, useState } from "react";
 import type { Automation, Execution } from "@/lib/types";
+import { CANONICAL_MINTS } from "@/lib/tokens";
 import { fmt } from "@/lib/format";
 import { AutomationRow } from "./SavedList";
 import { ArrowRight, InfoCircle } from "./icons";
 
+const SOL = CANONICAL_MINTS["So11111111111111111111111111111111111111112"];
+const USDC = CANONICAL_MINTS["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"];
+
 const SAMPLE_AUTOMATIONS: Automation[] = [
   {
     id: "demo_1",
+    schemaVersion: 2,
     triggers: [
       {
-        choice: { id: "price_below", label: "SOL price drops below", needsValue: true, valueType: "price", unit: "USD" },
-        value: 180,
+        kind: "token_price",
+        token: SOL,
+        quote: { kind: "usd" },
+        comparator: "below",
+        threshold: 180,
+        oracle: {
+          kind: "pyth",
+          feedId: "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+          symbol: "Crypto.SOL/USD",
+        },
       },
     ],
-    actions: [
-      {
-        choice: { id: "swap_usdc_sol", label: "swap USDC to SOL", needsValue: true, valueType: "amount", unit: "USDC" },
-        value: 250,
-      },
-    ],
+    triggerOperators: [],
+    actions: [{ kind: "swap", inputToken: USDC, outputToken: SOL, amount: 250 }],
+    actionOperators: [],
     running: true,
     runs: 3,
     lastCheck: "just now",
+    createdAt: new Date().toISOString(),
   },
   {
     id: "demo_2",
+    schemaVersion: 2,
     triggers: [
       {
-        choice: { id: "price_above", label: "SOL price goes above", needsValue: true, valueType: "price", unit: "USD" },
-        value: 240,
+        kind: "token_price",
+        token: SOL,
+        quote: { kind: "usd" },
+        comparator: "above",
+        threshold: 240,
+        oracle: {
+          kind: "pyth",
+          feedId: "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+          symbol: "Crypto.SOL/USD",
+        },
       },
     ],
-    actions: [
-      {
-        choice: { id: "swap_sol_usdc", label: "swap SOL to USDC", needsValue: true, valueType: "amount", unit: "SOL" },
-        value: 1.5,
-      },
-    ],
+    triggerOperators: [],
+    actions: [{ kind: "swap", inputToken: SOL, outputToken: USDC, amount: 1.5 }],
+    actionOperators: [],
     running: true,
     runs: 0,
     lastCheck: "12s ago",
+    createdAt: new Date().toISOString(),
   },
   {
     id: "demo_3",
-    triggers: [
-      {
-        choice: { id: "price_below", label: "SOL price drops below", needsValue: true, valueType: "price", unit: "USD" },
-        value: 150,
-      },
-      {
-        choice: { id: "price_above", label: "SOL price goes above", needsValue: true, valueType: "price", unit: "USD" },
-        value: 100,
-      },
-    ],
-    actions: [
-      {
-        choice: { id: "swap_usdc_sol", label: "swap USDC to SOL", needsValue: true, valueType: "amount", unit: "USDC" },
-        value: 500,
-      },
-    ],
+    schemaVersion: 2,
+    triggers: [{ kind: "staking_reward_amount", threshold: 1 }],
+    triggerOperators: [],
+    actions: [{ kind: "restake" }],
+    actionOperators: [],
     running: false,
     runs: 1,
     lastCheck: "2m ago",
+    createdAt: new Date().toISOString(),
   },
 ];
 

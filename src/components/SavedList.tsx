@@ -1,8 +1,13 @@
 "use client";
 
 import { Fragment, useState } from "react";
-import type { Automation, Slot } from "@/lib/types";
-import { formatSlotValue } from "@/lib/format";
+import type { Automation, Action, Trigger } from "@/lib/types";
+import {
+  renderActionSentence,
+  renderTriggerSentence,
+  shouldParenthesizeAction,
+  shouldParenthesizeTrigger,
+} from "./builder/SentenceRenderer";
 import { Plus } from "./icons";
 
 function AutomationRow({
@@ -18,13 +23,41 @@ function AutomationRow({
 }) {
   const [hover, setHover] = useState(false);
 
-  const renderChain = (slots: Slot[]) =>
-    slots.map((s, i) => (
-      <Fragment key={i}>
-        {i > 0 && <span style={{ color: "var(--label-secondary)" }}> and </span>}
-        <span>{formatSlotValue(s) ?? "—"}</span>
-      </Fragment>
-    ));
+  const renderTriggers = (slots: Trigger[]) =>
+    slots.map((t, i) => {
+      const opBefore = i > 0 ? a.triggerOperators[i - 1] ?? "and" : null;
+      const paren = shouldParenthesizeTrigger(opBefore);
+      return (
+        <Fragment key={`t${i}`}>
+          {opBefore && (
+            <span style={{ color: "var(--label-secondary)" }}> {opBefore} </span>
+          )}
+          {paren && <span style={{ color: "var(--label-secondary)" }}>(</span>}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}>
+            {renderTriggerSentence(t)}
+          </span>
+          {paren && <span style={{ color: "var(--label-secondary)" }}>)</span>}
+        </Fragment>
+      );
+    });
+
+  const renderActions = (slots: Action[]) =>
+    slots.map((act, i) => {
+      const opBefore = i > 0 ? a.actionOperators[i - 1] ?? "then" : null;
+      const paren = shouldParenthesizeAction(opBefore);
+      return (
+        <Fragment key={`a${i}`}>
+          {opBefore && (
+            <span style={{ color: "var(--label-secondary)" }}> {opBefore} </span>
+          )}
+          {paren && <span style={{ color: "var(--label-secondary)" }}>(</span>}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}>
+            {renderActionSentence(act)}
+          </span>
+          {paren && <span style={{ color: "var(--label-secondary)" }}>)</span>}
+        </Fragment>
+      );
+    });
 
   return (
     <div
@@ -56,15 +89,16 @@ function AutomationRow({
           style={{
             fontWeight: 500,
             color: "var(--label-primary)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "0.25rem",
           }}
         >
           <span style={{ color: "var(--label-secondary)" }}>If </span>
-          {renderChain(a.triggers)}
+          {renderTriggers(a.triggers)}
           <span style={{ color: "var(--label-secondary)" }}> then </span>
-          {renderChain(a.actions)}
+          {renderActions(a.actions)}
         </div>
         <div className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.125rem" }}>
           {a.running ? `Running · last checked ${a.lastCheck}` : "Paused"}

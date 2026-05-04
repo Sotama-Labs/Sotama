@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ActionOption } from "@/lib/types";
+import type { Action } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import type { BuilderResult } from "./builder/ConditionalBuilder";
 import { Spinner } from "./icons";
@@ -9,10 +9,28 @@ import { Spinner } from "./icons";
 const SOLANA_NETWORK_FEE_SOL = 0.000045;
 const PROTOCOL_FEE_BPS = 20;
 
-function tokenFor(actionId: ActionOption["id"]): { from: "SOL" | "USDC" } {
-  if (actionId === "swap_sol_usdc") return { from: "SOL" };
-  if (actionId === "swap_usdc_sol") return { from: "USDC" };
-  return { from: "SOL" };
+/** Sum the upfront-deposit amount per token across all actions.
+ *  Restake / sell_for / transfer_reward use the staking reward as input,
+ *  so they don't require an upfront deposit — they're omitted here. */
+function depositByToken(actions: Action[]): { totals: Record<string, number>; staking: boolean } {
+  const totals: Record<string, number> = {};
+  let staking = false;
+  for (const a of actions) {
+    switch (a.kind) {
+      case "transfer":
+        totals[a.token.symbol] = (totals[a.token.symbol] || 0) + a.amount;
+        break;
+      case "swap":
+        totals[a.inputToken.symbol] = (totals[a.inputToken.symbol] || 0) + a.amount;
+        break;
+      case "restake":
+      case "sell_for":
+      case "transfer_reward":
+        staking = true;
+        break;
+    }
+  }
+  return { totals, staking };
 }
 
 function FeeRow({ label, sub, value }: { label: string; sub: string; value: string }) {
@@ -75,27 +93,20 @@ export function DepositSheet({
   if (!open || !automation) return null;
 
   const actionsList = automation.actions;
+  const { totals, staking } = depositByToken(actionsList);
+  const tokens = Object.keys(totals);
 
-  const byToken: Record<string, number> = {};
-  actionsList.forEach((s) => {
-    if (!s.choice) return;
-    const tok = tokenFor(s.choice.id).from;
-    const amt = parseFloat(String(s.value)) || 0;
-    byToken[tok] = (byToken[tok] || 0) + amt;
-  });
-  const tokens = Object.keys(byToken);
-
-  const primaryToken = tokens.sort((a, b) => byToken[b] - byToken[a])[0] || "SOL";
-  const primaryAmount = byToken[primaryToken] || 0;
+  const primaryToken = tokens.sort((a, b) => totals[b] - totals[a])[0] || (staking ? "SOL" : "—");
+  const primaryAmount = totals[primaryToken] || 0;
 
   const networkFeeSol = SOLANA_NETWORK_FEE_SOL * actionsList.length;
   const protocolFeeByToken: Record<string, number> = {};
   tokens.forEach((t) => {
-    protocolFeeByToken[t] = byToken[t] * (PROTOCOL_FEE_BPS / 10000);
+    protocolFeeByToken[t] = totals[t] * (PROTOCOL_FEE_BPS / 10000);
   });
   const totalByToken: Record<string, number> = {};
   tokens.forEach((t) => {
-    totalByToken[t] = byToken[t] + protocolFeeByToken[t];
+    totalByToken[t] = totals[t] + protocolFeeByToken[t];
   });
 
   const handleConfirm = async () => {
@@ -143,26 +154,30 @@ export function DepositSheet({
       >
         <div style={{ padding: "1.25rem 1.25rem 1rem", textAlign: "center" }}>
           <div className="hig-headline" style={{ marginBottom: "0.25rem" }}>
-            Fund automation
+            {tokens.length === 0 ? "Activate automation" : "Fund automation"}
           </div>
           <div className="hig-subheadline" style={{ color: "var(--label-secondary)" }}>
-            Funds release when the trigger fires.
+            {tokens.length === 0
+              ? "Funded by staking rewards. No upfront deposit needed."
+              : "Funds release when the trigger fires."}
           </div>
         </div>
 
-        <div style={{ padding: "0.5rem 1.25rem 1.25rem", textAlign: "center" }}>
-          <div className="hig-large-title" style={{ color: "var(--label-primary)", fontFeatureSettings: '"tnum"' }}>
-            {fmt(primaryAmount, 4)}
-            <span className="hig-title-2" style={{ color: "var(--label-secondary)", marginLeft: "0.375rem" }}>
-              {primaryToken}
-            </span>
-          </div>
-          {tokens.length > 1 && (
-            <div className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.25rem" }}>
-              + {fmt(byToken[tokens.find((t) => t !== primaryToken)!], 4)} {tokens.find((t) => t !== primaryToken)}
+        {tokens.length > 0 && (
+          <div style={{ padding: "0.5rem 1.25rem 1.25rem", textAlign: "center" }}>
+            <div className="hig-large-title" style={{ color: "var(--label-primary)", fontFeatureSettings: '"tnum"' }}>
+              {fmt(primaryAmount, 4)}
+              <span className="hig-title-2" style={{ color: "var(--label-secondary)", marginLeft: "0.375rem" }}>
+                {primaryToken}
+              </span>
             </div>
-          )}
-        </div>
+            {tokens.length > 1 && (
+              <div className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.25rem" }}>
+                + {fmt(totals[tokens.find((t) => t !== primaryToken)!], 4)} {tokens.find((t) => t !== primaryToken)}
+              </div>
+            )}
+          </div>
+        )}
 
         <div
           style={{
@@ -178,47 +193,66 @@ export function DepositSheet({
               key={`dep-${t}`}
               label={tokens.length > 1 ? `Deposit (${t})` : "Deposit"}
               sub="Returned if cancelled"
-              value={`${fmt(byToken[t], 4)} ${t}`}
+              value={`${fmt(totals[t], 4)} ${t}`}
             />
           ))}
           {tokens.map((t) => (
             <FeeRow
               key={`fee-${t}`}
               label={tokens.length > 1 ? `Sotama fee (${t})` : "Sotama fee"}
-              sub={`${(PROTOCOL_FEE_BPS / 100).toFixed(2)}% of swap`}
+              sub={`${(PROTOCOL_FEE_BPS / 100).toFixed(2)}% of action`}
               value={`${fmt(protocolFeeByToken[t], 4)} ${t}`}
             />
           ))}
           <FeeRow
             label="Network fee"
-            sub={actionsList.length > 1 ? `Solana base + priority · ${actionsList.length} swaps` : "Solana base + priority"}
+            sub={
+              actionsList.length > 1
+                ? `Solana base + priority · ${actionsList.length} actions`
+                : "Solana base + priority"
+            }
             value={`${networkFeeSol.toFixed(6)} SOL`}
           />
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "0.75rem 0.875rem",
-              borderTop: "0.5px solid var(--separator)",
-              background: "var(--fill-3)",
-            }}
-          >
-            <span className="hig-headline">Total</span>
-            <div style={{ textAlign: "right", fontFeatureSettings: '"tnum"' }}>
-              {tokens.map((t) => (
-                <div key={`tot-${t}`} className="hig-headline">
-                  {fmt(totalByToken[t], 4)} {t}
+          {tokens.length > 0 ? (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "0.75rem 0.875rem",
+                borderTop: "0.5px solid var(--separator)",
+                background: "var(--fill-3)",
+              }}
+            >
+              <span className="hig-headline">Total</span>
+              <div style={{ textAlign: "right", fontFeatureSettings: '"tnum"' }}>
+                {tokens.map((t) => (
+                  <div key={`tot-${t}`} className="hig-headline">
+                    {fmt(totalByToken[t], 4)} {t}
+                  </div>
+                ))}
+                <div
+                  className="hig-caption-1"
+                  style={{ color: "var(--label-secondary)", marginTop: "0.0625rem" }}
+                >
+                  + {networkFeeSol.toFixed(6)} SOL
                 </div>
-              ))}
-              <div
-                className="hig-caption-1"
-                style={{ color: "var(--label-secondary)", marginTop: "0.0625rem" }}
-              >
-                + {networkFeeSol.toFixed(6)} SOL
               </div>
             </div>
-          </div>
+          ) : (
+            <div
+              style={{
+                padding: "0.75rem 0.875rem",
+                borderTop: "0.5px solid var(--separator)",
+                background: "var(--fill-3)",
+                textAlign: "center",
+              }}
+            >
+              <span className="hig-footnote" style={{ color: "var(--label-secondary)" }}>
+                Network fee paid from your wallet on each execution.
+              </span>
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", borderTop: "0.5px solid var(--separator)" }}>
@@ -257,6 +291,8 @@ export function DepositSheet({
               <>
                 <Spinner /> Confirming…
               </>
+            ) : tokens.length === 0 ? (
+              "Activate"
             ) : (
               "Deposit"
             )}

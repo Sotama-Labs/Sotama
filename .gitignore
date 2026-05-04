@@ -10,3 +10,5 @@ out
 pnpm-lock.yaml
 README.md
 marketing-video
+/claude-session.jsonl
+/skills-lock.json

@@ -1,4 +1,4 @@
-import type { Slot } from "./types";
+import type { TokenRef } from "./types";
 
 export function fmt(n: number | null | undefined, decimals = 4): string {
   if (n == null || isNaN(n)) return "—";
@@ -28,11 +28,21 @@ export function hexToRgba(hex: string, alpha: number): string | null {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-/** Render `<label>`, `<label> $<value>` for price, or `<label> <value> <unit>` for amount. */
-export function formatSlotValue(slot: Slot): string | null {
-  const c = slot.choice;
-  if (!c) return null;
-  if (!c.needsValue || slot.value == null) return c.label;
-  if (c.valueType === "price") return `${c.label} $${slot.value}`;
-  return `${c.label} ${slot.value} ${c.unit}`;
+/** Format a token amount honoring the token's own decimals — never trail useless zeros. */
+export function formatTokenAmount(value: number | null | undefined, token: TokenRef | null | undefined): string {
+  if (value == null || isNaN(value)) return "—";
+  const decimals = token?.decimals ?? 4;
+  if (value === 0) return "0";
+  if (value >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (value >= 1) return value.toFixed(Math.min(decimals, 4));
+  return value.toFixed(Math.min(decimals, 6));
+}
+
+/** Format a Pyth price (already scaled — see oracles.ts) for display. */
+export function formatPythPrice(price: number | null | undefined): string {
+  if (price == null || isNaN(price)) return "—";
+  if (price >= 1000) return price.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (price >= 1) return price.toFixed(2);
+  if (price >= 0.01) return price.toFixed(4);
+  return price.toFixed(6);
 }

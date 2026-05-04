@@ -1,35 +1,107 @@
 "use client";
 
-import type { Option } from "@/lib/types";
+import { Fragment } from "react";
+import { Chevron } from "../icons";
 import { MenuRow } from "./MenuRow";
 
-export function PopoverList({
+export type GroupableOption = {
+  kind: string;
+  label: string;
+  group?: string;
+  description?: string;
+};
+
+export function PopoverList<T extends GroupableOption>({
   title,
   options,
-  selectedId,
+  selectedKind,
   onPick,
+  onBack,
 }: {
   title: string;
-  options: Option[];
-  selectedId: string | undefined;
-  onPick: (o: Option) => void;
+  options: T[];
+  selectedKind: string | null;
+  onPick: (o: T) => void;
+  onBack?: () => void;
 }) {
+  const groups: Array<{ name: string | null; items: T[] }> = [];
+  for (const o of options) {
+    const name = o.group ?? null;
+    let g = groups.find((x) => x.name === name);
+    if (!g) {
+      g = { name, items: [] };
+      groups.push(g);
+    }
+    g.items.push(o);
+  }
+
   return (
-    <div className="fade-slide">
+    <div className="fade-slide" style={{ width: "100%" }}>
       <div
-        className="hig-caption-2"
         style={{
-          padding: "0.625rem 0.75rem 0.25rem",
-          fontWeight: 600,
-          textTransform: "uppercase",
-          color: "var(--label-secondary)",
+          padding: "0.875rem 1rem 0.375rem",
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
         }}
       >
-        {title}
+        {onBack && (
+          <button
+            onClick={onBack}
+            aria-label="Back"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "1.125rem",
+              height: "1.125rem",
+              borderRadius: "999px",
+              color: "var(--label-secondary)",
+              transform: "rotate(90deg)",
+            }}
+          >
+            <Chevron size={9} />
+          </button>
+        )}
+        <span
+          className="hig-caption-2"
+          style={{
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            color: "var(--label-secondary)",
+          }}
+        >
+          {title}
+        </span>
       </div>
       <div style={{ paddingBottom: "0.25rem" }}>
-        {options.map((o) => (
-          <MenuRow key={o.id} label={o.label} selected={o.id === selectedId} onClick={() => onPick(o)} />
+        {groups.map((g, gi) => (
+          <Fragment key={`${g.name ?? "default"}-${gi}`}>
+            {g.name && (
+              <div
+                className="hig-caption-2"
+                style={{
+                  padding: "0.625rem 1rem 0.25rem",
+                  color: "var(--label-tertiary)",
+                  textTransform: "uppercase",
+                  fontWeight: 600,
+                  letterSpacing: "0.04em",
+                }}
+              >
+                {g.name}
+              </div>
+            )}
+            {g.items.map((o) => (
+              <MenuRow
+                key={o.kind}
+                label={o.label}
+                description={o.description}
+                selected={o.kind === selectedKind}
+                onClick={() => onPick(o)}
+              />
+            ))}
+          </Fragment>
         ))}
       </div>
     </div>

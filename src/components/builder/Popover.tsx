@@ -5,12 +5,14 @@ import { createPortal } from "react-dom";
 
 type Align = "center" | "start" | "end";
 
+const VIEWPORT_MARGIN = 12;
+
 export function Popover({
   anchorRef,
   open,
   onClose,
   children,
-  width = 280,
+  width = 360,
   align = "center",
 }: {
   anchorRef: RefObject<HTMLButtonElement>;
@@ -20,20 +22,28 @@ export function Popover({
   width?: number;
   align?: Align;
 }) {
-  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const [pos, setPos] = useState({ top: 0, left: 0, effectiveWidth: width });
   const popRef = useRef<HTMLDivElement | null>(null);
 
   const reposition = () => {
     if (!anchorRef.current) return;
     const r = anchorRef.current.getBoundingClientRect();
+    const maxWidth =
+      typeof window !== "undefined"
+        ? Math.max(240, window.innerWidth - VIEWPORT_MARGIN * 2)
+        : width;
+    const effectiveWidth = Math.min(width, maxWidth);
     const raw =
       align === "start"
         ? r.left
         : align === "end"
-        ? r.right - width
-        : r.left + r.width / 2 - width / 2;
-    const left = Math.max(12, Math.min(window.innerWidth - width - 12, raw));
-    setPos({ top: r.bottom + 8, left });
+        ? r.right - effectiveWidth
+        : r.left + r.width / 2 - effectiveWidth / 2;
+    const left = Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(window.innerWidth - effectiveWidth - VIEWPORT_MARGIN, raw),
+    );
+    setPos({ top: r.bottom + 8, left, effectiveWidth });
   };
 
   useLayoutEffect(() => {
@@ -74,8 +84,6 @@ export function Popover({
   }, [open, onClose, anchorRef]);
 
   if (!open || typeof document === "undefined") return null;
-  // Portal to body so position:fixed isn't trapped by a transformed ancestor
-  // (e.g. the top-center nav wrapper using translateX(-50%)).
   return createPortal(
     <div
       ref={popRef}
@@ -84,13 +92,13 @@ export function Popover({
         position: "fixed",
         top: pos.top,
         left: pos.left,
-        width,
+        width: pos.effectiveWidth,
         zIndex: 100,
         background: "var(--material-popover)",
         backdropFilter: "saturate(180%) blur(50px)",
         WebkitBackdropFilter: "saturate(180%) blur(50px)",
         border: "0.5px solid var(--separator)",
-        borderRadius: "0.75rem",
+        borderRadius: "0.875rem",
         boxShadow: "var(--shadow-popover)",
         overflow: "hidden",
       }}

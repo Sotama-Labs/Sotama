@@ -1,22 +1,16 @@
 "use client";
 
-import { fetchPrices, MINTS } from "@/lib/jupiter";
-import { usePolling } from "./usePolling";
+import { SOL_USD_FEED_ID } from "@/lib/oracles";
+import { usePythPrice } from "./usePythPrice";
 
-const POLL_MS = 15_000;
-
+/** Live SOL/USD price via Pyth Hermes. Same shape as the legacy hook. */
 export function useSolPrice({ enabled = true }: { enabled?: boolean } = {}): {
   price: number | null;
   error: string | null;
 } {
-  const { data, error } = usePolling<number>({
-    intervalMs: POLL_MS,
-    enabled,
-    abortable: true,
-    fn: async (signal) => {
-      const prices = await fetchPrices([MINTS.SOL], signal);
-      return prices[MINTS.SOL]?.usdPrice ?? null;
-    },
-  });
-  return { price: data, error };
+  const { price, status } = usePythPrice(enabled ? SOL_USD_FEED_ID : null);
+  return {
+    price,
+    error: status === "error" ? "Pyth Hermes unreachable" : null,
+  };
 }

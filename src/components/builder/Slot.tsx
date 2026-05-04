@@ -1,10 +1,10 @@
 "use client";
 
-import { forwardRef, useState } from "react";
+import { forwardRef, useState, type ReactNode } from "react";
 import { Chevron } from "../icons";
 
 type Props = {
-  value: string | null;
+  content: ReactNode;
   placeholder: string;
   active: boolean;
   hasValue: boolean;
@@ -12,7 +12,7 @@ type Props = {
 };
 
 export const Slot = forwardRef<HTMLButtonElement, Props>(function Slot(
-  { value, placeholder, active, hasValue, onClick },
+  { content, placeholder, active, hasValue, onClick },
   ref,
 ) {
   const [hover, setHover] = useState(false);
@@ -44,9 +44,12 @@ export const Slot = forwardRef<HTMLButtonElement, Props>(function Slot(
         transition:
           "background 180ms cubic-bezier(0.32,0.72,0,1), box-shadow 180ms cubic-bezier(0.32,0.72,0,1), color 160ms",
         whiteSpace: "nowrap",
+        maxWidth: "100%",
       }}
     >
-      <span>{hasValue ? value : placeholder}</span>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem", whiteSpace: "nowrap" }}>
+        {hasValue ? content : placeholder}
+      </span>
       <Chevron size={9} dir={active ? "up" : "down"} />
     </button>
   );

@@ -16,6 +16,12 @@ import { ActiveStrategiesPage } from "@/components/ActiveStrategiesPage";
 import { DepositSheet } from "@/components/DepositSheet";
 import { hexToRgba } from "@/lib/format";
 import { Plus } from "@/components/icons";
+import {
+  loadAutomations,
+  makeAutomation,
+  saveAutomations,
+} from "@/lib/automations";
+import { deleteAutomation, submitAutomation } from "@/lib/keeper";
 
 type View = "compose" | "active";
 
@@ -35,11 +41,16 @@ export default function Page() {
   const isMobile = useIsMobile();
 
   useEffect(() => {
+    setAutomations(loadAutomations());
     setView(initialView());
     const onHash = () => setView(initialView());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  useEffect(() => {
+    saveAutomations(automations);
+  }, [automations]);
 
   useEffect(() => {
     const wanted = view === "active" ? "#active" : "#compose";
@@ -69,30 +80,42 @@ export default function Page() {
 
   const handleSave = (data: BuilderResult) => setPendingDeposit(data);
 
-  const handleDepositConfirm = () => {
+  const handleDepositConfirm = async () => {
     const data = pendingDeposit;
     if (!data) return;
+
+    const id = editingId ?? undefined;
+    const auto = makeAutomation(
+      data.triggers,
+      data.actions,
+      data.triggerOperators,
+      data.actionOperators,
+      {
+        id,
+        running: true,
+        runs: editingId ? undefined : 0,
+        lastCheck: "just now",
+      },
+    );
+
+    try {
+      await submitAutomation(auto);
+    } catch (e) {
+      const err = e as Error;
+      setToast(`Submit failed: ${err.message}`);
+      setPendingDeposit(null);
+      return;
+    }
+
     if (editingId) {
       setAutomations((prev) =>
-        prev.map((a) =>
-          a.id === editingId
-            ? { ...a, ...data, lastCheck: "just now" }
-            : a,
-        ),
+        prev.map((a) => (a.id === editingId ? auto : a)),
       );
       setEditingId(null);
       setToast("Automation updated");
     } else {
-      const newA: Automation = {
-        id: `a_${Date.now()}`,
-        triggers: data.triggers,
-        actions: data.actions,
-        running: true,
-        runs: 0,
-        lastCheck: "just now",
-      };
-      setAutomations((prev) => [newA, ...prev]);
-      setToast("Saved · running (read-only demo)");
+      setAutomations((prev) => [auto, ...prev]);
+      setToast("Saved · pending keeper");
     }
     setPendingDeposit(null);
     setShowBuilder(false);
@@ -101,8 +124,13 @@ export default function Page() {
   const handleDepositCancel = () => setPendingDeposit(null);
   const handleToggle = (id: string) =>
     setAutomations((prev) => prev.map((a) => (a.id === id ? { ...a, running: !a.running } : a)));
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     setAutomations((prev) => prev.filter((a) => a.id !== id));
+    try {
+      await deleteAutomation(id);
+    } catch {
+      // local removal succeeded; backend will reconcile
+    }
     setToast("Automation deleted");
   };
   const handleNew = () => {
