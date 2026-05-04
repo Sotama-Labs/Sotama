@@ -52,7 +52,7 @@ export function WalletPill() {
           display: "flex",
           alignItems: "center",
           gap: "0.625rem",
-          padding: "0.4375rem 0.875rem 0.4375rem 0.625rem",
+          padding: "0.4375rem 0.875rem",
           background: "var(--material-chrome)",
           backdropFilter: "saturate(180%) blur(40px)",
           WebkitBackdropFilter: "saturate(180%) blur(40px)",
@@ -64,15 +64,6 @@ export function WalletPill() {
           fontFamily: "var(--hig-font)",
         }}
       >
-        <span
-          style={{
-            width: "0.625rem",
-            height: "0.625rem",
-            borderRadius: "999px",
-            background: "var(--label-tertiary)",
-            flexShrink: 0,
-          }}
-        />
         <span
           className="hig-footnote"
           style={{
