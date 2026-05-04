@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
+
+type Align = "center" | "start" | "end";
 
 export function Popover({
   anchorRef,
@@ -8,22 +11,48 @@ export function Popover({
   onClose,
   children,
   width = 280,
+  align = "center",
 }: {
   anchorRef: RefObject<HTMLButtonElement>;
   open: boolean;
   onClose: () => void;
   children: ReactNode;
   width?: number;
+  align?: Align;
 }) {
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const popRef = useRef<HTMLDivElement | null>(null);
 
-  useLayoutEffect(() => {
-    if (!open || !anchorRef.current) return;
+  const reposition = () => {
+    if (!anchorRef.current) return;
     const r = anchorRef.current.getBoundingClientRect();
-    const left = Math.max(12, Math.min(window.innerWidth - width - 12, r.left + r.width / 2 - width / 2));
+    const raw =
+      align === "start"
+        ? r.left
+        : align === "end"
+        ? r.right - width
+        : r.left + r.width / 2 - width / 2;
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, raw));
     setPos({ top: r.bottom + 8, left });
-  }, [open, anchorRef, width]);
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    reposition();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, anchorRef, width, align]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onChange = () => reposition();
+    window.addEventListener("resize", onChange);
+    window.addEventListener("scroll", onChange, true);
+    return () => {
+      window.removeEventListener("resize", onChange);
+      window.removeEventListener("scroll", onChange, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -44,8 +73,10 @@ export function Popover({
     };
   }, [open, onClose, anchorRef]);
 
-  if (!open) return null;
-  return (
+  if (!open || typeof document === "undefined") return null;
+  // Portal to body so position:fixed isn't trapped by a transformed ancestor
+  // (e.g. the top-center nav wrapper using translateX(-50%)).
+  return createPortal(
     <div
       ref={popRef}
       className="popover-anim"
@@ -65,6 +96,7 @@ export function Popover({
       }}
     >
       {children}
-    </div>
+    </div>,
+    document.body,
   );
 }

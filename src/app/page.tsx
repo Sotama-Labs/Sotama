@@ -7,6 +7,8 @@ import { BrandMark } from "@/components/BrandMark";
 import { WalletPill } from "@/components/WalletPill";
 import { AppearanceToggle } from "@/components/AppearanceToggle";
 import { SegmentedNav } from "@/components/SegmentedNav";
+import { CompactNav } from "@/components/CompactNav";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { Toast } from "@/components/Toast";
 import { ConditionalBuilder, type BuilderResult } from "@/components/builder/ConditionalBuilder";
 import { SavedList } from "@/components/SavedList";
@@ -30,6 +32,7 @@ export default function Page() {
   const [showBuilder, setShowBuilder] = useState(true);
   const [pendingDeposit, setPendingDeposit] = useState<BuilderResult | null>(null);
   const [view, setView] = useState<View>("compose");
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     setView(initialView());
@@ -131,14 +134,25 @@ export default function Page() {
       </div>
 
       <div style={{ position: "fixed", top: "1rem", left: "50%", transform: "translateX(-50%)", zIndex: 5 }}>
-        <SegmentedNav<View>
-          value={view}
-          onChange={setView}
-          options={[
-            { value: "compose", label: "Compose" },
-            { value: "active", label: "Active Strategies" },
-          ]}
-        />
+        {isMobile ? (
+          <CompactNav<View>
+            value={view}
+            onChange={setView}
+            options={[
+              { value: "compose", label: "Compose" },
+              { value: "active", label: "Active" },
+            ]}
+          />
+        ) : (
+          <SegmentedNav<View>
+            value={view}
+            onChange={setView}
+            options={[
+              { value: "compose", label: "Compose" },
+              { value: "active", label: "Active Strategies" },
+            ]}
+          />
+        )}
       </div>
 
       <main

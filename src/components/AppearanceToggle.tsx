@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Tweaks } from "@/lib/types";
 import { resolveAppearance } from "@/hooks/useTweaks";
 import { Moon, Sun } from "./icons";
@@ -15,7 +15,11 @@ export function AppearanceToggle({
   onChange: (next: Appearance) => void;
 }) {
   const [hover, setHover] = useState(false);
-  const isDark = resolveAppearance(appearance) === "dark";
+  // resolveAppearance reads window.matchMedia, which differs between SSR and client.
+  // Defer the system-aware resolution until after mount to keep first paint stable.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const isDark = mounted && resolveAppearance(appearance) === "dark";
   const next: Appearance = isDark ? "light" : "dark";
   const label = isDark ? "Switch to Light mode" : "Switch to Dark mode";
 
