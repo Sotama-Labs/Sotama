@@ -23,6 +23,12 @@ import {
   findTriggerMeta,
 } from "@/lib/catalog";
 import { freezeActions, freezeTriggers } from "@/lib/automations";
+import {
+  COMING_SOON_LABEL,
+  isActionSupported,
+  isTriggerCategorySupported,
+  isTriggerSupported,
+} from "@/lib/support";
 import { Fragment } from "react";
 import { Check } from "../icons";
 import { Popover } from "./Popover";
@@ -207,6 +213,7 @@ export function ConditionalBuilder({
     setActions((prev) => prev.map((a, i) => (i === idx ? next : a)));
 
   const pickTriggerKind = (idx: number, kind: TriggerKind) => {
+    if (!isTriggerSupported(kind)) return;
     const meta = findTriggerMeta(kind);
     if (!meta) return;
     const empty = meta.empty();
@@ -220,8 +227,13 @@ export function ConditionalBuilder({
   };
 
   const pickTriggerCategory = (idx: number, category: TriggerCategoryMeta) => {
-    if (category.kinds.length === 1) {
-      pickTriggerKind(idx, category.kinds[0].kind);
+    if (!isTriggerCategorySupported(category)) return;
+    const supportedKinds = category.kinds.filter((k) => isTriggerSupported(k.kind));
+    // If only one supported kind exists in this category (regardless of how
+    // many disabled siblings sit next to it), skip the sub-list and jump
+    // straight to its editor.
+    if (supportedKinds.length === 1) {
+      pickTriggerKind(idx, supportedKinds[0].kind);
       return;
     }
     setBrowsingCategory(category);
@@ -243,6 +255,7 @@ export function ConditionalBuilder({
   };
 
   const pickActionKind = (idx: number, kind: ActionKind) => {
+    if (!isActionSupported(kind)) return;
     const meta = findActionMeta(kind);
     if (!meta) return;
     setActions((prev) => prev.map((a, i) => (i === idx ? meta.empty() : a)));
@@ -425,9 +438,15 @@ export function ConditionalBuilder({
         body = (
           <PopoverList
             title={browsingCategory.label}
-            options={browsingCategory.kinds}
+            options={browsingCategory.kinds.map((k) => ({
+              kind: k.kind,
+              label: k.label,
+              description: k.description,
+              disabled: !isTriggerSupported(k.kind),
+              disabledReason: COMING_SOON_LABEL,
+            }))}
             selectedKind={cur?.kind ?? null}
-            onPick={(o) => pickTriggerKind(open.index, o.kind)}
+            onPick={(o) => pickTriggerKind(open.index, o.kind as TriggerKind)}
             onBack={() => setBrowsingCategory(null)}
           />
         );
@@ -443,6 +462,8 @@ export function ConditionalBuilder({
               kind: c.id,
               label: c.label,
               description: c.description,
+              disabled: !isTriggerCategorySupported(c),
+              disabledReason: COMING_SOON_LABEL,
             }))}
             selectedKind={currentCategoryId}
             onPick={(o) => {
@@ -467,7 +488,13 @@ export function ConditionalBuilder({
       body = (
         <PopoverList
           title="Do this"
-          options={availableActions}
+          options={availableActions.map((a) => ({
+            kind: a.kind,
+            label: a.label,
+            description: a.description,
+            disabled: !isActionSupported(a.kind),
+            disabledReason: COMING_SOON_LABEL,
+          }))}
           selectedKind={actions[open.index]?.kind ?? null}
           onPick={(o) => pickActionKind(open.index, o.kind as ActionKind)}
         />

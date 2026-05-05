@@ -7,9 +7,19 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "lint": "next lint"
+    "lint": "next lint",
+    "anchor:build": "anchor build && pnpm anchor:sync-idl",
+    "anchor:sync-idl": "mkdir -p src/lib/idl && cp target/idl/sotama_automations.json src/lib/idl/ && cp target/types/sotama_automations.ts src/lib/idl/sotama_automations.ts",
+    "anchor:test": "anchor test",
+    "anchor:test:skip-build": "anchor test --skip-build",
+    "anchor:deploy:devnet": "anchor deploy --provider.cluster devnet",
+    "anchor:initialize:devnet": "ANCHOR_PROVIDER_URL=${ANCHOR_PROVIDER_URL:-https://api.devnet.solana.com} ANCHOR_WALLET=$HOME/.config/solana/id.json ts-node --compilerOptions '{\"target\":\"es2022\",\"module\":\"commonjs\",\"esModuleInterop\":true,\"resolveJsonModule\":true,\"strict\":false,\"skipLibCheck\":true}' migrations/initialize.ts",
+    "anchor:e2e:devnet": "ANCHOR_PROVIDER_URL=${ANCHOR_PROVIDER_URL:-https://api.devnet.solana.com} ANCHOR_WALLET=$HOME/.config/solana/id.json ts-node --compilerOptions '{\"target\":\"es2022\",\"module\":\"commonjs\",\"esModuleInterop\":true,\"resolveJsonModule\":true,\"strict\":false,\"skipLibCheck\":true}' migrations/e2e-test.ts",
+    "keeper:build": "cargo build --release --manifest-path keeper/Cargo.toml",
+    "keeper:run": "cd keeper && cargo run --release"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
     "@solana/kit": "^2.1.0",
     "@solana/wallet-adapter-base": "^0.9.27",
     "@solana/wallet-adapter-react": "^0.15.39",
@@ -22,11 +32,18 @@
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^22.10.5",
     "@types/react": "18.3.18",
     "@types/react-dom": "18.3.5",
+    "chai": "^4.5.0",
     "eslint": "^9.18.0",
     "eslint-config-next": "15.1.6",
+    "mocha": "^10.8.2",
+    "ts-mocha": "^11.1.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.7.3"
   }
 }

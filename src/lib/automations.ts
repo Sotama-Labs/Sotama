@@ -95,7 +95,21 @@ export function makeAutomation(
   actions: Action[],
   triggerOperators: TriggerOperator[],
   actionOperators: ActionOperator[],
-  overrides: Partial<Pick<Automation, "id" | "running" | "runs" | "lastCheck" | "createdAt">> = {},
+  overrides: Partial<
+    Pick<
+      Automation,
+      | "id"
+      | "running"
+      | "runs"
+      | "lastCheck"
+      | "createdAt"
+      | "pubkey"
+      | "signature"
+      | "nonce"
+      | "executedAt"
+      | "closedAt"
+    >
+  > = {},
 ): Automation {
   const now = new Date().toISOString();
   return {
@@ -117,5 +131,10 @@ export function makeAutomation(
     runs: overrides.runs ?? 0,
     lastCheck: overrides.lastCheck ?? "just now",
     createdAt: overrides.createdAt ?? now,
+    pubkey: overrides.pubkey,
+    signature: overrides.signature,
+    nonce: overrides.nonce,
+    executedAt: overrides.executedAt,
+    closedAt: overrides.closedAt,
   };
 }

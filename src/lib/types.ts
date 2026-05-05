@@ -211,7 +211,39 @@ export type Automation = {
   runs: number;
   lastCheck: string;
   createdAt: string;
+  /** On-chain Automation PDA (base58). Present for funded automations;
+   *  absent for drafts that never reached `create_automation`. */
+  pubkey?: string;
+  /** Signature of the `create_automation` tx that funded this automation. */
+  signature?: string;
+  /** On-chain nonce assigned by the program at create time. Useful for
+   *  re-deriving the PDA without re-fetching the account. */
+  nonce?: string;
+  /** ISO timestamp when on-chain `executed` was first observed as true.
+   *  Set by `useOnChainAutomationSync`. Single-shot — once set, the
+   *  automation is in its terminal "Completed" state. */
+  executedAt?: string;
+  /** ISO timestamp when the on-chain account was first observed missing
+   *  (i.e., owner closed it). Mutually exclusive with `executedAt` in
+   *  practice. */
+  closedAt?: string;
 };
+
+/** True iff the automation reached its terminal Completed state on chain. */
+export function isCompleted(a: Automation): boolean {
+  return !!a.executedAt;
+}
+
+/** True iff the on-chain account was closed (manual refund). */
+export function isClosed(a: Automation): boolean {
+  return !!a.closedAt;
+}
+
+/** Drafts (no pubkey), Completed, and Closed automations should not show
+ *  the live "Running" affordance — toggle, pulse-dot, etc. */
+export function isTerminal(a: Automation): boolean {
+  return isCompleted(a) || isClosed(a);
+}
 
 export type Execution = {
   id: string;

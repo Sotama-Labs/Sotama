@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "helius@claude-plugins-official": true
+  }
+}

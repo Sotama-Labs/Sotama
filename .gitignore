@@ -12,3 +12,19 @@ README.md
 marketing-video
 /claude-session.jsonl
 /skills-lock.json
+
+# Anchor / Solana
+target/
+.anchor/
+test-ledger/
+
+# Keeper
+keeper/target/
+keeper/keeper-keypair.json
+keeper/.env
+
+# Program deploy keypair (regenerable, but keep local)
+*.so
+/.claude/2026-05-05-on-chain-mvp.md
+/keeper/Cargo.lock
+/Cargo.lock

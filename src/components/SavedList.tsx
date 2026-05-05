@@ -2,13 +2,14 @@
 
 import { Fragment, useState } from "react";
 import type { Automation, Action, Trigger } from "@/lib/types";
+import { isClosed, isCompleted, isTerminal } from "@/lib/types";
 import {
   renderActionSentence,
   renderTriggerSentence,
   shouldParenthesizeAction,
   shouldParenthesizeTrigger,
 } from "./builder/SentenceRenderer";
-import { Plus } from "./icons";
+import { Check, Plus } from "./icons";
 
 function AutomationRow({
   a,
@@ -59,6 +60,27 @@ function AutomationRow({
       );
     });
 
+  const completed = isCompleted(a);
+  const closed = isClosed(a);
+  const terminal = isTerminal(a);
+
+  // Status copy + colors
+  const dotColor = completed
+    ? "var(--accent)"
+    : closed
+    ? "var(--label-quaternary)"
+    : a.running
+    ? "var(--green)"
+    : "var(--label-quaternary)";
+
+  const statusLine = completed
+    ? `Completed${a.executedAt ? ` · fired ${formatTimeAgo(a.executedAt)}` : ""}`
+    : closed
+    ? `Closed${a.closedAt ? ` · refunded ${formatTimeAgo(a.closedAt)}` : ""}`
+    : a.running
+    ? `Running · last checked ${a.lastCheck}`
+    : "Paused";
+
   return (
     <div
       onMouseEnter={() => setHover(true)}
@@ -71,18 +93,38 @@ function AutomationRow({
         borderBottom: isLast ? "none" : "0.5px solid var(--separator)",
         background: hover ? "var(--fill-4)" : "transparent",
         transition: "background 80ms",
+        opacity: terminal ? 0.78 : 1,
       }}
     >
-      <span
-        className={a.running ? "pulse-dot" : ""}
-        style={{
-          width: "0.5rem",
-          height: "0.5rem",
-          borderRadius: "0.25rem",
-          background: a.running ? "var(--green)" : "var(--label-quaternary)",
-          flexShrink: 0,
-        }}
-      />
+      {completed ? (
+        <span
+          aria-label="Completed"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: "0.875rem",
+            height: "0.875rem",
+            borderRadius: "999px",
+            background: "var(--accent)",
+            color: "white",
+            flexShrink: 0,
+          }}
+        >
+          <Check size={9} />
+        </span>
+      ) : (
+        <span
+          className={a.running && !terminal ? "pulse-dot" : ""}
+          style={{
+            width: "0.5rem",
+            height: "0.5rem",
+            borderRadius: "0.25rem",
+            background: dotColor,
+            flexShrink: 0,
+          }}
+        />
+      )}
       <div style={{ minWidth: 0, flex: 1 }}>
         <div
           className="hig-subheadline"
@@ -93,6 +135,7 @@ function AutomationRow({
             flexWrap: "wrap",
             alignItems: "center",
             gap: "0.25rem",
+            textDecoration: terminal ? "none" : undefined,
           }}
         >
           <span style={{ color: "var(--label-secondary)" }}>If </span>
@@ -100,9 +143,24 @@ function AutomationRow({
           <span style={{ color: "var(--label-secondary)" }}> then </span>
           {renderActions(a.actions)}
         </div>
-        <div className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.125rem" }}>
-          {a.running ? `Running · last checked ${a.lastCheck}` : "Paused"}
-          {a.runs > 0 && ` · ${a.runs} ${a.runs === 1 ? "execution" : "executions"}`}
+        <div
+          className="hig-footnote"
+          style={{ color: "var(--label-secondary)", marginTop: "0.125rem", display: "flex", alignItems: "center", gap: "0.375rem", flexWrap: "wrap" }}
+        >
+          <span>{statusLine}</span>
+          {a.runs > 0 && (
+            <span>· {a.runs} {a.runs === 1 ? "execution" : "executions"}</span>
+          )}
+          {a.pubkey && terminal && (
+            <a
+              href={`https://orbmarkets.io/address/${a.pubkey}`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "var(--accent)", textDecoration: "none" }}
+            >
+              View on chain →
+            </a>
+          )}
         </div>
       </div>
       <button
@@ -117,27 +175,45 @@ function AutomationRow({
           borderRadius: "0.375rem",
         }}
       >
-        Delete
+        {terminal ? "Remove" : "Delete"}
       </button>
       <button
-        onClick={() => onToggle(a.id)}
+        onClick={() => {
+          if (terminal) return;
+          onToggle(a.id);
+        }}
+        disabled={terminal}
+        aria-disabled={terminal || undefined}
         role="switch"
-        aria-checked={a.running}
+        aria-checked={a.running && !terminal}
+        title={
+          completed
+            ? "This automation has already fired and cannot be resumed (single-shot)."
+            : closed
+            ? "This automation was closed on chain."
+            : undefined
+        }
         style={{
           width: "3.1875rem",
           height: "1.9375rem",
-          background: a.running ? "var(--green)" : "var(--fill-1)",
+          background: terminal
+            ? "var(--fill-2)"
+            : a.running
+            ? "var(--green)"
+            : "var(--fill-1)",
           borderRadius: "999px",
           position: "relative",
           transition: "background 200ms",
           flexShrink: 0,
+          cursor: terminal ? "not-allowed" : "pointer",
+          opacity: terminal ? 0.5 : 1,
         }}
       >
         <span
           style={{
             position: "absolute",
             top: "0.125rem",
-            left: a.running ? 22 : 2,
+            left: a.running && !terminal ? 22 : 2,
             width: "1.6875rem",
             height: "1.6875rem",
             background: "white",
@@ -149,6 +225,21 @@ function AutomationRow({
       </button>
     </div>
   );
+}
+
+/** Compact relative time, e.g. "12s ago", "4m ago", "3h ago". */
+function formatTimeAgo(iso: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "just now";
+  const diff = Math.max(0, Date.now() - t);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
 }
 
 export function SavedList({

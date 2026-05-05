@@ -1,17 +1,32 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { Action } from "@/lib/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import type { Action, Trigger } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import type { BuilderResult } from "./builder/ConditionalBuilder";
+import {
+  buildCreateAutomationIx,
+  getProgram,
+  isProgramConfigured,
+  nextNonce,
+  parseAutomationCreated,
+  SOTAMA_PROGRAM_ID,
+} from "@/lib/program";
 import { Spinner } from "./icons";
 
 const SOLANA_NETWORK_FEE_SOL = 0.000045;
 const PROTOCOL_FEE_BPS = 20;
+const LAMPORTS_PER_SOL = 1_000_000_000;
 
-/** Sum the upfront-deposit amount per token across all actions.
- *  Restake / sell_for / transfer_reward use the staking reward as input,
- *  so they don't require an upfront deposit — they're omitted here. */
+export type OnChainResult = {
+  pubkey: string;
+  signature: string;
+  nonce: string;
+};
+
+/** Sum the upfront-deposit amount per token across all actions. */
 function depositByToken(actions: Action[]): { totals: Record<string, number>; staking: boolean } {
   const totals: Record<string, number> = {};
   let staking = false;
@@ -31,6 +46,38 @@ function depositByToken(actions: Action[]): { totals: Record<string, number>; st
     }
   }
   return { totals, staking };
+}
+
+type OnChainSpec = {
+  watchedAccount: PublicKey;
+  destination: PublicKey;
+  amountLamports: bigint;
+};
+
+/** MVP scope: only `account_transfer` (any token) → `transfer` (SOL).
+ *  Returns null when the rule shape is supported in the UI but not yet
+ *  on-chain — caller should save locally and skip the create_automation tx. */
+function getOnChainSpec(triggers: Trigger[], actions: Action[]): OnChainSpec | null {
+  if (triggers.length === 0 || actions.length === 0) return null;
+  const t = triggers[0];
+  const a = actions[0];
+  if (t.kind !== "account_transfer") return null;
+  if (a.kind !== "transfer") return null;
+  if (a.token.symbol !== "SOL") return null;
+  if (!t.account || !a.destination || !(a.amount > 0)) return null;
+  let watched: PublicKey;
+  let dest: PublicKey;
+  try {
+    watched = new PublicKey(t.account);
+    dest = new PublicKey(a.destination);
+  } catch {
+    return null;
+  }
+  return {
+    watchedAccount: watched,
+    destination: dest,
+    amountLamports: BigInt(Math.round(a.amount * LAMPORTS_PER_SOL)),
+  };
 }
 
 function FeeRow({ label, sub, value }: { label: string; sub: string; value: string }) {
@@ -71,14 +118,26 @@ export function DepositSheet({
   open: boolean;
   automation: BuilderResult | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  /** result is non-null when the tx landed on-chain; null when the rule is
+   *  saved locally only (e.g., a staking automation with no upfront deposit
+   *  or a not-yet-supported trigger/action combo). */
+  onConfirm: (result: OnChainResult | null) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const { connection } = useConnection();
+  const wallet = useWallet();
+
+  const onChainSpec = useMemo(
+    () => (automation ? getOnChainSpec(automation.triggers, automation.actions) : null),
+    [automation]
+  );
 
   useEffect(() => {
     if (!open) return;
     setConfirming(false);
+    setErrorMsg(null);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
     };
@@ -111,15 +170,50 @@ export function DepositSheet({
 
   const handleConfirm = async () => {
     setConfirming(true);
-    const settled = await new Promise<boolean>((resolve) => {
-      const id = window.setTimeout(() => resolve(true), 1100);
-      cleanupRef.current = () => {
-        window.clearTimeout(id);
-        resolve(false);
-      };
-    });
-    cleanupRef.current = null;
-    if (settled) onConfirm();
+    setErrorMsg(null);
+
+    // Path A — no on-chain deposit needed (staking-only or unsupported MVP rule).
+    if (!onChainSpec) {
+      // Brief delay so the spinner reads as "doing something."
+      await new Promise<void>((resolve) => {
+        const id = window.setTimeout(resolve, 250);
+        cleanupRef.current = () => window.clearTimeout(id);
+      });
+      cleanupRef.current = null;
+      onConfirm(null);
+      return;
+    }
+
+    // Path B — funded SOL automation. Build, sign, send `create_automation`.
+    if (!isProgramConfigured() || !SOTAMA_PROGRAM_ID) {
+      setErrorMsg("Sotama program ID is not configured. Run `pnpm anchor:deploy:devnet` and update .env.local.");
+      setConfirming(false);
+      return;
+    }
+    if (!wallet.connected || !wallet.publicKey) {
+      setErrorMsg("Connect a Solana wallet to fund this automation.");
+      setConfirming(false);
+      return;
+    }
+    if (!wallet.signTransaction) {
+      setErrorMsg("This wallet doesn't support signing.");
+      setConfirming(false);
+      return;
+    }
+
+    try {
+      const result = await sendCreateAutomation(
+        connection,
+        wallet as Parameters<typeof sendCreateAutomation>[1],
+        onChainSpec
+      );
+      onConfirm(result);
+    } catch (e) {
+      const err = e as Error;
+      console.error("create_automation failed", err);
+      setErrorMsg(err.message || "Transaction failed. Check console.");
+      setConfirming(false);
+    }
   };
 
   return (
@@ -159,7 +253,9 @@ export function DepositSheet({
           <div className="hig-subheadline" style={{ color: "var(--label-secondary)" }}>
             {tokens.length === 0
               ? "Funded by staking rewards. No upfront deposit needed."
-              : "Funds release when the trigger fires."}
+              : onChainSpec
+              ? "Funds release when the trigger fires."
+              : "Saved locally — keeper coverage for this rule shape lands in the next release."}
           </div>
         </div>
 
@@ -255,6 +351,25 @@ export function DepositSheet({
           )}
         </div>
 
+        {errorMsg && (
+          <div
+            style={{
+              margin: "0 1rem 0.75rem",
+              padding: "0.625rem 0.75rem",
+              borderRadius: "0.5rem",
+              background: "color-mix(in oklab, var(--accent) 8%, transparent)",
+              border: "0.5px solid var(--accent)",
+            }}
+          >
+            <div
+              className="hig-footnote"
+              style={{ color: "var(--label-primary)", textAlign: "center" }}
+            >
+              {errorMsg}
+            </div>
+          </div>
+        )}
+
         <div style={{ display: "flex", borderTop: "0.5px solid var(--separator)" }}>
           <button
             onClick={onCancel}
@@ -289,16 +404,80 @@ export function DepositSheet({
           >
             {confirming ? (
               <>
-                <Spinner /> Confirming…
+                <Spinner /> {onChainSpec ? "Signing…" : "Saving…"}
               </>
             ) : tokens.length === 0 ? (
               "Activate"
+            ) : onChainSpec ? (
+              "Deposit & Activate"
             ) : (
-              "Deposit"
+              "Save locally"
             )}
           </button>
         </div>
       </div>
     </div>
   );
+}
+
+/** Build, sign, send, confirm a `create_automation` tx and parse the
+ *  emitted Automation pubkey + nonce out of the logs. */
+async function sendCreateAutomation(
+  connection: Connection,
+  wallet: {
+    publicKey: PublicKey | null;
+    signTransaction: NonNullable<ReturnType<typeof useWallet>["signTransaction"]>;
+    sendTransaction?: ReturnType<typeof useWallet>["sendTransaction"];
+  },
+  spec: OnChainSpec
+): Promise<OnChainResult> {
+  if (!wallet.publicKey) throw new Error("wallet not connected");
+  // AnchorProvider expects a `Wallet` shape with .signAllTransactions; the
+  // wallet adapter exposes that in `useWallet().signAllTransactions`. Build a
+  // minimal Wallet shim so we can use Program.methods.
+  const adapterWallet = {
+    publicKey: wallet.publicKey,
+    signTransaction: wallet.signTransaction,
+    signAllTransactions: async <T extends { partialSign: (...s: unknown[]) => void }>(txs: T[]) =>
+      Promise.all(txs.map((t) => wallet.signTransaction(t as never))) as unknown as T[],
+    payer: undefined as never, // unused by Program when only building/signing client-side
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const program = getProgram(connection, adapterWallet as any);
+
+  const nonce = await nextNonce(program);
+  const { ix, automation } = await buildCreateAutomationIx({
+    program,
+    owner: wallet.publicKey,
+    watchedAccount: spec.watchedAccount,
+    destination: spec.destination,
+    amountLamports: spec.amountLamports,
+    nextNonce: nonce,
+  });
+
+  const { Transaction } = await import("@solana/web3.js");
+  const tx = new Transaction().add(ix);
+  tx.feePayer = wallet.publicKey;
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+
+  const signed = await wallet.signTransaction(tx);
+  const sig = await connection.sendRawTransaction(signed.serialize(), {
+    skipPreflight: false,
+    preflightCommitment: "confirmed",
+  });
+  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+
+  const txDetails = await connection.getTransaction(sig, {
+    maxSupportedTransactionVersion: 0,
+    commitment: "confirmed",
+  });
+  const logs = txDetails?.meta?.logMessages ?? [];
+  const evt = parseAutomationCreated(program, logs);
+
+  return {
+    pubkey: evt?.pubkey ?? automation.toBase58(),
+    signature: sig,
+    nonce: evt?.nonce ?? nonce.toString(),
+  };
 }

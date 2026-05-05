@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { Automation, Execution } from "@/lib/types";
+import { isCompleted, isTerminal } from "@/lib/types";
 import { CANONICAL_MINTS } from "@/lib/tokens";
 import { fmt } from "@/lib/format";
 import { AutomationRow } from "./SavedList";
@@ -261,8 +262,15 @@ export function ActiveStrategiesPage({
   const items = isDemo ? SAMPLE_AUTOMATIONS : automations;
   const exec = isDemo ? SAMPLE_EXECUTIONS : [];
 
-  const running = useMemo(() => items.filter((a) => a.running), [items]);
-  const paused = useMemo(() => items.filter((a) => !a.running), [items]);
+  const running = useMemo(
+    () => items.filter((a) => a.running && !isTerminal(a)),
+    [items],
+  );
+  const completed = useMemo(() => items.filter((a) => isCompleted(a)), [items]);
+  const paused = useMemo(
+    () => items.filter((a) => !a.running && !isTerminal(a)),
+    [items],
+  );
   const toggle = isDemo ? NOOP : onToggle;
   const del = isDemo ? NOOP : onDelete;
 
@@ -320,6 +328,31 @@ export function ActiveStrategiesPage({
                 onToggle={toggle}
                 onDelete={del}
                 isLast={i === running.length - 1}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {completed.length > 0 && (
+        <section style={{ width: "100%", marginBottom: "1.5rem" }}>
+          <SectionHeader title="Completed" count={completed.length} />
+          <div
+            style={{
+              background: "var(--bg-system)",
+              border: "0.5px solid var(--separator)",
+              borderRadius: "var(--radius-card)",
+              boxShadow: "var(--shadow-1)",
+              overflow: "hidden",
+            }}
+          >
+            {completed.map((a, i) => (
+              <AutomationRow
+                key={a.id}
+                a={a}
+                onToggle={toggle}
+                onDelete={del}
+                isLast={i === completed.length - 1}
               />
             ))}
           </div>

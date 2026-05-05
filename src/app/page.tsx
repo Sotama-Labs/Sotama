@@ -11,17 +11,17 @@ import { CompactNav } from "@/components/CompactNav";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { Toast } from "@/components/Toast";
 import { ConditionalBuilder, type BuilderResult } from "@/components/builder/ConditionalBuilder";
-import { SavedList } from "@/components/SavedList";
 import { ActiveStrategiesPage } from "@/components/ActiveStrategiesPage";
-import { DepositSheet } from "@/components/DepositSheet";
+import { DepositSheet, type OnChainResult } from "@/components/DepositSheet";
 import { hexToRgba } from "@/lib/format";
-import { Plus } from "@/components/icons";
 import {
   loadAutomations,
   makeAutomation,
   saveAutomations,
 } from "@/lib/automations";
 import { deleteAutomation, submitAutomation } from "@/lib/keeper";
+import { useOnChainAutomationSync } from "@/hooks/useOnChainAutomationSync";
+import { isTerminal } from "@/lib/types";
 
 type View = "compose" | "active";
 
@@ -35,7 +35,9 @@ export default function Page() {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
-  const [showBuilder, setShowBuilder] = useState(true);
+  /** Bumped after each successful save so the ConditionalBuilder remounts
+   *  with a fresh blank draft instead of keeping the just-saved state. */
+  const [composeKey, setComposeKey] = useState(0);
   const [pendingDeposit, setPendingDeposit] = useState<BuilderResult | null>(null);
   const [view, setView] = useState<View>("compose");
   const isMobile = useIsMobile();
@@ -80,7 +82,7 @@ export default function Page() {
 
   const handleSave = (data: BuilderResult) => setPendingDeposit(data);
 
-  const handleDepositConfirm = async () => {
+  const handleDepositConfirm = async (result: OnChainResult | null) => {
     const data = pendingDeposit;
     if (!data) return;
 
@@ -95,6 +97,9 @@ export default function Page() {
         running: true,
         runs: editingId ? undefined : 0,
         lastCheck: "just now",
+        pubkey: result?.pubkey,
+        signature: result?.signature,
+        nonce: result?.nonce,
       },
     );
 
@@ -102,9 +107,8 @@ export default function Page() {
       await submitAutomation(auto);
     } catch (e) {
       const err = e as Error;
-      setToast(`Submit failed: ${err.message}`);
-      setPendingDeposit(null);
-      return;
+      // Sidecar API failure shouldn't undo a successful on-chain create.
+      console.warn("submitAutomation sidecar failed:", err.message);
     }
 
     if (editingId) {
@@ -112,18 +116,55 @@ export default function Page() {
         prev.map((a) => (a.id === editingId ? auto : a)),
       );
       setEditingId(null);
-      setToast("Automation updated");
+      setToast(result ? "Automation funded on-chain" : "Automation updated");
     } else {
       setAutomations((prev) => [auto, ...prev]);
-      setToast("Saved · pending keeper");
+      setToast(
+        result
+          ? `Funded · ${result.signature.slice(0, 8)}…`
+          : "Saved · pending on-chain support",
+      );
     }
     setPendingDeposit(null);
-    setShowBuilder(false);
+    setComposeKey((n) => n + 1);
   };
 
   const handleDepositCancel = () => setPendingDeposit(null);
   const handleToggle = (id: string) =>
-    setAutomations((prev) => prev.map((a) => (a.id === id ? { ...a, running: !a.running } : a)));
+    setAutomations((prev) =>
+      prev.map((a) => {
+        if (a.id !== id) return a;
+        // Terminal automations (executed or closed on-chain) cannot resume.
+        if (isTerminal(a)) return a;
+        return { ...a, running: !a.running };
+      }),
+    );
+
+  const patchAutomation = (id: string, partial: Partial<Automation>) =>
+    setAutomations((prev) => {
+      let mutated = false;
+      const next = prev.map((a) => {
+        if (a.id !== id) return a;
+        // Only patch if at least one field actually changes — keeps React
+        // from re-rendering the whole list every poll.
+        const merged = { ...a, ...partial };
+        if (
+          merged.executedAt !== a.executedAt ||
+          merged.closedAt !== a.closedAt ||
+          merged.running !== a.running ||
+          merged.runs !== a.runs ||
+          merged.lastCheck !== a.lastCheck
+        ) {
+          mutated = true;
+          return merged;
+        }
+        return a;
+      });
+      return mutated ? next : prev;
+    });
+
+  useOnChainAutomationSync(automations, patchAutomation);
+
   const handleDelete = async (id: string) => {
     setAutomations((prev) => prev.filter((a) => a.id !== id));
     try {
@@ -132,10 +173,6 @@ export default function Page() {
       // local removal succeeded; backend will reconcile
     }
     setToast("Automation deleted");
-  };
-  const handleNew = () => {
-    setEditingId(null);
-    setShowBuilder(true);
   };
 
   const editingInitial = useMemo(() => {
@@ -209,37 +246,15 @@ export default function Page() {
               <p className="hig-body" style={{ color: "var(--label-secondary)", margin: 0, textWrap: "pretty" }}>
                 {automations.length === 0
                   ? "Compose a single-sentence rule. Sotama runs it on auto mode."
-                  : showBuilder
-                  ? "Tap a slot to choose."
-                  : "Toggle to pause. Tap New to add another."}
+                  : "Tap a slot to choose. Saved automations live in Active Strategies."}
               </p>
             </header>
 
-            {showBuilder && (
-              <ConditionalBuilder key={editingId ?? "new"} initialState={editingInitial} onSave={handleSave} />
-            )}
-
-            {!showBuilder && (
-              <button
-                onClick={handleNew}
-                className="fade-slide hig-headline"
-                style={{
-                  padding: "0.625rem 1.125rem",
-                  background: "var(--accent)",
-                  color: "white",
-                  borderRadius: "0.625rem",
-                  fontWeight: 600,
-                  boxShadow: "var(--shadow-1)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "0.375rem",
-                }}
-              >
-                <Plus size={12} /> New automation
-              </button>
-            )}
-
-            <SavedList items={automations} onToggle={handleToggle} onDelete={handleDelete} onNew={handleNew} />
+            <ConditionalBuilder
+              key={editingId ?? `new-${composeKey}`}
+              initialState={editingInitial}
+              onSave={handleSave}
+            />
           </>
         ) : (
           <ActiveStrategiesPage

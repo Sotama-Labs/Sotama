@@ -9,6 +9,10 @@ export type GroupableOption = {
   label: string;
   group?: string;
   description?: string;
+  /** When true, render greyed-out and ignore clicks. */
+  disabled?: boolean;
+  /** Optional hover/caption text shown when `disabled` is true. */
+  disabledReason?: string;
 };
 
 export function PopoverList<T extends GroupableOption>({
@@ -99,6 +103,8 @@ export function PopoverList<T extends GroupableOption>({
                 description={o.description}
                 selected={o.kind === selectedKind}
                 onClick={() => onPick(o)}
+                disabled={o.disabled}
+                disabledReason={o.disabledReason}
               />
             ))}
           </Fragment>
