@@ -23,17 +23,16 @@ import {
   findTriggerMeta,
 } from "@/lib/catalog";
 import { freezeActions, freezeTriggers } from "@/lib/automations";
+import { Fragment } from "react";
 import { Check } from "../icons";
 import { Popover } from "./Popover";
 import { PopoverList } from "./PopoverList";
-import { SlotWithRemove } from "./SlotWithRemove";
+import { Slot } from "./Slot";
 import { AddButton } from "./AddButton";
 import { OperatorChip } from "./OperatorChip";
 import {
   renderActionContent,
   renderTriggerContent,
-  shouldParenthesizeAction,
-  shouldParenthesizeTrigger,
 } from "./SentenceRenderer";
 
 const TRIGGER_OPERATOR_OPTIONS = ["and", "or"] as const;
@@ -488,96 +487,181 @@ export function ConditionalBuilder({
     );
   })();
 
+  // ── Cluster computation for trigger OR-grouping ───────────────────
+  // When the trigger chain contains at least one OR, the slots split into
+  // AND-clusters: contiguous spans separated by ORs. Each AND-cluster gets
+  // a translucent material wrapper so the OR's operands read as visually
+  // distinct groups (AND binds tighter than OR, like × binds tighter than +).
+  const computeTriggerClusters = () => {
+    const clusters: { slotIndices: number[]; internalAndOpIndices: number[] }[] = [];
+    const interClusterOrIndices: number[] = [];
+    let cur: { slotIndices: number[]; internalAndOpIndices: number[] } = {
+      slotIndices: [0],
+      internalAndOpIndices: [],
+    };
+    for (let i = 0; i < triggerOps.length; i++) {
+      if (triggerOps[i] === "or") {
+        clusters.push(cur);
+        interClusterOrIndices.push(i);
+        cur = { slotIndices: [i + 1], internalAndOpIndices: [] };
+      } else {
+        cur.slotIndices.push(i + 1);
+        cur.internalAndOpIndices.push(i);
+      }
+    }
+    clusters.push(cur);
+    return { clusters, interClusterOrIndices };
+  };
+
+  // Cluster wrapper for AND-grouped triggers inside an OR. Outline-only —
+  // no background fill so the slot pills inside read in the *exact* same
+  // color as a standalone slot outside the cluster. The hairline inset
+  // border carries the entire visual grouping.
+  const clusterBoxStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    flexWrap: "wrap" as const,
+    rowGap: "0.625rem",
+    columnGap: "0.5rem",
+    padding: "0.3125rem 0.5rem",
+    background: "transparent",
+    borderRadius: "0.75rem",
+    boxShadow: "inset 0 0 0 0.5px var(--separator)",
+  };
+
   const renderChain = (
     side: Side,
     slots: Array<DraftTrigger | DraftAction>,
     leadWord: string,
     placeholder: string,
-  ) => (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        flexWrap: "wrap",
-        rowGap: "0.625rem",
-        columnGap: "0.5rem",
-      }}
-    >
-      <span style={{ color: "var(--label-secondary)", fontWeight: 400 }}>{leadWord}</span>
-      {slots.map((slot, i) => {
-        const isOpen = !!(open && open.side === side && open.index === i);
-        const isReady = side === "if"
-          ? triggerReady(slot as DraftTrigger)
-          : actionReady(slot as DraftAction);
-        const content = side === "if"
-          ? renderTriggerContent(slot as DraftTrigger)
-          : renderActionContent(slot as DraftAction);
+  ) => {
+    const renderSlotAt = (i: number) => {
+      const slot = slots[i];
+      const isOpen = !!(open && open.side === side && open.index === i);
+      const isReady = side === "if"
+        ? triggerReady(slot as DraftTrigger)
+        : actionReady(slot as DraftAction);
+      const content = side === "if"
+        ? renderTriggerContent(slot as DraftTrigger)
+        : renderActionContent(slot as DraftAction);
+      return (
+        <Slot
+          ref={refFor(side, i)}
+          active={isOpen}
+          hasValue={isReady}
+          content={content}
+          placeholder={placeholder}
+          onClick={() => (isOpen ? closePopover() : openSlot(side, i))}
+          onRemove={slots.length > 1 ? () => removeSlot(side, i) : undefined}
+        />
+      );
+    };
 
-        const opBefore: TriggerOperator | ActionOperator | null = i > 0
-          ? side === "if"
-            ? triggerOps[i - 1] ?? DEFAULT_TRIGGER_OP
-            : actionOps[i - 1] ?? DEFAULT_ACTION_OP
-          : null;
-        const paren = side === "if"
-          ? shouldParenthesizeTrigger(opBefore as TriggerOperator | null)
-          : shouldParenthesizeAction(opBefore as ActionOperator | null);
+    const renderOpChipAt = (opIndex: number) =>
+      side === "if" ? (
+        <OperatorChip
+          value={(triggerOps[opIndex] ?? DEFAULT_TRIGGER_OP) as TriggerOperator}
+          options={TRIGGER_OPERATOR_OPTIONS}
+          onChange={(next) => setTriggerOp(opIndex, next)}
+        />
+      ) : (
+        <OperatorChip
+          value={(actionOps[opIndex] ?? DEFAULT_ACTION_OP) as ActionOperator}
+          options={ACTION_OPERATOR_OPTIONS}
+          onChange={(next) => setActionOp(opIndex, next)}
+        />
+      );
 
+    const shouldClusterTriggers = side === "if" && triggerOps.includes("or");
+
+    // Build the chain as { first, rest } so the lead word ("If" / "then") can
+    // be visually bound to the first chunk via a single sub-flex-item — that
+    // way when the chain wraps, the lead word travels with its content
+    // instead of stranding alone above the next line.
+    const renderCluster = (
+      cluster: { slotIndices: number[]; internalAndOpIndices: number[] },
+      keyPrefix: string,
+    ) => {
+      if (cluster.slotIndices.length === 1) {
+        return renderSlotAt(cluster.slotIndices[0]);
+      }
+      return (
+        <span style={clusterBoxStyle}>
+          {cluster.slotIndices.map((slotIdx, k) => (
+            <Fragment key={`${keyPrefix}-${slotIdx}`}>
+              {k > 0 && renderOpChipAt(cluster.internalAndOpIndices[k - 1])}
+              {renderSlotAt(slotIdx)}
+            </Fragment>
+          ))}
+        </span>
+      );
+    };
+
+    let first: React.ReactNode = null;
+    let rest: React.ReactNode[] = [];
+    if (shouldClusterTriggers) {
+      const { clusters, interClusterOrIndices } = computeTriggerClusters();
+      first = renderCluster(clusters[0], `${side}-c0`);
+      rest = clusters.slice(1).map((c, idx) => {
+        const ci = idx + 1;
         return (
-          <span
-            key={`${side}-${i}`}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              flexWrap: "wrap",
-            }}
-          >
-            {i > 0 && opBefore && (
-              side === "if" ? (
-                <OperatorChip
-                  value={opBefore as TriggerOperator}
-                  options={TRIGGER_OPERATOR_OPTIONS}
-                  onChange={(next) => setTriggerOp(i - 1, next)}
-                />
-              ) : (
-                <OperatorChip
-                  value={opBefore as ActionOperator}
-                  options={ACTION_OPERATOR_OPTIONS}
-                  onChange={(next) => setActionOp(i - 1, next)}
-                />
-              )
-            )}
-            {paren && (
-              <span style={{ color: "var(--label-secondary)", fontWeight: 400 }}>(</span>
-            )}
-            <SlotWithRemove
-              slotRef={refFor(side, i)}
-              active={isOpen}
-              hasValue={isReady}
-              content={content}
-              placeholder={placeholder}
-              showRemove={slots.length > 1}
-              onClick={() => (isOpen ? closePopover() : openSlot(side, i))}
-              onRemove={() => removeSlot(side, i)}
-            />
-            {paren && (
-              <span style={{ color: "var(--label-secondary)", fontWeight: 400 }}>)</span>
-            )}
-          </span>
+          <Fragment key={`${side}-c-${ci}`}>
+            {renderOpChipAt(interClusterOrIndices[ci - 1])}
+            {renderCluster(c, `${side}-c${ci}`)}
+          </Fragment>
         );
-      })}
-      <AddButton
-        onClick={() => (side === "if" ? addTrigger() : addAction())}
-        aria-label={`Add another ${side === "if" ? "trigger" : "action"}`}
-      />
-    </span>
-  );
+      });
+    } else {
+      first = slots.length > 0 ? renderSlotAt(0) : null;
+      rest = slots.slice(1).map((_, idx) => {
+        const i = idx + 1;
+        return (
+          <Fragment key={`${side}-s-${i}`}>
+            {renderOpChipAt(i - 1)}
+            {renderSlotAt(i)}
+          </Fragment>
+        );
+      });
+    }
+
+    return (
+      <span
+        style={{
+          display: "flex",
+          alignItems: "center",
+          flexWrap: "wrap",
+          rowGap: "0.625rem",
+          columnGap: "0.5rem",
+        }}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            columnGap: "0.5rem",
+          }}
+        >
+          <span style={{ color: "var(--label-secondary)", fontWeight: 400 }}>
+            {leadWord}
+          </span>
+          {first}
+        </span>
+
+        {rest}
+
+        <AddButton
+          onClick={() => (side === "if" ? addTrigger() : addAction())}
+          aria-label={`Add another ${side === "if" ? "trigger" : "action"}`}
+        />
+      </span>
+    );
+  };
 
   return (
     <div
       style={{
         width: "100%",
-        maxWidth: "45rem",
+        maxWidth: "48rem",
         background: "var(--bg-system)",
         border: "0.5px solid var(--separator)",
         borderRadius: "var(--radius-card)",
@@ -589,17 +673,15 @@ export function ConditionalBuilder({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: "0.75rem",
+          gap: "1.75rem",
           justifyContent: "space-between",
         }}
       >
         <div
           style={{
             display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            rowGap: "0.75rem",
-            columnGap: "0.625rem",
+            flexDirection: "column",
+            gap: "0.875rem",
             flex: 1,
             minWidth: 0,
             fontFamily: "var(--hig-font-display)",
@@ -611,6 +693,14 @@ export function ConditionalBuilder({
           }}
         >
           {renderChain("if", triggers, "If", "choose a trigger")}
+          <div
+            aria-hidden
+            style={{
+              height: "0.5px",
+              background: "var(--separator)",
+              opacity: 0.6,
+            }}
+          />
           {renderChain("then", actions, "then", "choose an action")}
         </div>
         <button

@@ -29,6 +29,7 @@ export function TokenPill({
         whiteSpace: "nowrap",
       }}
     >
+      <span style={{ fontWeight: 500 }}>{token.symbol}</span>
       <span
         aria-hidden
         style={{
@@ -61,7 +62,6 @@ export function TokenPill({
           initial
         )}
       </span>
-      <span style={{ fontWeight: 500 }}>{token.symbol}</span>
     </span>
   );
 }

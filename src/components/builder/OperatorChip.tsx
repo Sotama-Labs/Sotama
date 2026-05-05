@@ -28,7 +28,10 @@ export function OperatorChip<T extends string>({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        padding: "0.125rem 0.5rem",
+        // No horizontal padding so the operator word's text-left-edge
+        // aligns with the "If"/"then" lead word on the previous line
+        // when the chain wraps. Hover background hugs the text.
+        padding: "0.125rem 0",
         borderRadius: "0.375rem",
         background: hover ? "var(--fill-3)" : "transparent",
         color: "var(--label-secondary)",
