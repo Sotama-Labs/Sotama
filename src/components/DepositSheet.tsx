@@ -1,24 +1,37 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
+import BN from "bn.js";
 import type { Action, Trigger } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import type { BuilderResult } from "./builder/ConditionalBuilder";
 import {
+  associatedTokenAddress,
   buildCreateAutomationIx,
+  buildCreateAutomationSplIx,
+  buildCreateAutomationStakeIx,
   getProgram,
   isProgramConfigured,
   nextNonce,
   parseAutomationCreated,
   SOTAMA_PROGRAM_ID,
+  SPL_TOKEN_PROGRAM_ID,
+  type OnChainActionSpec,
+  type OnChainTriggerSpec,
 } from "@/lib/program";
 import { Spinner } from "./icons";
 
 const SOLANA_NETWORK_FEE_SOL = 0.000045;
 const PROTOCOL_FEE_BPS = 20;
 const LAMPORTS_PER_SOL = 1_000_000_000;
+const SOL_MINT_STR = "So11111111111111111111111111111111111111112";
+/** Pyth's typical exponent for crypto/USD feeds. Stored at create time so
+ *  the keeper knows the threshold's scale; the program currently only
+ *  validates that expo ≤ 0 (BadPythExpo). */
+const DEFAULT_PYTH_EXPO = -8;
 
 export type OnChainResult = {
   pubkey: string;
@@ -48,36 +61,199 @@ function depositByToken(actions: Action[]): { totals: Record<string, number>; st
   return { totals, staking };
 }
 
-type OnChainSpec = {
-  watchedAccount: PublicKey;
-  destination: PublicKey;
-  amountLamports: bigint;
-};
+/** Convert a Pyth feed ID (32-byte hex) to a PublicKey-shaped wrapper.
+ *  This is purely a wire-format choice — Pyth pull-oracle feed IDs aren't
+ *  Solana accounts, but using a 32-byte field on-chain matches the
+ *  Anchor enum schema exactly. The keeper converts back to hex for
+ *  Hermes lookups. */
+function feedIdToPubkey(feedId: string): PublicKey {
+  const hex = feedId.startsWith("0x") ? feedId.slice(2) : feedId;
+  return new PublicKey(Buffer.from(hex, "hex"));
+}
 
-/** MVP scope: only `account_transfer` (any token) → `transfer` (SOL).
- *  Returns null when the rule shape is supported in the UI but not yet
- *  on-chain — caller should save locally and skip the create_automation tx. */
-function getOnChainSpec(triggers: Trigger[], actions: Action[]): OnChainSpec | null {
-  if (triggers.length === 0 || actions.length === 0) return null;
-  const t = triggers[0];
-  const a = actions[0];
-  if (t.kind !== "account_transfer") return null;
-  if (a.kind !== "transfer") return null;
-  if (a.token.symbol !== "SOL") return null;
-  if (!t.account || !a.destination || !(a.amount > 0)) return null;
-  let watched: PublicKey;
-  let dest: PublicKey;
+function tryPubkey(addr: string | null | undefined): PublicKey | null {
+  if (!addr) return null;
   try {
-    watched = new PublicKey(t.account);
-    dest = new PublicKey(a.destination);
+    return new PublicKey(addr);
   } catch {
     return null;
   }
-  return {
-    watchedAccount: watched,
-    destination: dest,
-    amountLamports: BigInt(Math.round(a.amount * LAMPORTS_PER_SOL)),
-  };
+}
+
+type SolSpec = {
+  kind: "sol";
+  trigger: OnChainTriggerSpec;
+  action: { transferSol: { destination: PublicKey; amount: BN } };
+  amountLamports: bigint;
+};
+type SplSpec = {
+  kind: "spl";
+  trigger: OnChainTriggerSpec;
+  action: { transferSpl: { destination: PublicKey; mint: PublicKey; amount: BN } };
+  destination: PublicKey;
+  mint: PublicKey;
+  ownerAta: PublicKey;
+  destinationAta: PublicKey;
+};
+type StakeSpec = {
+  kind: "stake";
+  trigger: OnChainTriggerSpec;
+  action: OnChainActionSpec;
+};
+type OnChainSpec = SolSpec | SplSpec | StakeSpec;
+
+/** Map UI Trigger → on-chain TriggerSpec. Returns null if shape isn't yet
+ *  supported on-chain (or has invalid fields). */
+function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
+  switch (t.kind) {
+    case "account_transfer": {
+      const account = tryPubkey(t.account);
+      if (!account) return null;
+      const mint =
+        t.token.mode === "specific" && t.token.value
+          ? tryPubkey(t.token.value.mint)
+          : null;
+      return { accountActivity: { account, mint, kind: 0 } };
+    }
+    case "account_swap": {
+      const account = tryPubkey(t.account);
+      if (!account) return null;
+      const mint =
+        t.token.mode === "specific" && t.token.value
+          ? tryPubkey(t.token.value.mint)
+          : null;
+      return { accountActivity: { account, mint, kind: 1 } };
+    }
+    case "token_price": {
+      if (t.oracle.kind !== "pyth") return null;
+      const feed = (() => {
+        try {
+          return feedIdToPubkey(t.oracle.feedId);
+        } catch {
+          return null;
+        }
+      })();
+      if (!feed) return null;
+      const comparator = t.comparator === "below" ? 0 : 1;
+      const expo = DEFAULT_PYTH_EXPO;
+      const scaled = Math.round(t.threshold * Math.pow(10, -expo));
+      const threshold = new BN(scaled);
+      return { tokenPrice: { feed, comparator, threshold, expo } };
+    }
+    case "staking_reward_amount": {
+      const stake = tryPubkey(t.stakeAccount);
+      if (!stake) return null;
+      const value = new BN(Math.round(t.threshold * LAMPORTS_PER_SOL));
+      return { stakingReward: { stakeAccount: stake, mode: 0, value } };
+    }
+    case "staking_reward_time": {
+      const stake = tryPubkey(t.stakeAccount);
+      if (!stake) return null;
+      const value = new BN(t.intervalDays * 86_400);
+      return { stakingReward: { stakeAccount: stake, mode: 1, value } };
+    }
+  }
+}
+
+/** Map UI Action → on-chain ActionSpec + ix routing kind. Returns null
+ *  for unsupported (Jupiter swap / sell_for). */
+function buildActionSpec(
+  owner: PublicKey,
+  a: Action
+): { kind: "sol" | "spl" | "stake"; spec: OnChainActionSpec } | null {
+  switch (a.kind) {
+    case "transfer": {
+      const destination = tryPubkey(a.destination);
+      if (!destination || !(a.amount > 0)) return null;
+      if (a.token.mint === SOL_MINT_STR) {
+        return {
+          kind: "sol",
+          spec: {
+            transferSol: {
+              destination,
+              amount: new BN(Math.round(a.amount * LAMPORTS_PER_SOL)),
+            },
+          },
+        };
+      }
+      const mint = tryPubkey(a.token.mint);
+      if (!mint) return null;
+      const baseUnits = Math.round(a.amount * Math.pow(10, a.token.decimals));
+      return {
+        kind: "spl",
+        spec: {
+          transferSpl: {
+            destination,
+            mint,
+            amount: new BN(baseUnits),
+          },
+        },
+      };
+    }
+    case "swap":
+    case "sell_for":
+      return null;
+    case "restake": {
+      const stake = tryPubkey(a.stakeAccount);
+      const vote = tryPubkey(a.voteAccount);
+      if (!stake || !vote) return null;
+      return {
+        kind: "stake",
+        spec: { stakeRestake: { stakeAccount: stake, voteAccount: vote } },
+      };
+    }
+    case "transfer_reward": {
+      const stake = tryPubkey(a.stakeAccount);
+      const destination = tryPubkey(a.destination);
+      if (!stake || !destination) return null;
+      return {
+        kind: "stake",
+        spec: { stakeWithdrawReward: { stakeAccount: stake, destination } },
+      };
+    }
+  }
+  // exhaustiveness
+  return null;
+}
+
+/** Compose the first-trigger × first-action shape into an OnChainSpec. */
+function getOnChainSpec(
+  owner: PublicKey,
+  triggers: Trigger[],
+  actions: Action[]
+): OnChainSpec | null {
+  if (triggers.length === 0 || actions.length === 0) return null;
+  const trigger = buildTriggerSpec(triggers[0]);
+  if (!trigger) return null;
+  const action = buildActionSpec(owner, actions[0]);
+  if (!action) return null;
+  if (action.kind === "sol") {
+    const sol = action.spec as { transferSol: { destination: PublicKey; amount: BN } };
+    return {
+      kind: "sol",
+      trigger,
+      action: sol,
+      amountLamports: BigInt(sol.transferSol.amount.toString()),
+    };
+  }
+  if (action.kind === "spl") {
+    const spl = action.spec as {
+      transferSpl: { destination: PublicKey; mint: PublicKey; amount: BN };
+    };
+    return {
+      kind: "spl",
+      trigger,
+      action: spl,
+      destination: spl.transferSpl.destination,
+      mint: spl.transferSpl.mint,
+      ownerAta: associatedTokenAddress(owner, spl.transferSpl.mint),
+      destinationAta: associatedTokenAddress(
+        spl.transferSpl.destination,
+        spl.transferSpl.mint
+      ),
+    };
+  }
+  return { kind: "stake", trigger, action: action.spec };
 }
 
 function FeeRow({ label, sub, value }: { label: string; sub: string; value: string }) {
@@ -119,8 +295,7 @@ export function DepositSheet({
   automation: BuilderResult | null;
   onCancel: () => void;
   /** result is non-null when the tx landed on-chain; null when the rule is
-   *  saved locally only (e.g., a staking automation with no upfront deposit
-   *  or a not-yet-supported trigger/action combo). */
+   *  saved locally only (e.g., a not-yet-supported trigger/action combo). */
   onConfirm: (result: OnChainResult | null) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -130,8 +305,11 @@ export function DepositSheet({
   const wallet = useWallet();
 
   const onChainSpec = useMemo(
-    () => (automation ? getOnChainSpec(automation.triggers, automation.actions) : null),
-    [automation]
+    () =>
+      automation && wallet.publicKey
+        ? getOnChainSpec(wallet.publicKey, automation.triggers, automation.actions)
+        : null,
+    [automation, wallet.publicKey]
   );
 
   useEffect(() => {
@@ -172,9 +350,7 @@ export function DepositSheet({
     setConfirming(true);
     setErrorMsg(null);
 
-    // Path A — no on-chain deposit needed (staking-only or unsupported MVP rule).
     if (!onChainSpec) {
-      // Brief delay so the spinner reads as "doing something."
       await new Promise<void>((resolve) => {
         const id = window.setTimeout(resolve, 250);
         cleanupRef.current = () => window.clearTimeout(id);
@@ -184,7 +360,6 @@ export function DepositSheet({
       return;
     }
 
-    // Path B — funded SOL automation. Build, sign, send `create_automation`.
     if (!isProgramConfigured() || !SOTAMA_PROGRAM_ID) {
       setErrorMsg("Sotama program ID is not configured. Run `pnpm anchor:deploy:devnet` and update .env.local.");
       setConfirming(false);
@@ -215,6 +390,13 @@ export function DepositSheet({
       setConfirming(false);
     }
   };
+
+  const summary =
+    tokens.length === 0
+      ? "Funded by staking rewards. No upfront deposit needed."
+      : onChainSpec
+      ? "Funds release when the trigger fires."
+      : "Saved locally — keeper coverage for this rule shape lands in the next release.";
 
   return (
     <div
@@ -251,11 +433,7 @@ export function DepositSheet({
             {tokens.length === 0 ? "Activate automation" : "Fund automation"}
           </div>
           <div className="hig-subheadline" style={{ color: "var(--label-secondary)" }}>
-            {tokens.length === 0
-              ? "Funded by staking rewards. No upfront deposit needed."
-              : onChainSpec
-              ? "Funds release when the trigger fires."
-              : "Saved locally — keeper coverage for this rule shape lands in the next release."}
+            {summary}
           </div>
         </div>
 
@@ -407,7 +585,7 @@ export function DepositSheet({
                 <Spinner /> {onChainSpec ? "Signing…" : "Saving…"}
               </>
             ) : tokens.length === 0 ? (
-              "Activate"
+              onChainSpec ? "Activate" : "Save locally"
             ) : onChainSpec ? (
               "Deposit & Activate"
             ) : (
@@ -420,8 +598,6 @@ export function DepositSheet({
   );
 }
 
-/** Build, sign, send, confirm a `create_automation` tx and parse the
- *  emitted Automation pubkey + nonce out of the logs. */
 async function sendCreateAutomation(
   connection: Connection,
   wallet: {
@@ -432,32 +608,74 @@ async function sendCreateAutomation(
   spec: OnChainSpec
 ): Promise<OnChainResult> {
   if (!wallet.publicKey) throw new Error("wallet not connected");
-  // AnchorProvider expects a `Wallet` shape with .signAllTransactions; the
-  // wallet adapter exposes that in `useWallet().signAllTransactions`. Build a
-  // minimal Wallet shim so we can use Program.methods.
   const adapterWallet = {
     publicKey: wallet.publicKey,
     signTransaction: wallet.signTransaction,
     signAllTransactions: async <T extends { partialSign: (...s: unknown[]) => void }>(txs: T[]) =>
       Promise.all(txs.map((t) => wallet.signTransaction(t as never))) as unknown as T[],
-    payer: undefined as never, // unused by Program when only building/signing client-side
+    payer: undefined as never,
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const program = getProgram(connection, adapterWallet as any);
-
+  const owner = wallet.publicKey;
   const nonce = await nextNonce(program);
-  const { ix, automation } = await buildCreateAutomationIx({
-    program,
-    owner: wallet.publicKey,
-    watchedAccount: spec.watchedAccount,
-    destination: spec.destination,
-    amountLamports: spec.amountLamports,
-    nextNonce: nonce,
-  });
 
-  const { Transaction } = await import("@solana/web3.js");
-  const tx = new Transaction().add(ix);
-  tx.feePayer = wallet.publicKey;
+  const tx = new Transaction();
+  let automation: PublicKey;
+
+  if (spec.kind === "sol") {
+    const built = await buildCreateAutomationIx({
+      program,
+      owner,
+      trigger: spec.trigger,
+      action: spec.action,
+      nextNonce: nonce,
+    });
+    tx.add(built.ix);
+    automation = built.automation;
+  } else if (spec.kind === "spl") {
+    // Pre-create the destination ATA (idempotent — no-ops if already exists)
+    // and the automation PDA's ATA. Both are paid by the owner.
+    const builtBefore = await buildCreateAutomationSplIx({
+      program,
+      owner,
+      trigger: spec.trigger,
+      action: spec.action,
+      nextNonce: nonce,
+    });
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        spec.destinationAta,
+        spec.destination,
+        spec.mint,
+        SPL_TOKEN_PROGRAM_ID
+      )
+    );
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        builtBefore.automationAta,
+        builtBefore.automation,
+        spec.mint,
+        SPL_TOKEN_PROGRAM_ID
+      )
+    );
+    tx.add(builtBefore.ix);
+    automation = builtBefore.automation;
+  } else {
+    const built = await buildCreateAutomationStakeIx({
+      program,
+      owner,
+      trigger: spec.trigger,
+      action: spec.action,
+      nextNonce: nonce,
+    });
+    tx.add(built.ix);
+    automation = built.automation;
+  }
+
+  tx.feePayer = owner;
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   tx.recentBlockhash = blockhash;
 
@@ -466,7 +684,10 @@ async function sendCreateAutomation(
     skipPreflight: false,
     preflightCommitment: "confirmed",
   });
-  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  await connection.confirmTransaction(
+    { signature: sig, blockhash, lastValidBlockHeight },
+    "confirmed"
+  );
 
   const txDetails = await connection.getTransaction(sig, {
     maxSupportedTransactionVersion: 0,

@@ -102,7 +102,9 @@ export function renderTriggerContent(t: DraftTrigger): ReactNode {
         <>
           {muted("every")}{" "}
           <span style={{ fontFeatureSettings: '"tnum"' }}>
-            {t.intervalDays != null ? `${t.intervalDays} days` : "…"}
+            {t.intervalDays != null
+              ? `${t.intervalDays} ${t.intervalDays === 1 ? "day" : "days"}`
+              : "…"}
           </span>{" "}
           {muted("of staking")}
         </>

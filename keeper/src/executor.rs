@@ -4,8 +4,13 @@ use serde_json::{json, Value};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::hash::Hash;
+use solana_sdk::instruction::Instruction;
+use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::rent::Rent;
 use solana_sdk::transaction::Transaction;
+use solana_stake_interface::state::StakeStateV2;
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,25 +18,20 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
-use crate::program::{build_execute_automation_ix, config_pda};
+use crate::program::{
+    associated_token_address, build_execute_automation_ix, build_execute_automation_spl_ix,
+    build_execute_restake_ix, build_execute_withdraw_reward_ix, config_pda,
+};
+use crate::signer::KeeperSigner;
+use crate::state::ActionSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
 const PRIORITY_FEE_DEFAULT_MICROLAMPORTS: u64 = 50_000;
-const COMPUTE_UNIT_LIMIT: u32 = 60_000;
+const COMPUTE_UNIT_LIMIT: u32 = 200_000;
 const RECENT_TRIGGER_CACHE_SIZE: usize = 4_096;
 
-/// Per-keeper-session deduplication state.
-///
-///   • `fired`           — automations we've already sent execute_automation
-///                         for (and either succeeded or got AlreadyExecuted).
-///                         Single-shot: once here, never re-attempt.
-///   • `recent_triggers` — bounded FIFO of (automation, triggering_sig) pairs.
-///                         Catches Helius transactionSubscribe re-delivering
-///                         the same notification across reconnects, shard
-///                         respawns, or commitment-level callbacks.
-///   • `in_flight`       — pubkeys with a send task currently running. Holds
-///                         the slot atomically across the spawn boundary so
-///                         two simultaneous triggers can't both claim it.
+/// Per-keeper-session deduplication state — see executor module docs in
+/// the v1 keeper (kept verbatim).
 struct Dedupe {
     fired: HashSet<Pubkey>,
     recent_triggers: HashSet<(Pubkey, String)>,
@@ -49,9 +49,6 @@ impl Dedupe {
         }
     }
 
-    /// Returns Some(reason) if this trigger should be skipped, or None to
-    /// proceed. On None, marks (pubkey, sig) as seen and adds pubkey to
-    /// in_flight — the caller MUST eventually call `release_*`.
     fn try_claim(&mut self, pubkey: Pubkey, sig: &str) -> Option<&'static str> {
         if self.fired.contains(&pubkey) {
             return Some("already fired this session");
@@ -96,8 +93,8 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
 
     while let Some(evt) = rx.recv().await {
         debug!(
-            watched = %evt.watched_account,
-            sig = %evt.triggering_signature,
+            source = evt.source,
+            correlation = %evt.correlation,
             matches = evt.matches.len(),
             "executor: trigger received"
         );
@@ -105,12 +102,12 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
             let pubkey = ctx.pubkey;
             let claim_result = {
                 let mut g = dedupe.lock().expect("dedupe lock");
-                g.try_claim(pubkey, &evt.triggering_signature)
+                g.try_claim(pubkey, &evt.correlation)
             };
             if let Some(reason) = claim_result {
                 debug!(
                     automation = %pubkey,
-                    sig = %evt.triggering_signature,
+                    correlation = %evt.correlation,
                     reason,
                     "executor: trigger skipped"
                 );
@@ -118,10 +115,10 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
             }
             let cfg = cfg.clone();
             let http = http.clone();
-            let triggering = evt.triggering_signature.clone();
+            let correlation = evt.correlation.clone();
             let dedupe = dedupe.clone();
             tokio::spawn(async move {
-                let result = execute_one(&cfg, &http, &config, &ctx, &triggering).await;
+                let result = execute_one(&cfg, &http, &config, &ctx).await;
                 match result {
                     Ok(sig) => {
                         dedupe
@@ -130,29 +127,37 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
                             .release_success(pubkey);
                         info!(
                             automation = %pubkey,
-                            triggering = %triggering,
+                            correlation = %correlation,
                             execute_sig = %sig,
-                            "executor: execute_automation sent"
+                            "executor: ix sent"
                         );
                     }
                     Err(e) => {
                         let msg = e.to_string();
                         let already_executed = msg.contains("AlreadyExecuted")
+                            || msg.contains("alreadyExecuted")
                             || msg.contains("0x1770");
-                        dedupe
-                            .lock()
-                            .expect("dedupe lock")
-                            .release_failure(pubkey, already_executed);
+                        let interval_not_elapsed = msg.contains("TimeIntervalNotElapsed")
+                            || msg.contains("timeIntervalNotElapsed");
+                        dedupe.lock().expect("dedupe lock").release_failure(
+                            pubkey,
+                            already_executed,
+                        );
                         if already_executed {
                             info!(
                                 automation = %pubkey,
                                 "executor: AlreadyExecuted (no-op, on-chain dedupe caught it)"
                             );
+                        } else if interval_not_elapsed {
+                            debug!(
+                                automation = %pubkey,
+                                "executor: time interval not elapsed yet — will retry next tick"
+                            );
                         } else {
                             warn!(
                                 automation = %pubkey,
                                 error = %msg,
-                                "executor: execute_automation failed (will retry on next trigger)"
+                                "executor: ix failed (will retry on next trigger)"
                             );
                         }
                     }
@@ -168,19 +173,11 @@ async fn execute_one(
     http: &reqwest::Client,
     config: &Pubkey,
     ctx: &AutomationCtx,
-    triggering_signature: &str,
 ) -> Result<String> {
     let rpc =
         RpcClient::new_with_commitment(cfg.rpc_url.clone(), CommitmentConfig::confirmed());
 
-    let exec_ix = build_execute_automation_ix(
-        &cfg.program_id,
-        &cfg.keeper_pubkey,
-        config,
-        &ctx.pubkey,
-        &ctx.destination,
-    );
-
+    let exec_ix = build_action_ix(&rpc, &cfg.program_id, &cfg.keeper_pubkey, config, ctx).await?;
     let blockhash = rpc.get_latest_blockhash().await?;
 
     let mut ixs = vec![
@@ -188,12 +185,8 @@ async fn execute_one(
         ComputeBudgetInstruction::set_compute_unit_price(PRIORITY_FEE_DEFAULT_MICROLAMPORTS),
         exec_ix,
     ];
-    let probe_tx = Transaction::new_signed_with_payer(
-        &ixs,
-        Some(&cfg.keeper_pubkey),
-        &[&cfg.keeper_keypair],
-        blockhash,
-    );
+    let probe_tx =
+        sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, blockhash).await?;
 
     let micro_lamports = match estimate_priority_fee(http, &cfg.rpc_url, &probe_tx).await {
         Ok(m) => m.max(1_000),
@@ -204,21 +197,113 @@ async fn execute_one(
     };
 
     ixs[1] = ComputeBudgetInstruction::set_compute_unit_price(micro_lamports);
-    let final_tx = Transaction::new_signed_with_payer(
-        &ixs,
-        Some(&cfg.keeper_pubkey),
-        &[&cfg.keeper_keypair],
-        blockhash,
-    );
+    let final_tx =
+        sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, blockhash).await?;
 
     debug!(
         automation = %ctx.pubkey,
+        action = ?ctx.action,
         priority_fee = micro_lamports,
-        triggering = %triggering_signature,
         "executor: sending tx via helius sender"
     );
 
     send_via_helius(http, &cfg.sender_url, &final_tx).await
+}
+
+/// Build, serialize, and sign a Transaction via the configured signer.
+/// Equivalent to `Transaction::new_signed_with_payer` but routes
+/// signing through `KeeperSigner` so prod can use Turnkey.
+async fn sign_tx(
+    signer: &dyn KeeperSigner,
+    payer: &Pubkey,
+    ixs: &[Instruction],
+    blockhash: Hash,
+) -> Result<Transaction> {
+    let message = Message::new_with_blockhash(ixs, Some(payer), &blockhash);
+    let mut tx = Transaction::new_unsigned(message);
+    let sig = signer.sign_message(&tx.message_data()).await?;
+    tx.signatures = vec![sig];
+    Ok(tx)
+}
+
+async fn build_action_ix(
+    rpc: &RpcClient,
+    program_id: &Pubkey,
+    keeper: &Pubkey,
+    config: &Pubkey,
+    ctx: &AutomationCtx,
+) -> Result<Instruction> {
+    match &ctx.action {
+        ActionSpec::TransferSol { destination, .. } => Ok(build_execute_automation_ix(
+            program_id,
+            keeper,
+            config,
+            &ctx.pubkey,
+            destination,
+        )),
+        ActionSpec::TransferSpl {
+            destination, mint, ..
+        } => {
+            let automation_ata = associated_token_address(&ctx.pubkey, mint);
+            let destination_ata = associated_token_address(destination, mint);
+            Ok(build_execute_automation_spl_ix(
+                program_id,
+                keeper,
+                config,
+                &ctx.pubkey,
+                mint,
+                &automation_ata,
+                &destination_ata,
+            ))
+        }
+        ActionSpec::StakeRestake {
+            stake_account,
+            vote_account,
+        } => Ok(build_execute_restake_ix(
+            program_id,
+            keeper,
+            config,
+            &ctx.pubkey,
+            stake_account,
+            vote_account,
+        )),
+        ActionSpec::StakeWithdrawReward {
+            stake_account,
+            destination,
+        } => {
+            let amount = compute_reward_lamports(rpc, stake_account).await?;
+            if amount == 0 {
+                return Err(anyhow!("withdraw_reward: stake account has no withdrawable reward"));
+            }
+            Ok(build_execute_withdraw_reward_ix(
+                program_id,
+                keeper,
+                config,
+                &ctx.pubkey,
+                stake_account,
+                destination,
+                amount,
+            ))
+        }
+    }
+}
+
+async fn compute_reward_lamports(rpc: &RpcClient, stake_account: &Pubkey) -> Result<u64> {
+    let info = rpc
+        .get_account(stake_account)
+        .await
+        .map_err(|e| anyhow!("fetch stake account: {e}"))?;
+    let lamports = info.lamports;
+    let rent_exempt = Rent::default().minimum_balance(info.data.len());
+    let stake_state: StakeStateV2 = bincode::deserialize(&info.data)
+        .map_err(|e| anyhow!("parse stake state: {e}"))?;
+    let delegation = match stake_state {
+        StakeStateV2::Stake(_, stake, _) => stake.delegation.stake,
+        _ => 0,
+    };
+    Ok(lamports
+        .saturating_sub(delegation)
+        .saturating_sub(rent_exempt))
 }
 
 async fn estimate_priority_fee(

@@ -8,6 +8,7 @@ pub mod instructions;
 pub mod state;
 
 use instructions::*;
+use state::{ActionSpec, TriggerSpec};
 
 #[program]
 pub mod sotama_automations {
@@ -27,15 +28,45 @@ pub mod sotama_automations {
 
     pub fn create_automation(
         ctx: Context<CreateAutomation>,
-        watched_account: Pubkey,
-        destination: Pubkey,
-        amount_lamports: u64,
+        trigger: TriggerSpec,
+        action: ActionSpec,
     ) -> Result<()> {
-        instructions::create_automation::handler(ctx, watched_account, destination, amount_lamports)
+        instructions::create_automation::handler(ctx, trigger, action)
+    }
+
+    pub fn create_automation_spl(
+        ctx: Context<CreateAutomationSpl>,
+        trigger: TriggerSpec,
+        action: ActionSpec,
+    ) -> Result<()> {
+        instructions::create_automation_spl::handler(ctx, trigger, action)
+    }
+
+    pub fn create_automation_stake(
+        ctx: Context<CreateAutomationStake>,
+        trigger: TriggerSpec,
+        action: ActionSpec,
+    ) -> Result<()> {
+        instructions::create_automation_stake::handler(ctx, trigger, action)
     }
 
     pub fn execute_automation(ctx: Context<ExecuteAutomation>) -> Result<()> {
         instructions::execute_automation::handler(ctx)
+    }
+
+    pub fn execute_automation_spl(ctx: Context<ExecuteAutomationSpl>) -> Result<()> {
+        instructions::execute_automation_spl::handler(ctx)
+    }
+
+    pub fn execute_restake(ctx: Context<ExecuteRestake>) -> Result<()> {
+        instructions::execute_restake::handler(ctx)
+    }
+
+    pub fn execute_withdraw_reward(
+        ctx: Context<ExecuteWithdrawReward>,
+        amount: u64,
+    ) -> Result<()> {
+        instructions::execute_withdraw_reward::handler(ctx, amount)
     }
 
     pub fn close_automation(ctx: Context<CloseAutomation>) -> Result<()> {

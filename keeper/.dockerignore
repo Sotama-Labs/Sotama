@@ -1,0 +1,14 @@
+# Build artifacts — let cargo cache rebuild inside the image.
+target/
+
+# Local secrets — must NEVER ship in the image.
+.env
+keeper-keypair.json
+*.pem
+
+# Editor cruft
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

@@ -2,6 +2,7 @@
 
 import type { DraftStakingRewardAmount } from "@/lib/types";
 import { AmountInput } from "../AmountInput";
+import { AddressInput } from "../AddressInput";
 import { EditorShell, FieldRow } from "../EditorShell";
 
 export function StakingRewardAmountEditor({
@@ -15,7 +16,8 @@ export function StakingRewardAmountEditor({
   onBack: () => void;
   onConfirm: () => void;
 }) {
-  const ready = draft.threshold != null && draft.threshold > 0;
+  const ready =
+    !!draft.stakeAccount && draft.threshold != null && draft.threshold > 0;
   return (
     <EditorShell
       title="Staking reward exceeds"
@@ -24,6 +26,13 @@ export function StakingRewardAmountEditor({
       onConfirm={onConfirm}
       ready={ready}
     >
+      <FieldRow label="Stake account">
+        <AddressInput
+          value={draft.stakeAccount}
+          onChange={(v) => onChange({ ...draft, stakeAccount: v })}
+          onCommit={ready ? onConfirm : undefined}
+        />
+      </FieldRow>
       <FieldRow label="Threshold (SOL)">
         <AmountInput
           value={draft.threshold}

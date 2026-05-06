@@ -16,36 +16,68 @@ use crate::program::automation_discriminator;
 use crate::state::Automation;
 use crate::types::AutomationCtx;
 
+/// Sub-classification of active automations by trigger kind. Each map's
+/// key is the off-chain monitor's "primary watch target" — the watched
+/// account for AccountActivity, the Pyth feed for TokenPrice, the stake
+/// account for StakingReward. Values are lists because multiple
+/// automations can share the same target.
 #[derive(Debug, Clone, Default)]
 pub struct WatchedSet {
     pub by_pubkey: HashMap<Pubkey, AutomationCtx>,
-    pub by_watched: HashMap<Pubkey, Vec<AutomationCtx>>,
+    pub account_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
+    pub price_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
+    pub stake_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
 }
 
 impl WatchedSet {
     pub fn from_index(items: Vec<AutomationCtx>) -> Self {
-        let mut by_pubkey = HashMap::with_capacity(items.len());
-        let mut by_watched: HashMap<Pubkey, Vec<AutomationCtx>> = HashMap::new();
+        let mut s = Self::default();
         for ctx in items {
-            by_watched
-                .entry(ctx.watched_account)
-                .or_default()
-                .push(ctx.clone());
-            by_pubkey.insert(ctx.pubkey, ctx);
+            s.by_pubkey.insert(ctx.pubkey, ctx.clone());
+            match &ctx.trigger {
+                crate::state::TriggerSpec::AccountActivity { account, .. } => {
+                    s.account_triggers.entry(*account).or_default().push(ctx);
+                }
+                crate::state::TriggerSpec::TokenPrice { feed, .. } => {
+                    s.price_triggers.entry(*feed).or_default().push(ctx);
+                }
+                crate::state::TriggerSpec::StakingReward { stake_account, .. } => {
+                    s.stake_triggers.entry(*stake_account).or_default().push(ctx);
+                }
+            }
         }
-        Self {
-            by_pubkey,
-            by_watched,
-        }
+        s
     }
 
-    pub fn watched_accounts(&self) -> Vec<Pubkey> {
-        self.by_watched.keys().copied().collect()
+    pub fn account_watch_keys(&self) -> Vec<Pubkey> {
+        self.account_triggers.keys().copied().collect()
     }
 
-    pub fn matches(&self, watched: &Pubkey) -> &[AutomationCtx] {
-        self.by_watched
+    pub fn price_feeds(&self) -> Vec<Pubkey> {
+        self.price_triggers.keys().copied().collect()
+    }
+
+    pub fn stake_accounts(&self) -> Vec<Pubkey> {
+        self.stake_triggers.keys().copied().collect()
+    }
+
+    pub fn account_matches(&self, watched: &Pubkey) -> &[AutomationCtx] {
+        self.account_triggers
             .get(watched)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn price_matches(&self, feed: &Pubkey) -> &[AutomationCtx] {
+        self.price_triggers
+            .get(feed)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn stake_matches(&self, stake_account: &Pubkey) -> &[AutomationCtx] {
+        self.stake_triggers
+            .get(stake_account)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -87,6 +119,9 @@ pub async fn run(cfg: Arc<KeeperConfig>, set_tx: watch::Sender<WatchedSet>) -> R
                             added = added.len(),
                             removed = removed.len(),
                             total = next_keys.len(),
+                            account_targets = new_set.account_triggers.len(),
+                            price_targets = new_set.price_triggers.len(),
+                            stake_targets = new_set.stake_triggers.len(),
                             "indexer: watched-set changed"
                         );
                         for p in &added {
@@ -142,9 +177,8 @@ async fn fetch_active(client: &RpcClient, program_id: &Pubkey) -> Result<Vec<Aut
                         pubkey,
                         owner: a.owner,
                         nonce: a.nonce,
-                        watched_account: a.watched_account,
-                        destination: a.destination,
-                        amount_lamports: a.amount_lamports,
+                        trigger: a.trigger,
+                        action: a.action,
                     });
                 }
             }

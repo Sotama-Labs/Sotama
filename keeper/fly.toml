@@ -1,0 +1,53 @@
+# sotama-keeper devnet worker.
+#
+# Worker app — no inbound HTTP service, single instance, always running.
+#
+# First-time setup:
+#     cd keeper
+#     fly launch --no-deploy --copy-config --name sotama-keeper-devnet
+#     fly secrets set \
+#         HELIUS_API_KEY=... \
+#         TURNKEY_API_PUBLIC_KEY=... \
+#         TURNKEY_API_PRIVATE_KEY=... \
+#         TURNKEY_ORGANIZATION_ID=... \
+#         TURNKEY_PRIVATE_KEY_ID=... \
+#         KEEPER_PUBKEY=...
+#     fly deploy
+#     fly scale count 1
+#     fly logs
+#
+# `KEEPER_PUBKEY` is the Solana ed25519 pubkey corresponding to the key
+# stored in Turnkey (`TURNKEY_PRIVATE_KEY_ID`). The keeper caches it at
+# startup so it doesn't need to round-trip to Turnkey for every tx.
+
+app = "sotama-keeper-devnet"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HELIUS_DEVNET_RPC = "https://devnet.helius-rpc.com"
+  HELIUS_DEVNET_WS = "wss://atlas-devnet.helius-rpc.com"
+  HELIUS_DEVNET_SENDER = "https://devnet.helius-rpc.com/?api-key=__APIKEY__"
+  PYTH_HERMES_URL = "https://hermes.pyth.network"
+  PROGRAM_ID = "2gp9bMBEVpQp6Lyyg13Bw6XF9S9saAcm9C4XQ69T8ZqQ"
+  RECONCILE_INTERVAL_SECS = "60"
+  PRICE_POLL_INTERVAL_SECS = "12"
+  STAKE_POLL_INTERVAL_SECS = "60"
+  SHARD_SIZE = "40"
+  RUST_LOG = "info,sotama_keeper=debug"
+
+# Single 512MB shared-cpu machine. Bump to performance-1x or 1gb if the
+# StakeStateV2 bincode parser starts lagging under load (Phase-1 v3
+# control flow + 1k+ active automations).
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Restart on crash; don't auto-stop (no inbound traffic to wake on).
+[deploy]
+  strategy = "immediate"
+
+[experimental]
+  auto_rollback = true

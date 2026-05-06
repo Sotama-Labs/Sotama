@@ -55,11 +55,16 @@ export type AccountSwapTrigger = {
 
 export type StakingRewardAmountTrigger = {
   kind: "staking_reward_amount";
+  /** Stake account being monitored. The owner must have authorized the
+   *  automation PDA as the stake account's withdraw and/or staker
+   *  authority before the action can fire on-chain. */
+  stakeAccount: string;
   threshold: number;
 };
 
 export type StakingRewardTimeTrigger = {
   kind: "staking_reward_time";
+  stakeAccount: string;
   intervalDays: number;
 };
 
@@ -90,6 +95,14 @@ export type SwapAction = {
 
 export type RestakeAction = {
   kind: "restake";
+  /** Stake account whose balance gets re-delegated. The PDA must be the
+   *  staker authority (set by the owner before activating). */
+  stakeAccount: string;
+  /** Vote account to delegate to. Re-delegating to the same vote account
+   *  the stake is already delegated to is the standard "compound rewards"
+   *  flow on Solana — `DelegateStake` re-stakes the full balance,
+   *  including accrued rewards. */
+  voteAccount: string;
 };
 
 export type SellForAction = {
@@ -98,9 +111,11 @@ export type SellForAction = {
 };
 
 /** Staking-only: route the reward to an external destination. Token + amount
- *  are implicit (the staking reward in SOL); the user only picks where it goes. */
+ *  are implicit (the staking reward in SOL); the user picks the stake account
+ *  to monitor and the destination wallet to receive the reward. */
 export type TransferRewardAction = {
   kind: "transfer_reward";
+  stakeAccount: string;
   destination: string;
 };
 
@@ -139,11 +154,13 @@ export type DraftAccountSwap = {
 
 export type DraftStakingRewardAmount = {
   kind: "staking_reward_amount";
+  stakeAccount: string | null;
   threshold: number | null;
 };
 
 export type DraftStakingRewardTime = {
   kind: "staking_reward_time";
+  stakeAccount: string | null;
   intervalDays: number | null;
 };
 
@@ -169,7 +186,11 @@ export type DraftSwap = {
   amount: number | null;
 };
 
-export type DraftRestake = { kind: "restake" };
+export type DraftRestake = {
+  kind: "restake";
+  stakeAccount: string | null;
+  voteAccount: string | null;
+};
 
 export type DraftSellFor = {
   kind: "sell_for";
@@ -178,6 +199,7 @@ export type DraftSellFor = {
 
 export type DraftTransferReward = {
   kind: "transfer_reward";
+  stakeAccount: string | null;
   destination: string | null;
 };
 
@@ -286,9 +308,17 @@ export function isTriggerComplete(draft: DraftTrigger): draft is Trigger {
           (draft.amount.value != null && draft.amount.value > 0))
       );
     case "staking_reward_amount":
-      return draft.threshold != null && draft.threshold > 0;
+      return (
+        !!draft.stakeAccount &&
+        draft.threshold != null &&
+        draft.threshold > 0
+      );
     case "staking_reward_time":
-      return draft.intervalDays != null && draft.intervalDays > 0;
+      return (
+        !!draft.stakeAccount &&
+        draft.intervalDays != null &&
+        draft.intervalDays > 0
+      );
   }
 }
 
@@ -311,11 +341,11 @@ export function isActionComplete(draft: DraftAction): draft is Action {
         draft.amount > 0
       );
     case "restake":
-      return true;
+      return !!draft.stakeAccount && !!draft.voteAccount;
     case "sell_for":
       return draft.outputToken != null;
     case "transfer_reward":
-      return !!draft.destination;
+      return !!draft.stakeAccount && !!draft.destination;
   }
 }
 

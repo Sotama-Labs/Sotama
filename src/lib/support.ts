@@ -20,18 +20,18 @@ import type { TriggerCategoryMeta } from "./catalog";
 
 export const SUPPORTED_TRIGGER_KINDS: Record<TriggerKind, boolean> = {
   account_transfer: true,             // wired ✓ — Helius transactionSubscribe + execute_automation
-  account_swap: false,                // future — needs on-chain swap detection
-  token_price: false,                 // future — needs on-chain Pyth/Switchboard read
-  staking_reward_amount: false,       // future — needs stake account inspection
-  staking_reward_time: false,         // future — needs cron-style scheduler
+  account_swap: true,                 // wired ✓ — Helius txSubscribe + DEX program filter
+  token_price: true,                  // wired ✓ — Pyth Hermes poll in keeper
+  staking_reward_amount: true,        // wired ✓ — keeper polls stake account, on-chain time-window for TIME mode
+  staking_reward_time: true,          // wired ✓ — same path as amount mode
 };
 
 export const SUPPORTED_ACTION_KINDS: Record<ActionKind, boolean> = {
-  transfer: true,                     // wired ✓ — SOL only (see DepositSheet.getOnChainSpec)
-  swap: false,                        // future — needs Jupiter CPI + SPL accounts
-  restake: false,                     // future — staking action set
-  sell_for: false,                    // future — staking + Jupiter CPI
-  transfer_reward: false,             // future — staking action set
+  transfer: true,                     // wired ✓ — SOL via execute_automation, SPL via execute_automation_spl
+  swap: false,                        // future — Jupiter mainnet only
+  restake: true,                      // wired ✓ — execute_restake (DelegateStake CPI)
+  sell_for: false,                    // future — Jupiter mainnet only
+  transfer_reward: true,              // wired ✓ — execute_withdraw_reward (Stake Withdraw CPI)
 };
 
 export function isTriggerSupported(kind: TriggerKind): boolean {

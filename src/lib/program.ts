@@ -25,8 +25,6 @@ import { CLUSTER, type Cluster } from "./rpc";
 
 export const SOTAMA_PROGRAM_ID_STR: string | null =
   process.env.NEXT_PUBLIC_SOTAMA_PROGRAM_ID ||
-  // Fallback to the IDL's declared address — handy for local dev when the
-  // env var isn't set yet.
   ((IDL as { address?: string }).address ?? null);
 
 export const SOTAMA_PROGRAM_ID: PublicKey | null = SOTAMA_PROGRAM_ID_STR
@@ -34,6 +32,14 @@ export const SOTAMA_PROGRAM_ID: PublicKey | null = SOTAMA_PROGRAM_ID_STR
   : null;
 
 export const PROGRAM_CLUSTER: Cluster = CLUSTER;
+
+/* SPL/stake/sysvar program addresses used by the v2 ix builders. */
+export const SPL_TOKEN_PROGRAM_ID = new PublicKey(
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+);
+export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+);
 
 export function isProgramConfigured(): boolean {
   return Boolean(SOTAMA_PROGRAM_ID);
@@ -56,8 +62,18 @@ export function automationPda(
   )[0];
 }
 
-/** Returns an AnchorProvider + Program bound to the given connection + wallet.
- *  Throws if the program ID isn't configured. */
+/** Off-curve ATA derivation. Used both for the automation PDA's holding
+ *  account (SPL transfer source) and for destination wallets. */
+export function associatedTokenAddress(
+  owner: PublicKey,
+  mint: PublicKey
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  )[0];
+}
+
 export function getProgram(
   connection: Connection,
   wallet: Wallet
@@ -66,24 +82,126 @@ export function getProgram(
     commitment: "confirmed",
     preflightCommitment: "confirmed",
   });
-  // Anchor 0.30+ pulls the address from the IDL's `address` field.
   return new Program<SotamaAutomations>(IDL as unknown as SotamaAutomations, provider);
 }
 
-/** Build an unsigned `create_automation` instruction. The frontend then
- *  wraps it in a Transaction and asks the wallet to sign+send. */
+/* ── TriggerSpec / ActionSpec constructors ──────────────────────────── */
+
+export type OnChainTriggerSpec =
+  | {
+      accountActivity: {
+        account: PublicKey;
+        mint: PublicKey | null;
+        kind: number;
+      };
+    }
+  | {
+      tokenPrice: {
+        feed: PublicKey;
+        comparator: number;
+        threshold: BN;
+        expo: number;
+      };
+    }
+  | {
+      stakingReward: {
+        stakeAccount: PublicKey;
+        mode: number;
+        value: BN;
+      };
+    };
+
+export type OnChainActionSpec =
+  | { transferSol: { destination: PublicKey; amount: BN } }
+  | {
+      transferSpl: {
+        destination: PublicKey;
+        mint: PublicKey;
+        amount: BN;
+      };
+    }
+  | {
+      stakeRestake: {
+        stakeAccount: PublicKey;
+        voteAccount: PublicKey;
+      };
+    }
+  | {
+      stakeWithdrawReward: {
+        stakeAccount: PublicKey;
+        destination: PublicKey;
+      };
+    };
+
+/* ── Instruction builders ───────────────────────────────────────────── */
+
 export async function buildCreateAutomationIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
-  watchedAccount: PublicKey;
-  destination: PublicKey;
-  amountLamports: bigint;
+  trigger: OnChainTriggerSpec;
+  action: OnChainActionSpec & { transferSol: { destination: PublicKey; amount: BN } };
   nextNonce: bigint;
 }): Promise<{ ix: TransactionInstruction; automation: PublicKey }> {
-  const { program, owner, watchedAccount, destination, amountLamports, nextNonce } = params;
+  const { program, owner, trigger, action, nextNonce } = params;
   const automation = automationPda(owner, nextNonce, program.programId);
   const ix = await program.methods
-    .createAutomation(watchedAccount, destination, new BN(amountLamports.toString()))
+    .createAutomation(trigger as never, action as never)
+    .accountsStrict({
+      owner,
+      config: configPda(program.programId),
+      automation,
+      systemProgram: new PublicKey("11111111111111111111111111111111"),
+    })
+    .instruction();
+  return { ix, automation };
+}
+
+export async function buildCreateAutomationSplIx(params: {
+  program: Program<SotamaAutomations>;
+  owner: PublicKey;
+  trigger: OnChainTriggerSpec;
+  action: OnChainActionSpec & {
+    transferSpl: { destination: PublicKey; mint: PublicKey; amount: BN };
+  };
+  nextNonce: bigint;
+}): Promise<{
+  ix: TransactionInstruction;
+  automation: PublicKey;
+  ownerAta: PublicKey;
+  automationAta: PublicKey;
+}> {
+  const { program, owner, trigger, action, nextNonce } = params;
+  const mint = action.transferSpl.mint;
+  const automation = automationPda(owner, nextNonce, program.programId);
+  const ownerAta = associatedTokenAddress(owner, mint);
+  const automationAta = associatedTokenAddress(automation, mint);
+  const ix = await program.methods
+    .createAutomationSpl(trigger as never, action as never)
+    .accountsStrict({
+      owner,
+      config: configPda(program.programId),
+      automation,
+      mint,
+      ownerAta,
+      automationAta,
+      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      systemProgram: new PublicKey("11111111111111111111111111111111"),
+    })
+    .instruction();
+  return { ix, automation, ownerAta, automationAta };
+}
+
+export async function buildCreateAutomationStakeIx(params: {
+  program: Program<SotamaAutomations>;
+  owner: PublicKey;
+  trigger: OnChainTriggerSpec;
+  action: OnChainActionSpec;
+  nextNonce: bigint;
+}): Promise<{ ix: TransactionInstruction; automation: PublicKey }> {
+  const { program, owner, trigger, action, nextNonce } = params;
+  const automation = automationPda(owner, nextNonce, program.programId);
+  const ix = await program.methods
+    .createAutomationStake(trigger as never, action as never)
     .accountsStrict({
       owner,
       config: configPda(program.programId),
@@ -106,21 +224,18 @@ export async function buildCloseAutomationIx(params: {
     .instruction();
 }
 
-/** Read on-chain Config (admin / keeper / paused / counter). */
 export async function fetchConfig(program: Program<SotamaAutomations>) {
   return program.account.config.fetch(configPda(program.programId));
 }
 
-/** Returns the next automation nonce by reading Config.automationCount. */
 export async function nextNonce(program: Program<SotamaAutomations>): Promise<bigint> {
   const cfg = await fetchConfig(program);
   return BigInt(cfg.automationCount.toString());
 }
 
 /** Parse `AutomationCreated` event from a confirmed transaction's logs.
- *  Returns the on-chain pubkey + nonce of the freshly created automation,
- *  or null if no event was emitted (which usually means the tx didn't
- *  actually create one). */
+ *  The v2 event is keyed on `pubkey` + `nonce` regardless of trigger
+ *  variant. */
 export function parseAutomationCreated(
   program: Program<SotamaAutomations>,
   logs: string[]

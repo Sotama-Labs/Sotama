@@ -1,0 +1,33 @@
+{
+  "//": "Turnkey policy template — paste into the Turnkey dashboard's policy editor for the keeper API user.",
+  "//": "This is the security boundary that turns 'keeper compromise = drained PDAs' into 'keeper compromise = annoyance'.",
+  "//": "Replace the program_id placeholder with the actual deployed Sotama program ID before saving.",
+  "//": "Verify discriminator hex strings against `target/idl/sotama_automations.json` after every program upgrade.",
+
+  "policyName": "sotama-keeper-execute-only",
+  "effect": "EFFECT_ALLOW",
+  "consensus": "approvers.any(user, user.tags.contains('keeper'))",
+  "condition": [
+    "activity.type == 'ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2'",
+    "activity.resource == 'PRIVATE_KEY'",
+    "activity.action == 'SIGN'",
+
+    "// Only sign txs whose first program-id is the Sotama program.",
+    "// Solana wire format: after the message header, the first instruction's",
+    "// program_id_index points into account_keys[0..]. The simplest robust",
+    "// check is on the serialized payload prefix containing the program id;",
+    "// Turnkey's policy DSL gets the raw payload as `activity.parameters.payload`.",
+    "activity.parameters.payload.contains('<HEX_OF_SOTAMA_PROGRAM_ID_BYTES>')",
+
+    "// Optional belt-and-suspenders: require the payload to also contain one",
+    "// of our four execute-instruction discriminators (8 bytes each, hex).",
+    "// Pull these from the IDL after every program build. Replace the four",
+    "// placeholders below with the actual `instructions[*].discriminator`",
+    "// values from target/idl/sotama_automations.json.",
+    "( activity.parameters.payload.contains('<EXECUTE_AUTOMATION_DISCRIMINATOR>')",
+    "  || activity.parameters.payload.contains('<EXECUTE_AUTOMATION_SPL_DISCRIMINATOR>')",
+    "  || activity.parameters.payload.contains('<EXECUTE_RESTAKE_DISCRIMINATOR>')",
+    "  || activity.parameters.payload.contains('<EXECUTE_WITHDRAW_REWARD_DISCRIMINATOR>')",
+    ")"
+  ]
+}

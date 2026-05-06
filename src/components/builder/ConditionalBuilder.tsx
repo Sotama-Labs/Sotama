@@ -400,7 +400,14 @@ export function ConditionalBuilder({
             />
           );
         case "restake":
-          return <RestakeEditor onBack={onBack} onConfirm={onConfirm} />;
+          return (
+            <RestakeEditor
+              draft={a}
+              onChange={(next) => updateActionAt(open.index, next)}
+              onBack={onBack}
+              onConfirm={onConfirm}
+            />
+          );
         case "sell_for":
           return (
             <SellForEditor

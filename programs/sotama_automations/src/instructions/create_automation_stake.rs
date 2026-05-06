@@ -1,18 +1,18 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{
-    ActionSpec, Automation, Config, TriggerSpec, MIN_AMOUNT_LAMPORTS,
-};
+use crate::state::{ActionSpec, Automation, Config, TriggerSpec};
 
-/// Create an automation whose action is `TransferSol`. The deposit is
-/// pulled from `owner` into the Automation PDA at create time and held
-/// there until either `execute_automation` (transfers it to destination)
-/// or `close_automation` (refunds the owner) is called.
+/// Create an automation whose action is `StakeRestake` or
+/// `StakeWithdrawReward`. No SOL or SPL deposit happens at create time —
+/// the value lives on the user's stake account, which the user must
+/// authorize separately so the automation PDA is its `staker`
+/// (`StakeRestake`) or `withdrawer` (`StakeWithdrawReward`).
+///
+/// The owner pays only Anchor's account rent for the Automation PDA.
 #[derive(Accounts)]
-pub struct CreateAutomation<'info> {
+pub struct CreateAutomationStake<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
@@ -40,15 +40,14 @@ pub struct CreateAutomation<'info> {
 }
 
 pub fn handler(
-    ctx: Context<CreateAutomation>,
+    ctx: Context<CreateAutomationStake>,
     trigger: TriggerSpec,
     action: ActionSpec,
 ) -> Result<()> {
-    let amount = match &action {
-        ActionSpec::TransferSol { amount, .. } => *amount,
+    match &action {
+        ActionSpec::StakeRestake { .. } | ActionSpec::StakeWithdrawReward { .. } => {}
         _ => return err!(SotamaError::ActionMismatch),
     };
-    require!(amount >= MIN_AMOUNT_LAMPORTS, SotamaError::DepositTooSmall);
     trigger.validate()?;
 
     let trigger_kind_byte = trigger.kind_byte();
@@ -67,17 +66,6 @@ pub fn handler(
     automation.created_at = now;
     automation.executed_at = 0;
     automation.bump = ctx.bumps.automation;
-
-    system_program::transfer(
-        CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            system_program::Transfer {
-                from: ctx.accounts.owner.to_account_info(),
-                to: automation.to_account_info(),
-            },
-        ),
-        amount,
-    )?;
 
     ctx.accounts.config.automation_count = nonce
         .checked_add(1)

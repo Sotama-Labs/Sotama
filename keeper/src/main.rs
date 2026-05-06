@@ -6,8 +6,11 @@ use tracing::{error, info};
 mod config;
 mod executor;
 mod indexer;
+mod price_watcher;
 mod program;
 mod shard;
+mod signer;
+mod stake_watcher;
 mod state;
 mod subscriber;
 mod types;
@@ -58,6 +61,28 @@ async fn main() -> Result<()> {
         })
     };
 
+    let price_handle = {
+        let cfg = cfg.clone();
+        let set_rx = set_rx.clone();
+        let trigger_tx = trigger_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = price_watcher::run(cfg, set_rx, trigger_tx).await {
+                error!(error = %e, "price_watcher task exited");
+            }
+        })
+    };
+
+    let stake_handle = {
+        let cfg = cfg.clone();
+        let set_rx = set_rx.clone();
+        let trigger_tx = trigger_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = stake_watcher::run(cfg, set_rx, trigger_tx).await {
+                error!(error = %e, "stake_watcher task exited");
+            }
+        })
+    };
+
     let executor_handle = {
         let cfg = cfg.clone();
         tokio::spawn(async move {
@@ -73,6 +98,8 @@ async fn main() -> Result<()> {
         }
         _ = indexer_handle => error!("indexer task ended unexpectedly"),
         _ = subscriber_handle => error!("subscriber task ended unexpectedly"),
+        _ = price_handle => error!("price_watcher task ended unexpectedly"),
+        _ = stake_handle => error!("stake_watcher task ended unexpectedly"),
         _ = executor_handle => error!("executor task ended unexpectedly"),
     }
 

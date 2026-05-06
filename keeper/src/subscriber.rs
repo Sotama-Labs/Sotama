@@ -15,6 +15,19 @@ use crate::indexer::WatchedSet;
 use crate::shard::{shards, Shard};
 use crate::types::TriggerEvent;
 
+const KNOWN_DEX_PROGRAM_IDS: &[&str] = &[
+    // Jupiter v6 — most devnet/mainnet swaps go through this
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+    // Orca whirlpools
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+    // Raydium AMM v4
+    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+    // Raydium CLMM
+    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+    // Meteora dynamic-amm
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
+];
+
 pub async fn run(
     cfg: Arc<KeeperConfig>,
     mut set_rx: watch::Receiver<WatchedSet>,
@@ -23,7 +36,6 @@ pub async fn run(
     let mut current: Vec<JoinHandle<()>> = Vec::new();
 
     loop {
-        // Snapshot the current set and respawn shards.
         let set = set_rx.borrow_and_update().clone();
         for h in current.drain(..) {
             h.abort();
@@ -31,11 +43,11 @@ pub async fn run(
         let shard_list = shards(&set, cfg.shard_size);
         info!(
             shards = shard_list.len(),
-            watched_total = set.watched_accounts().len(),
+            account_targets = set.account_triggers.len(),
             "subscriber: respawning shards"
         );
         if shard_list.is_empty() {
-            debug!("subscriber: no watched accounts; sleeping until set changes");
+            debug!("subscriber: no account triggers; sleeping until set changes");
         }
         for shard in shard_list {
             let cfg = cfg.clone();
@@ -46,7 +58,6 @@ pub async fn run(
             }));
         }
 
-        // Block until the indexer publishes a new set.
         if set_rx.changed().await.is_err() {
             warn!("subscriber: set channel closed; exiting");
             break;
@@ -133,13 +144,11 @@ async fn shard_loop(
             }
         };
 
-        // Subscription confirmation:
         if v.get("result").is_some() && v.get("method").is_none() {
             debug!(shard = shard.id, "shard: subscribed");
             continue;
         }
 
-        // Notification:
         if v.get("method").and_then(Value::as_str) != Some("transactionNotification") {
             continue;
         }
@@ -153,19 +162,38 @@ async fn shard_loop(
             debug!(shard = shard.id, "notification with no account keys");
             continue;
         }
+        let touches_dex = account_keys.iter().any(|k| {
+            let s = k.to_string();
+            KNOWN_DEX_PROGRAM_IDS.iter().any(|d| **d == s)
+        });
 
-        // Look up matches against the *current* set (it may have changed
-        // since we subscribed; the indexer always wins).
         let set = set_rx.borrow().clone();
         for ak in &account_keys {
-            let matches = set.matches(ak);
+            let matches = set.account_matches(ak);
             if matches.is_empty() {
                 continue;
             }
+            // Filter swap-mode triggers to txs that touch a known DEX —
+            // a transfer-only tx shouldn't fire a "swaps" trigger.
+            let filtered: Vec<_> = matches
+                .iter()
+                .filter(|m| {
+                    if let crate::state::TriggerSpec::AccountActivity { kind, .. } = &m.trigger {
+                        if *kind == 1 {
+                            return touches_dex;
+                        }
+                    }
+                    true
+                })
+                .cloned()
+                .collect();
+            if filtered.is_empty() {
+                continue;
+            }
             let evt = TriggerEvent {
-                watched_account: *ak,
-                triggering_signature: signature.clone(),
-                matches: matches.to_vec(),
+                source: "account_subscriber",
+                correlation: signature.clone(),
+                matches: filtered,
             };
             if let Err(e) = trigger_tx.send(evt).await {
                 error!(error = %e, "shard: trigger channel closed");
@@ -182,13 +210,11 @@ fn extract_account_keys(v: &Value) -> Vec<Pubkey> {
     let keys = &v["params"]["result"]["transaction"]["transaction"]["message"]["accountKeys"];
     if let Some(arr) = keys.as_array() {
         for k in arr {
-            // jsonParsed shape: { "pubkey": "...", "signer": bool, "writable": bool, "source": "transaction" }
             if let Some(pk) = k.get("pubkey").and_then(Value::as_str) {
                 if let Ok(p) = Pubkey::from_str(pk) {
                     out.push(p);
                 }
             } else if let Some(pk) = k.as_str() {
-                // raw shape (encoding != jsonParsed)
                 if let Ok(p) = Pubkey::from_str(pk) {
                     out.push(p);
                 }

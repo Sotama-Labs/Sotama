@@ -17,6 +17,7 @@ export function AmountInput({
   placeholder,
   autoFocus = true,
   unit,
+  unitSingular,
   annotation,
 }: {
   value: number | null;
@@ -27,6 +28,9 @@ export function AmountInput({
   placeholder?: string;
   autoFocus?: boolean;
   unit?: string;
+  /** Used in place of `unit` when the displayed value (or preset value) is
+   *  exactly 1 — e.g. pass `unitSingular="day"` alongside `unit="days"`. */
+  unitSingular?: string;
   annotation?: ReactNode;
 }) {
   const ref = useRef<HTMLInputElement | null>(null);
@@ -54,7 +58,10 @@ export function AmountInput({
     }
   }, [local, placeholder]);
 
-  const display = unit ?? token?.symbol ?? "";
+  const baseUnit = unit ?? token?.symbol ?? "";
+  const unitFor = (n: number | null): string =>
+    unitSingular && n === 1 ? unitSingular : baseUnit;
+  const display = unitFor(value);
   const ghostText = local || placeholder || "0.0";
 
   const commit = (raw: string) => {
@@ -153,8 +160,11 @@ export function AmountInput({
       {presets && presets.length > 0 && (
         <div style={{ display: "flex", gap: "0.375rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
           {presets.map((p, i) => {
+            const presetUnit = typeof p === "number" ? unitFor(p) : "";
             const label =
-              typeof p === "number" ? `${p}${display ? ` ${display}` : ""}` : p.label;
+              typeof p === "number"
+                ? `${p}${presetUnit ? ` ${presetUnit}` : ""}`
+                : p.label;
             const onPress = () => {
               let next: number;
               if (typeof p === "number") {

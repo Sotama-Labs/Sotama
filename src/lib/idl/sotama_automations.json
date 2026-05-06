@@ -139,16 +139,227 @@
       ],
       "args": [
         {
-          "name": "watched_account",
-          "type": "pubkey"
+          "name": "trigger",
+          "type": {
+            "defined": {
+              "name": "TriggerSpec"
+            }
+          }
         },
         {
-          "name": "destination",
-          "type": "pubkey"
+          "name": "action",
+          "type": {
+            "defined": {
+              "name": "ActionSpec"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "create_automation_spl",
+      "discriminator": [
+        63,
+        96,
+        147,
+        48,
+        149,
+        70,
+        190,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
         },
         {
-          "name": "amount_lamports",
-          "type": "u64"
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "config.automation_count",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "owner_ata",
+          "docs": [
+            "Owner's ATA — must already hold `amount` tokens of `mint`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "automation_ata",
+          "docs": [
+            "Automation PDA's ATA — must be pre-created and owned by `automation`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "trigger",
+          "type": {
+            "defined": {
+              "name": "TriggerSpec"
+            }
+          }
+        },
+        {
+          "name": "action",
+          "type": {
+            "defined": {
+              "name": "ActionSpec"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "create_automation_stake",
+      "discriminator": [
+        218,
+        192,
+        68,
+        169,
+        160,
+        20,
+        30,
+        108
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "config.automation_count",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "trigger",
+          "type": {
+            "defined": {
+              "name": "TriggerSpec"
+            }
+          }
+        },
+        {
+          "name": "action",
+          "type": {
+            "defined": {
+              "name": "ActionSpec"
+            }
+          }
         }
       ]
     },
@@ -226,6 +437,289 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "execute_automation_spl",
+      "discriminator": [
+        105,
+        81,
+        76,
+        61,
+        184,
+        94,
+        71,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "automation.owner",
+                "account": "Automation"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "Automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "automation_ata",
+          "docs": [
+            "Source ATA owned by the automation PDA."
+          ],
+          "writable": true
+        },
+        {
+          "name": "destination_ata",
+          "docs": [
+            "Destination ATA — owned by the action's declared destination",
+            "wallet. Must be pre-created by the keeper / caller."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "execute_restake",
+      "discriminator": [
+        44,
+        47,
+        178,
+        120,
+        58,
+        15,
+        210,
+        101
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "automation.owner",
+                "account": "Automation"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "Automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake_account",
+          "writable": true
+        },
+        {
+          "name": "vote_account"
+        },
+        {
+          "name": "clock_sysvar",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "stake_history_sysvar",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stake_config",
+          "address": "StakeConfig11111111111111111111111111111111"
+        },
+        {
+          "name": "stake_program",
+          "address": "Stake11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "execute_withdraw_reward",
+      "discriminator": [
+        177,
+        123,
+        100,
+        94,
+        160,
+        211,
+        109,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "automation.owner",
+                "account": "Automation"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "Automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake_account",
+          "writable": true
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "clock_sysvar",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "stake_history_sysvar",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stake_program",
+          "address": "Stake11111111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "initialize_config",
@@ -465,9 +959,128 @@
       "code": 6004,
       "name": "Paused",
       "msg": "Program is paused"
+    },
+    {
+      "code": 6005,
+      "name": "ActionMismatch",
+      "msg": "Action mismatch — provided accounts do not match the configured action"
+    },
+    {
+      "code": 6006,
+      "name": "WrongMint",
+      "msg": "SPL mint mismatch"
+    },
+    {
+      "code": 6007,
+      "name": "WrongStakeAccount",
+      "msg": "Stake account does not match automation"
+    },
+    {
+      "code": 6008,
+      "name": "WrongVoteAccount",
+      "msg": "Vote account does not match automation"
+    },
+    {
+      "code": 6009,
+      "name": "BadComparator",
+      "msg": "Token-price comparator is not 0 (below) or 1 (above)"
+    },
+    {
+      "code": 6010,
+      "name": "BadAccountKind",
+      "msg": "Account-activity kind is not 0 (transfer) or 1 (swap)"
+    },
+    {
+      "code": 6011,
+      "name": "BadStakingMode",
+      "msg": "Staking-reward mode is not 0 (amount) or 1 (time)"
+    },
+    {
+      "code": 6012,
+      "name": "BadPythExpo",
+      "msg": "Pyth feed expo cannot be positive"
+    },
+    {
+      "code": 6013,
+      "name": "TimeIntervalNotElapsed",
+      "msg": "Time-based trigger fired before the configured interval elapsed"
+    },
+    {
+      "code": 6014,
+      "name": "BadSplAccounts",
+      "msg": "Account count or layout does not match for SPL transfer"
+    },
+    {
+      "code": 6015,
+      "name": "BadStakeAccounts",
+      "msg": "Account count or layout does not match for stake action"
     }
   ],
   "types": [
+    {
+      "name": "ActionSpec",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "TransferSol",
+            "fields": [
+              {
+                "name": "destination",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "TransferSpl",
+            "fields": [
+              {
+                "name": "destination",
+                "type": "pubkey"
+              },
+              {
+                "name": "mint",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "StakeRestake",
+            "fields": [
+              {
+                "name": "stake_account",
+                "type": "pubkey"
+              },
+              {
+                "name": "vote_account",
+                "type": "pubkey"
+              }
+            ]
+          },
+          {
+            "name": "StakeWithdrawReward",
+            "fields": [
+              {
+                "name": "stake_account",
+                "type": "pubkey"
+              },
+              {
+                "name": "destination",
+                "type": "pubkey"
+              }
+            ]
+          }
+        ]
+      }
+    },
     {
       "name": "Automation",
       "type": {
@@ -482,16 +1095,20 @@
             "type": "u64"
           },
           {
-            "name": "watched_account",
-            "type": "pubkey"
+            "name": "trigger",
+            "type": {
+              "defined": {
+                "name": "TriggerSpec"
+              }
+            }
           },
           {
-            "name": "destination",
-            "type": "pubkey"
-          },
-          {
-            "name": "amount_lamports",
-            "type": "u64"
+            "name": "action",
+            "type": {
+              "defined": {
+                "name": "ActionSpec"
+              }
+            }
           },
           {
             "name": "executed",
@@ -550,16 +1167,28 @@
             "type": "u64"
           },
           {
-            "name": "watched_account",
-            "type": "pubkey"
+            "name": "trigger_kind",
+            "docs": [
+              "`0` = AccountActivity, `1` = TokenPrice, `2` = StakingReward — keeps",
+              "the event slim while still letting indexers route to the right",
+              "subscriber without re-fetching the account."
+            ],
+            "type": "u8"
           },
           {
-            "name": "destination",
-            "type": "pubkey"
+            "name": "action_kind",
+            "docs": [
+              "`0` = TransferSol, `1` = TransferSpl, `2` = StakeRestake,",
+              "`3` = StakeWithdrawReward."
+            ],
+            "type": "u8"
           },
           {
-            "name": "amount_lamports",
-            "type": "u64"
+            "name": "trigger_pubkey",
+            "docs": [
+              "Watched / feed / stake account, depending on trigger_kind."
+            ],
+            "type": "pubkey"
           }
         ]
       }
@@ -574,11 +1203,16 @@
             "type": "pubkey"
           },
           {
-            "name": "destination",
-            "type": "pubkey"
+            "name": "action_kind",
+            "type": "u8"
           },
           {
-            "name": "amount_lamports",
+            "name": "amount",
+            "docs": [
+              "Lamports moved (or token base units for SPL). Keeper-provided when",
+              "the amount is dynamic (stake reward), otherwise the static action",
+              "amount."
+            ],
             "type": "u64"
           }
         ]
@@ -608,6 +1242,93 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TriggerSpec",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "AccountActivity",
+            "fields": [
+              {
+                "name": "account",
+                "type": "pubkey"
+              },
+              {
+                "name": "mint",
+                "docs": [
+                  "`Some(mint)` to filter to a specific SPL mint, `None` for any token."
+                ],
+                "type": {
+                  "option": "pubkey"
+                }
+              },
+              {
+                "name": "kind",
+                "docs": [
+                  "`account_kind::TRANSFER` or `account_kind::SWAP`."
+                ],
+                "type": "u8"
+              }
+            ]
+          },
+          {
+            "name": "TokenPrice",
+            "fields": [
+              {
+                "name": "feed",
+                "type": "pubkey"
+              },
+              {
+                "name": "comparator",
+                "docs": [
+                  "`comparator::BELOW` or `comparator::ABOVE`."
+                ],
+                "type": "u8"
+              },
+              {
+                "name": "threshold",
+                "docs": [
+                  "Price threshold scaled to `10^expo` (matches Pyth's wire format)."
+                ],
+                "type": "i64"
+              },
+              {
+                "name": "expo",
+                "docs": [
+                  "Pyth feed exponent (negative for decimals). Captured at create",
+                  "time so the keeper can normalize against future feed updates."
+                ],
+                "type": "i32"
+              }
+            ]
+          },
+          {
+            "name": "StakingReward",
+            "fields": [
+              {
+                "name": "stake_account",
+                "type": "pubkey"
+              },
+              {
+                "name": "mode",
+                "docs": [
+                  "`staking_mode::AMOUNT` or `staking_mode::TIME`."
+                ],
+                "type": "u8"
+              },
+              {
+                "name": "value",
+                "docs": [
+                  "AMOUNT mode: lamports threshold. TIME mode: interval in seconds."
+                ],
+                "type": "u64"
+              }
+            ]
           }
         ]
       }

@@ -65,9 +65,21 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
   {
     id: "demo_3",
     schemaVersion: 2,
-    triggers: [{ kind: "staking_reward_amount", threshold: 1 }],
+    triggers: [
+      {
+        kind: "staking_reward_amount",
+        stakeAccount: "DemoStakeAccount111111111111111111111111111",
+        threshold: 1,
+      },
+    ],
     triggerOperators: [],
-    actions: [{ kind: "restake" }],
+    actions: [
+      {
+        kind: "restake",
+        stakeAccount: "DemoStakeAccount111111111111111111111111111",
+        voteAccount: "DemoVoteAccount11111111111111111111111111111",
+      },
+    ],
     actionOperators: [],
     running: false,
     runs: 1,

@@ -76,7 +76,7 @@ const RESTAKE_ACTION: ActionKindMeta = {
   label: "Restake",
   description: "Compound the reward back into the stake account.",
   availableWithoutTrigger: false,
-  empty: () => ({ kind: "restake" }),
+  empty: () => ({ kind: "restake", stakeAccount: null, voteAccount: null }),
 };
 
 const SELL_FOR_ACTION: ActionKindMeta = {
@@ -92,7 +92,11 @@ const TRANSFER_REWARD_ACTION: ActionKindMeta = {
   label: "Transfer",
   description: "Send the reward to another wallet.",
   availableWithoutTrigger: false,
-  empty: () => ({ kind: "transfer_reward", destination: null }),
+  empty: () => ({
+    kind: "transfer_reward",
+    stakeAccount: null,
+    destination: null,
+  }),
 };
 
 export const ACTION_KINDS: ActionKindMeta[] = [
@@ -155,6 +159,7 @@ const STAKING_AMOUNT: TriggerKindMeta = {
   compatibleActions: STAKING_ACTIONS,
   empty: () => ({
     kind: "staking_reward_amount",
+    stakeAccount: null,
     threshold: null,
   }),
 };
@@ -166,6 +171,7 @@ const STAKING_TIME: TriggerKindMeta = {
   compatibleActions: STAKING_ACTIONS,
   empty: () => ({
     kind: "staking_reward_time",
+    stakeAccount: null,
     intervalDays: null,
   }),
 };
