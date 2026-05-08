@@ -1,72 +1,39 @@
-# sotama-keeper devnet worker.
+# fly.toml app configuration file generated for sotama-keeper-devnet on 2026-05-08T20:32:00+02:00
 #
-# Worker app — no inbound HTTP service, single instance, always running.
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# First-time setup:
-#     cd keeper
-#     fly launch --no-deploy --copy-config --name sotama-keeper-devnet
-#     fly secrets set \
-#         HELIUS_API_KEY=... \
-#         TURNKEY_API_PUBLIC_KEY=... \
-#         TURNKEY_API_PRIVATE_KEY=... \
-#         TURNKEY_ORGANIZATION_ID=... \
-#         TURNKEY_PRIVATE_KEY_ID=... \
-#         KEEPER_PUBKEY=...
-#     fly deploy
-#     fly scale count 1
-#     fly logs
-#
-# `KEEPER_PUBKEY` is the Solana ed25519 pubkey corresponding to the key
-# stored in Turnkey (`TURNKEY_PRIVATE_KEY_ID`). The keeper caches it at
-# startup so it doesn't need to round-trip to Turnkey for every tx.
 
-app = "sotama-keeper-devnet"
-primary_region = "iad"
-
-[build]
-  dockerfile = "Dockerfile"
-
-[env]
-  # Cluster selector — the keeper resolves Helius URLs and the Sender
-  # endpoint based on this. Set to "mainnet-beta" for prod fly app.
-  CLUSTER = "devnet"
-
-  HELIUS_DEVNET_RPC = "https://devnet.helius-rpc.com"
-  HELIUS_DEVNET_WS = "wss://atlas-devnet.helius-rpc.com"
-  HELIUS_DEVNET_SENDER = "https://devnet.helius-rpc.com/?api-key=__APIKEY__"
-  PYTH_HERMES_URL = "https://hermes.pyth.network"
-  JUPITER_BASE_URL = "https://api.jup.ag"
-  PROGRAM_ID = "2gp9bMBEVpQp6Lyyg13Bw6XF9S9saAcm9C4XQ69T8ZqQ"
-
-  # Watcher cadences. Reconcile is the full getProgramAccounts sweep;
-  # price/stake poll sub-cadences ride between reconciles.
-  RECONCILE_INTERVAL_SECS = "60"
-  PRICE_POLL_INTERVAL_SECS = "12"
-  STAKE_POLL_INTERVAL_SECS = "60"
-  FEE_TOPUP_SCAN_INTERVAL_SECS = "300"
-  SHARD_SIZE = "40"
-
-  # v4 swap + fee parameters. Slippage applies to both action swaps and
-  # PriceRatio Mint-side `/quote` probes. Fee constants are documentation
-  # right now (the keeper auto-sells via execute_fee_topup; the
-  # link_fee_debit hot-path bundling is deferred to v4.1).
-  SWAP_SLIPPAGE_BPS = "50"
-  KEEPER_FEE_LAMPORTS = "5000"
-  FEE_TOPUP_THRESHOLD_LAMPORTS = "50000"
-  FEE_TOPUP_AMOUNT_LAMPORTS = "100000"
-
-  RUST_LOG = "info,sotama_keeper=debug"
-
-# Single 512MB shared-cpu machine. Bump to performance-1x or 1gb if the
-# StakeStateV2 bincode parser starts lagging under load (Phase-1 v3
-# control flow + 1k+ active automations).
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
-
-# Restart on crash; don't auto-stop (no inbound traffic to wake on).
-[deploy]
-  strategy = "immediate"
+app = 'sotama-keeper-devnet'
+primary_region = 'iad'
 
 [experimental]
   auto_rollback = true
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[deploy]
+  strategy = 'immediate'
+
+[env]
+  CLUSTER = 'devnet'
+  FEE_TOPUP_AMOUNT_LAMPORTS = '100000'
+  FEE_TOPUP_SCAN_INTERVAL_SECS = '300'
+  FEE_TOPUP_THRESHOLD_LAMPORTS = '50000'
+  HELIUS_DEVNET_RPC = 'https://devnet.helius-rpc.com'
+  HELIUS_DEVNET_SENDER = 'https://devnet.helius-rpc.com/?api-key=__APIKEY__'
+  HELIUS_DEVNET_WS = 'wss://atlas-devnet.helius-rpc.com'
+  JUPITER_BASE_URL = 'https://api.jup.ag'
+  KEEPER_FEE_LAMPORTS = '5000'
+  PRICE_POLL_INTERVAL_SECS = '12'
+  PROGRAM_ID = '2gp9bMBEVpQp6Lyyg13Bw6XF9S9saAcm9C4XQ69T8ZqQ'
+  PYTH_HERMES_URL = 'https://hermes.pyth.network'
+  RECONCILE_INTERVAL_SECS = '60'
+  RUST_LOG = 'info,sotama_keeper=debug'
+  SHARD_SIZE = '40'
+  STAKE_POLL_INTERVAL_SECS = '60'
+  SWAP_SLIPPAGE_BPS = '50'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

@@ -46,6 +46,7 @@ pub fn handler(
     cadence: Cadence,
     min_interval_secs: u32,
 ) -> Result<()> {
+    require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
     match &action {
         ActionSpec::StakeRestake { .. } | ActionSpec::StakeWithdrawReward { .. } => {}
         _ => return err!(SotamaError::ActionMismatch),

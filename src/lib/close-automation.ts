@@ -12,6 +12,7 @@ import {
   buildCloseAutomationIx,
   buildCloseAutomationSplIx,
   buildCloseAutomationSwapIx,
+  fetchConfig,
   getProgram,
   SPL_TOKEN_PROGRAM_ID,
 } from "@/lib/program";
@@ -78,6 +79,12 @@ export async function closeAutomationOnChain(
   const tx = new Transaction();
   const SOL_MINT = "So11111111111111111111111111111111111111112";
 
+  // Fetch on-chain Config once so every close branch passes the same
+  // treasury account. Config rarely rotates, so a per-close fetch is
+  // fine (cached at the next layer up if perf becomes an issue).
+  const config = await fetchConfig(program);
+  const treasury = config.treasury;
+
   if (action.kind === "transfer" && action.token.mint !== SOL_MINT) {
     const mint = new PublicKey(action.token.mint);
     const built = await buildCloseAutomationSplIx({
@@ -85,6 +92,7 @@ export async function closeAutomationOnChain(
       owner,
       automation,
       mint,
+      treasury,
     });
     tx.add(prependOwnerAtaCreate(owner, built.ownerAta, mint));
     tx.add(built.ix);
@@ -95,13 +103,14 @@ export async function closeAutomationOnChain(
       owner,
       automation,
       inputMint,
+      treasury,
     });
     tx.add(prependOwnerAtaCreate(owner, built.ownerInputAta, inputMint));
     tx.add(built.ix);
   } else {
     // SOL transfer, restake, transfer_reward, sell_for — no ATA
     // refund needed; plain close.
-    const ix = await buildCloseAutomationIx({ program, owner, automation });
+    const ix = await buildCloseAutomationIx({ program, owner, automation, treasury });
     tx.add(ix);
   }
 

@@ -153,12 +153,12 @@ pub async fn run(
 
 /// Snapshot of a Jupiter `/quote` for one mint paired against USDC.
 /// Used as the quote leg of a TokenPrice trigger configured with a
-/// non-USD quote mint.
+/// non-USD quote mint. Public so `revalidate.rs` can reuse the probe.
 #[derive(Debug, Clone)]
-struct MintQuote {
+pub(crate) struct MintQuote {
     /// out_amount in USDC base units (6 decimals) when swapping
     /// `PROBE_AMOUNT_RAW` of the mint.
-    out_amount: u64,
+    pub(crate) out_amount: u64,
 }
 
 /// USDC mainnet mint. The probe quote is denominated in USDC so all
@@ -172,7 +172,7 @@ const USDC_MINT_STR: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /// the quote mint don't have to match.
 const PROBE_AMOUNT_RAW: u64 = 1_000_000_000;
 
-async fn probe_mint(
+pub(crate) async fn probe_mint(
     jupiter: &JupiterClient,
     mint: &Pubkey,
     slippage_bps: u16,
@@ -196,7 +196,7 @@ async fn probe_mint(
 /// cross-multiplication to avoid div-by-zero and float drift.
 /// Returns Some(true/false) for the crossing decision, or None if the
 /// comparator byte is invalid.
-fn ratio_compare(
+pub(crate) fn ratio_compare(
     comparator: u8,
     base: (i128, i32),
     quote: (i128, i32),
@@ -255,7 +255,7 @@ struct ParsedPriceInner {
     publish_time: i64,
 }
 
-async fn fetch_prices(
+pub(crate) async fn fetch_prices(
     http: &reqwest::Client,
     hermes: &str,
     feed_ids: &[String],

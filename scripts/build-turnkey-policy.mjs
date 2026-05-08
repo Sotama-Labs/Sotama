@@ -116,35 +116,59 @@ const discriminators = EXPECTED_IXS.map((name) => {
 });
 
 /**
- * Minimal CEL condition: just gate on activity type. The encoding /
- * hash_function clauses we tried earlier appear to evaluate to false
- * in some Turnkey deployments (path may not be exposed for the
- * specific activity flavor, or the values may not match the
- * documented constants). The keeper code already sends the right
- * encoding and hash function — there's no realistic attacker path
- * where the condition needed those extra checks.
+ * Cluster-aware policy emit. Devnet keeps the maximally-permissive
+ * policy (any approver, sign_raw_payload activities) since iteration
+ * speed matters more than blast-radius limits in dev. Mainnet adds
+ * two additional gates:
  *
- * If you want defense-in-depth, layer additional clauses one at a
- * time and verify each still allows. The error response (visible in
- * the keeper log via `turnkey http 403:`) shows OUTCOME_DENY_IMPLICIT
- * but doesn't tell you which clause failed, so always change one
- * thing at a time.
+ *   1. `consensus` is pinned to a specific API user ID — only the
+ *      designated keeper user can approve. Required env:
+ *      `TURNKEY_KEEPER_USER_ID`. A leaked org-level key still can't
+ *      sign because Turnkey requires the named user's X-Stamp.
+ *
+ *   2. The `condition` keeps activity-type gating. CEL on
+ *      sign_raw_payload still can't reach into payload bytes, so
+ *      ix-scoping continues to live in the keeper binary itself.
+ *
+ * Defense-in-depth that this script CAN'T emit (live in dashboard):
+ *   - IP allowlist on the keeper API user (Turnkey UI under user
+ *     settings; documented in MAINNET-UPGRADE-AUTHORITY.md).
+ *   - Audit-log alerts on `ACTIVITY_TYPE_*` outside sign_raw_payload.
  */
+const cluster = (process.env.CLUSTER ?? "devnet").toLowerCase();
+const isMainnet = cluster === "mainnet" || cluster === "mainnet-beta";
+
 const condition = "activity.type == 'ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2'";
 
-/**
- * Consensus: maximally permissive — any approver is fine. This works
- * because Turnkey already authenticates the requester via the X-Stamp
- * (the API user holding the matching P-256 keypair). If you want to
- * pin to a specific API user later:
- *   `approvers.any(user, user.id == 'YOUR_API_USER_ID')`
- * Or by tag (requires tagging the user in the dashboard):
- *   `approvers.any(user, 'keeper' in user.tags)`
- */
-const consensus = "approvers.any(user, true)";
+let consensus;
+let policyName;
+if (isMainnet) {
+  const keeperUserId = process.env.TURNKEY_KEEPER_USER_ID;
+  if (!keeperUserId || !keeperUserId.startsWith("u-")) {
+    console.error(
+      "✗ CLUSTER=mainnet requires TURNKEY_KEEPER_USER_ID (Turnkey API user id, format `u-xxxxxxxx`).",
+    );
+    console.error(
+      "  Find it under Turnkey dashboard → Users → (your keeper API user) → User ID.",
+    );
+    process.exit(1);
+  }
+  // Escape any single-quotes in the id (defensive — Turnkey IDs are
+  // base32-style and shouldn't contain quotes, but the script
+  // shouldn't silently emit a broken policy if env is malformed).
+  const safeId = keeperUserId.replace(/'/g, "");
+  consensus = `approvers.any(user, user.id == '${safeId}')`;
+  policyName = "sotama-keeper-mainnet-strict";
+} else {
+  // Devnet: any approver. The keeper API user's X-Stamp still
+  // authenticates the request — this just doesn't add an extra
+  // user-id pin on top.
+  consensus = "approvers.any(user, true)";
+  policyName = "sotama-keeper-execute-only";
+}
 
 const policy = {
-  policyName: "sotama-keeper-execute-only",
+  policyName,
   effect: "EFFECT_ALLOW",
   consensus,
   condition,
@@ -153,6 +177,7 @@ const policy = {
 writeFileSync(outPath, JSON.stringify(policy, null, 2) + "\n");
 
 console.log(`✓ wrote ${outPath}`);
+console.log(`  cluster        : ${cluster}${isMainnet ? " (strict)" : " (permissive)"}`);
 console.log(`  program ID     : ${programIdBase58}`);
 console.log(`  program ID hex : ${programIdHex}`);
 console.log(`  expected ixs   :`);
@@ -163,7 +188,7 @@ console.log(
   "\n  Note: Turnkey policy language can't substring-match payload bytes,",
 );
 console.log(
-  "  so the policy constrains only activity type + encoding + hash function.",
+  "  so the policy constrains only activity type + (mainnet) approver user id.",
 );
 console.log(
   "  The Sotama-ix scoping is enforced by the keeper binary itself.",
@@ -171,9 +196,21 @@ console.log(
 console.log(
   "\nNext: paste the policy JSON into Turnkey's dashboard for the keeper API user.",
 );
-console.log(
-  "      Consensus is `approvers.any(user, true)` — no tag required.",
-);
-console.log(
-  "      Tighten later by pinning user.id once devnet works end-to-end.",
-);
+if (isMainnet) {
+  console.log(
+    `      Consensus pinned to user.id == '${process.env.TURNKEY_KEEPER_USER_ID}'.`,
+  );
+  console.log(
+    "      Don't forget the IP allowlist (dashboard → Users → API user → Network).",
+  );
+  console.log(
+    "      See MAINNET-UPGRADE-AUTHORITY.md for the full mainnet hardening checklist.",
+  );
+} else {
+  console.log(
+    "      Consensus is `approvers.any(user, true)` — no tag required.",
+  );
+  console.log(
+    "      For mainnet: re-run with CLUSTER=mainnet TURNKEY_KEEPER_USER_ID=u-... to emit the strict policy.",
+  );
+}

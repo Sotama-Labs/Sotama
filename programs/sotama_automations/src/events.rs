@@ -42,4 +42,8 @@ pub struct AutomationClosed {
     pub pubkey: Pubkey,
     pub owner: Pubkey,
     pub refund_lamports: u64,
+    /// Lamports diverted to `Config.treasury` before the owner refund.
+    /// `0` when `Config.close_fee_lamports == 0` or when the PDA had no
+    /// excess lamports above rent-exempt minimum to cover the fee.
+    pub fee_lamports: u64,
 }

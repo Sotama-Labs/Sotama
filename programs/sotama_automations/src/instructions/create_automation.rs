@@ -46,6 +46,7 @@ pub fn handler(
     cadence: Cadence,
     min_interval_secs: u32,
 ) -> Result<()> {
+    require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
     let amount = match &action {
         ActionSpec::TransferSol { amount, .. } => *amount,
         _ => return err!(SotamaError::ActionMismatch),

@@ -1,5 +1,8 @@
 #![allow(ambiguous_glob_reexports)]
 
+pub mod admin_close_automation;
+pub mod admin_close_automation_spl;
+pub mod admin_close_automation_swap;
 pub mod close_automation;
 pub mod close_automation_spl;
 pub mod close_automation_swap;
@@ -15,9 +18,17 @@ pub mod execute_restake;
 pub mod execute_swap;
 pub mod execute_withdraw_reward;
 pub mod initialize_config;
+pub mod migrate_config;
 pub mod set_paused;
+pub mod set_shutdown;
+pub mod update_admin;
+pub mod update_close_fee;
 pub mod update_keeper;
+pub mod update_treasury;
 
+pub use admin_close_automation::*;
+pub use admin_close_automation_spl::*;
+pub use admin_close_automation_swap::*;
 pub use close_automation::*;
 pub use close_automation_spl::*;
 pub use close_automation_swap::*;
@@ -33,5 +44,10 @@ pub use execute_restake::*;
 pub use execute_swap::*;
 pub use execute_withdraw_reward::*;
 pub use initialize_config::*;
+pub use migrate_config::*;
 pub use set_paused::*;
+pub use set_shutdown::*;
+pub use update_admin::*;
+pub use update_close_fee::*;
 pub use update_keeper::*;
+pub use update_treasury::*;

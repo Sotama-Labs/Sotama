@@ -50,6 +50,7 @@ pub struct ExecuteAutomationSpl<'info> {
 
 pub fn handler(ctx: Context<ExecuteAutomationSpl>) -> Result<()> {
     require!(!ctx.accounts.config.paused, SotamaError::Paused);
+    require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
     require_keys_eq!(
         ctx.accounts.keeper.key(),
         ctx.accounts.config.keeper,

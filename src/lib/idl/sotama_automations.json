@@ -8,6 +8,323 @@
   },
   "instructions": [
     {
+      "name": "admin_close_automation",
+      "docs": [
+        "Admin-driven kill-switch close for SOL-action and stake-action",
+        "automations. Requires `Config.shutdown == true`. Owner gets the",
+        "SOL deposit (above-rent excess); treasury gets the rent_min."
+      ],
+      "discriminator": [
+        189,
+        234,
+        222,
+        52,
+        33,
+        76,
+        156,
+        254
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "owner",
+          "docs": [
+            "deposit portion of the PDA's lamports. No signer; admin",
+            "authority alone suffices once `shutdown == true`."
+          ],
+          "writable": true,
+          "relations": [
+            "automation"
+          ]
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "Automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "PDA's rent-exempt minimum on close (Anchor's `close = treasury`)."
+          ],
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "admin_close_automation_spl",
+      "docs": [
+        "Admin-driven kill-switch close for SPL-action automations.",
+        "Requires `Config.shutdown == true`. Owner gets the SPL tokens",
+        "(via PDA→owner ATA transfer); treasury gets all lamports",
+        "(PDA rent + ATA rent)."
+      ],
+      "discriminator": [
+        146,
+        153,
+        127,
+        177,
+        194,
+        19,
+        151,
+        140
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "relations": [
+            "automation"
+          ]
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "Automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "owner_ata",
+          "docs": [
+            "Owner's ATA for `mint`. Must be pre-created by the caller —",
+            "admin pays the rent for an idempotent ATA-create when the",
+            "owner has never received this mint."
+          ],
+          "writable": true
+        },
+        {
+          "name": "automation_ata",
+          "docs": [
+            "PDA's ATA for `mint`. Drained then closed by this ix."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "admin_close_automation_swap",
+      "docs": [
+        "Admin-driven kill-switch close for swap-action automations.",
+        "Requires `Config.shutdown == true`. Owner gets the unspent",
+        "input mint (via PDA→owner ATA transfer); treasury gets all",
+        "lamports (PDA rent + input-ATA rent)."
+      ],
+      "discriminator": [
+        163,
+        160,
+        205,
+        122,
+        10,
+        137,
+        184,
+        57
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "relations": [
+            "automation"
+          ]
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "Automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "input_mint"
+        },
+        {
+          "name": "owner_input_ata",
+          "writable": true
+        },
+        {
+          "name": "automation_input_ata",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "close_automation",
       "discriminator": [
         173,
@@ -59,6 +376,33 @@
               }
             ]
           }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "close-fee lamports; if `config.close_fee_lamports == 0` or the",
+            "PDA has no excess above rent-min, no transfer occurs and this",
+            "account is read-only in effect."
+          ],
+          "writable": true
         }
       ],
       "args": []
@@ -121,6 +465,28 @@
               }
             ]
           }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
         },
         {
           "name": "mint"
@@ -204,6 +570,28 @@
               }
             ]
           }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
         },
         {
           "name": "input_mint"
@@ -682,6 +1070,10 @@
         {
           "name": "min_interval_secs",
           "type": "u32"
+        },
+        {
+          "name": "enable_fee_topup",
+          "type": "bool"
         }
       ]
     },
@@ -1381,6 +1773,59 @@
       ]
     },
     {
+      "name": "migrate_config",
+      "docs": [
+        "One-shot devnet migration: realloc the v4.0 Config PDA to the",
+        "v4.1 layout and initialize the new `treasury` + `close_fee_lamports`",
+        "fields. Mainnet doesn't need this — its first `initialize_config`",
+        "writes the v4.1 layout directly. Admin only."
+      ],
+      "discriminator": [
+        92,
+        131,
+        58,
+        105,
+        210,
+        154,
+        224,
+        193
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "set_paused",
       "discriminator": [
         91,
@@ -1428,6 +1873,160 @@
       ]
     },
     {
+      "name": "set_shutdown",
+      "docs": [
+        "One-way kill switch. Admin only. Sets `Config.shutdown = true`",
+        "and locks `update_treasury`, `update_close_fee`, `update_admin`,",
+        "`migrate_config`, all `execute_*`, and all `create_automation*`.",
+        "Enables `admin_close_automation*` for the wind-down. Reverts on",
+        "a second invocation (`ShutdownAlreadySet`)."
+      ],
+      "discriminator": [
+        118,
+        99,
+        163,
+        234,
+        208,
+        40,
+        221,
+        53
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_admin",
+      "docs": [
+        "Rotate `Config.admin`. Required for handing off control to a",
+        "Squads multisig (or any other admin rotation). Admin only.",
+        "Rejected when `Config.shutdown == true` — the Squads transition",
+        "must happen during normal operation, before the kill switch."
+      ],
+      "discriminator": [
+        161,
+        176,
+        40,
+        213,
+        60,
+        184,
+        179,
+        228
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_close_fee",
+      "docs": [
+        "Rotate `Config.close_fee_lamports` (per-close protocol fee).",
+        "Admin only. Capped at `MAX_CLOSE_FEE_LAMPORTS` (0.1 SOL) so a",
+        "misconfig can't make rules un-closable."
+      ],
+      "discriminator": [
+        127,
+        49,
+        70,
+        176,
+        56,
+        34,
+        12,
+        135
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_fee_lamports",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "update_keeper",
       "discriminator": [
         36,
@@ -1470,6 +2069,58 @@
       "args": [
         {
           "name": "new_keeper",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_treasury",
+      "docs": [
+        "Rotate `Config.treasury` (where close-fee revenue lands). Admin",
+        "only. Use to migrate from `admin` (default) to a dedicated",
+        "fee-collection wallet or Squads multisig."
+      ],
+      "discriminator": [
+        60,
+        16,
+        243,
+        66,
+        96,
+        59,
+        254,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_treasury",
           "type": "pubkey"
         }
       ]
@@ -1704,6 +2355,41 @@
       "code": 6031,
       "name": "BadFeeTopupOwner",
       "msg": "Fee topup output ATA must be owned by the automation PDA"
+    },
+    {
+      "code": 6032,
+      "name": "FeeTopupNotEnabled",
+      "msg": "Fee topup is not enabled for this automation"
+    },
+    {
+      "code": 6033,
+      "name": "FeeTooLarge",
+      "msg": "Close fee exceeds protocol cap (0.1 SOL)"
+    },
+    {
+      "code": 6034,
+      "name": "WrongTreasury",
+      "msg": "Provided treasury account does not match Config.treasury"
+    },
+    {
+      "code": 6035,
+      "name": "Shutdown",
+      "msg": "Program is in terminal shutdown — operation rejected"
+    },
+    {
+      "code": 6036,
+      "name": "NotShutdown",
+      "msg": "Operation requires Config.shutdown = true (kill-switch only)"
+    },
+    {
+      "code": 6037,
+      "name": "ShutdownAlreadySet",
+      "msg": "Shutdown is one-way; cannot be cleared once set"
+    },
+    {
+      "code": 6038,
+      "name": "UnauthorizedCloser",
+      "msg": "Caller is neither the automation owner nor the program admin"
     }
   ],
   "types": [
@@ -1895,16 +2581,29 @@
             "type": "u8"
           },
           {
+            "name": "fee_topup_enabled",
+            "docs": [
+              "Per-automation opt-in for `execute_fee_topup`. False by default",
+              "so a leaked keeper signing key cannot route arbitrary token",
+              "holdings through Jupiter. Only set true at create time on Swap",
+              "rules where the user explicitly enables auto-fee-management.",
+              "Carved out of the original 32-byte `_reserved` budget: 1 byte",
+              "here, 31 bytes still reserved below."
+            ],
+            "type": "bool"
+          },
+          {
             "name": "_reserved",
             "docs": [
               "Reserved bytes for forward-compatible field additions. Lets a",
               "future v5 add small fields via `realloc` without forcing a",
-              "fresh program ID (which v3→v4 already required). Keep at 32."
+              "fresh program ID (which v3→v4 already required). Was [u8; 32];",
+              "shrunk to 31 to make room for `fee_topup_enabled` above."
             ],
             "type": {
               "array": [
                 "u8",
-                32
+                31
               ]
             }
           }
@@ -1926,6 +2625,15 @@
           },
           {
             "name": "refund_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "fee_lamports",
+            "docs": [
+              "Lamports diverted to `Config.treasury` before the owner refund.",
+              "`0` when `Config.close_fee_lamports == 0` or when the PDA had no",
+              "excess lamports above rent-exempt minimum to cover the fee."
+            ],
             "type": "u64"
           }
         ]
@@ -2095,6 +2803,43 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "treasury",
+            "docs": [
+              "Destination for `close_fee_lamports` when an automation is closed.",
+              "Initialized to `admin` at config-create time; rotatable via",
+              "`update_treasury`. Kept separate from `admin` so a treasury",
+              "rotation doesn't require a fresh upgrade-authority key."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "close_fee_lamports",
+            "docs": [
+              "Protocol fee deducted from each close (in lamports, native SOL).",
+              "Comes from above-rent-exempt PDA lamports — never touches the",
+              "owner's SPL deposit. `0` = full refund. Capped at",
+              "`MAX_CLOSE_FEE_LAMPORTS` by `update_close_fee`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "shutdown",
+            "docs": [
+              "Terminal kill-switch flag. Once true:",
+              "* `execute_*` and `create_automation_*` revert",
+              "* `update_treasury`, `update_close_fee`, `update_admin`,",
+              "`migrate_config` revert",
+              "* `admin_close_automation*` becomes callable (admin OR owner",
+              "signs; deposit → owner, all other lamports → treasury)",
+              "One-way: `set_shutdown` itself rejects when already true. The",
+              "flag exists to bound a compromised-admin blast-radius post-",
+              "shutdown — once set, the only thing the admin can still do is",
+              "accelerate user-PDA closures and rotate the keeper (harmless",
+              "since execute_* are blocked)."
+            ],
+            "type": "bool"
           }
         ]
       }

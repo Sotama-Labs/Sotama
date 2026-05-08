@@ -84,8 +84,12 @@ pub struct Automation {
     pub created_at: i64,
     pub executed_at: i64,
     pub bump: u8,
-    /// 32 bytes of forward-compat padding. Mirrors the on-chain field.
-    pub _reserved: [u8; 32],
+    /// Per-PDA opt-in for `execute_fee_topup`. Mirrors the v4.1 field
+    /// carved from the original `_reserved` budget.
+    pub fee_topup_enabled: bool,
+    /// 31 bytes of forward-compat padding (was 32 pre-v4.1; 1 byte
+    /// moved into `fee_topup_enabled` above).
+    pub _reserved: [u8; 31],
 }
 
 impl Automation {

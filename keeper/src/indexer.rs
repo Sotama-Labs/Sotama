@@ -196,6 +196,7 @@ async fn fetch_active(client: &RpcClient, program_id: &Pubkey) -> Result<Vec<Aut
                         pubkey,
                         owner: a.owner,
                         nonce: a.nonce,
+                        created_at: a.created_at,
                         trigger: a.trigger,
                         action: a.action,
                     });

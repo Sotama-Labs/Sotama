@@ -26,5 +26,14 @@ pub fn handler(ctx: Context<InitializeConfig>, keeper: Pubkey) -> Result<()> {
     config.paused = false;
     config.automation_count = 0;
     config.bump = ctx.bumps.config;
+    // Default treasury = admin so close-fee revenue lands somewhere
+    // sensible from day one. Rotate via `update_treasury` once a
+    // dedicated fee-collection wallet (or Squads) is provisioned.
+    config.treasury = ctx.accounts.admin.key();
+    // Default fee = 0 (full refund). Admin can raise via
+    // `update_close_fee`, capped at MAX_CLOSE_FEE_LAMPORTS.
+    config.close_fee_lamports = 0;
+    // Kill switch starts disarmed. One-way flip via `set_shutdown`.
+    config.shutdown = false;
     Ok(())
 }

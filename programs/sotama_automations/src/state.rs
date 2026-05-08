@@ -61,6 +61,11 @@ pub mod cadence_kind {
 /// default 5_000 lamport per-fire fee, leaving plenty of headroom.
 pub const MAX_LINK_FEE_LAMPORTS: u64 = 1_000_000;
 
+/// Hard ceiling on `Config.close_fee_lamports`. Prevents a misconfigured
+/// admin update from making rules un-closable (which would strand owner
+/// deposits). 0.1 SOL is well above any realistic protocol fee.
+pub const MAX_CLOSE_FEE_LAMPORTS: u64 = 100_000_000;
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
 pub enum TriggerSpec {
     /// Watched-account activity (transfer or swap). Detected off-chain by
@@ -189,6 +194,28 @@ pub struct Config {
     pub paused: bool,
     pub automation_count: u64,
     pub bump: u8,
+    /// Destination for `close_fee_lamports` when an automation is closed.
+    /// Initialized to `admin` at config-create time; rotatable via
+    /// `update_treasury`. Kept separate from `admin` so a treasury
+    /// rotation doesn't require a fresh upgrade-authority key.
+    pub treasury: Pubkey,
+    /// Protocol fee deducted from each close (in lamports, native SOL).
+    /// Comes from above-rent-exempt PDA lamports — never touches the
+    /// owner's SPL deposit. `0` = full refund. Capped at
+    /// `MAX_CLOSE_FEE_LAMPORTS` by `update_close_fee`.
+    pub close_fee_lamports: u64,
+    /// Terminal kill-switch flag. Once true:
+    ///   * `execute_*` and `create_automation_*` revert
+    ///   * `update_treasury`, `update_close_fee`, `update_admin`,
+    ///     `migrate_config` revert
+    ///   * `admin_close_automation*` becomes callable (admin OR owner
+    ///     signs; deposit → owner, all other lamports → treasury)
+    /// One-way: `set_shutdown` itself rejects when already true. The
+    /// flag exists to bound a compromised-admin blast-radius post-
+    /// shutdown — once set, the only thing the admin can still do is
+    /// accelerate user-PDA closures and rotate the keeper (harmless
+    /// since execute_* are blocked).
+    pub shutdown: bool,
 }
 
 /// Control-flow over the action firing schedule. Maps 1:1 to the UI's
@@ -260,10 +287,18 @@ pub struct Automation {
     pub created_at: i64,
     pub executed_at: i64,
     pub bump: u8,
+    /// Per-automation opt-in for `execute_fee_topup`. False by default
+    /// so a leaked keeper signing key cannot route arbitrary token
+    /// holdings through Jupiter. Only set true at create time on Swap
+    /// rules where the user explicitly enables auto-fee-management.
+    /// Carved out of the original 32-byte `_reserved` budget: 1 byte
+    /// here, 31 bytes still reserved below.
+    pub fee_topup_enabled: bool,
     /// Reserved bytes for forward-compatible field additions. Lets a
     /// future v5 add small fields via `realloc` without forcing a
-    /// fresh program ID (which v3→v4 already required). Keep at 32.
-    pub _reserved: [u8; 32],
+    /// fresh program ID (which v3→v4 already required). Was [u8; 32];
+    /// shrunk to 31 to make room for `fee_topup_enabled` above.
+    pub _reserved: [u8; 31],
 }
 
 impl Automation {

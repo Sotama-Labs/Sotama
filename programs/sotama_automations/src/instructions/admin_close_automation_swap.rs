@@ -3,26 +3,34 @@ use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer 
 
 use crate::errors::SotamaError;
 use crate::events::AutomationClosed;
-use crate::instructions::close_automation::deduct_close_fee;
 use crate::state::{ActionSpec, Automation, Config};
 
-/// Close an automation whose action is `Swap`. Drains the PDA's input
-/// ATA (which holds `amount_in × max_runs` of `input_mint` from create
-/// time, possibly partially consumed by past fires) back to the owner,
-/// closes the input ATA, then closes the automation account itself.
+/// Admin-driven close for `Swap` automations during wind-down.
+/// Same shape as `admin_close_automation_spl` but operates on the
+/// swap's input ATA. The output ATA belongs to `destination` (a user
+/// wallet) and is not touched here — its tokens were already credited
+/// at swap-fire time.
 ///
-/// Mirrors `close_automation_spl` but for the Jupiter-relay action's
-/// input deposit. The swap's destination side (`destination_output_ata`)
-/// is owned by `destination`, not by the PDA, so it doesn't need
-/// reclaim — its tokens were already credited at swap-fire time.
+/// Refund routing (same split as the SPL variant):
+///   1. Swap input deposit → owner's input ATA (owner gets unspent
+///      input mint back).
+///   2. PDA's input ATA closes → treasury (ATA rent).
+///   3. PDA's rent_min → treasury (Anchor `close = treasury`).
 #[derive(Accounts)]
-pub struct CloseAutomationSwap<'info> {
+pub struct AdminCloseAutomationSwap<'info> {
     #[account(mut)]
-    pub owner: Signer<'info>,
+    pub admin: Signer<'info>,
+
+    /// CHECK: address-checked against `automation.owner`.
+    #[account(
+        mut,
+        address = automation.owner @ SotamaError::WrongDestination,
+    )]
+    pub owner: AccountInfo<'info>,
 
     #[account(
         mut,
-        close = owner,
+        close = treasury,
         seeds = [
             b"automation",
             owner.key().as_ref(),
@@ -36,6 +44,7 @@ pub struct CloseAutomationSwap<'info> {
     #[account(
         seeds = [b"config"],
         bump = config.bump,
+        has_one = admin,
     )]
     pub config: Account<'info, Config>,
 
@@ -65,9 +74,10 @@ pub struct CloseAutomationSwap<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn handler(ctx: Context<CloseAutomationSwap>) -> Result<()> {
-    let automation = &ctx.accounts.automation;
+pub fn handler(ctx: Context<AdminCloseAutomationSwap>) -> Result<()> {
+    require!(ctx.accounts.config.shutdown, SotamaError::NotShutdown);
 
+    let automation = &ctx.accounts.automation;
     let expected_input_mint = match &automation.action {
         ActionSpec::Swap { input_mint, .. } => *input_mint,
         _ => return err!(SotamaError::ActionMismatch),
@@ -89,8 +99,8 @@ pub fn handler(ctx: Context<CloseAutomationSwap>) -> Result<()> {
     ];
     let signer_seeds: &[&[&[u8]]] = &[pda_seeds];
 
-    let remaining = ctx.accounts.automation_input_ata.amount;
-    if remaining > 0 {
+    let token_amount = ctx.accounts.automation_input_ata.amount;
+    if token_amount > 0 {
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -101,7 +111,7 @@ pub fn handler(ctx: Context<CloseAutomationSwap>) -> Result<()> {
                 },
                 signer_seeds,
             ),
-            remaining,
+            token_amount,
         )?;
     }
 
@@ -109,24 +119,19 @@ pub fn handler(ctx: Context<CloseAutomationSwap>) -> Result<()> {
         ctx.accounts.token_program.to_account_info(),
         CloseAccount {
             account: ctx.accounts.automation_input_ata.to_account_info(),
-            destination: ctx.accounts.owner.to_account_info(),
+            destination: ctx.accounts.treasury.to_account_info(),
             authority: automation.to_account_info(),
         },
         signer_seeds,
     ))?;
 
-    let fee_lamports = deduct_close_fee(
-        &automation.to_account_info(),
-        &ctx.accounts.treasury.to_account_info(),
-        ctx.accounts.config.close_fee_lamports,
-    )?;
+    let pda_lamports = automation.to_account_info().lamports();
 
-    let refund = automation.to_account_info().lamports();
     emit!(AutomationClosed {
         pubkey: automation.key(),
         owner: ctx.accounts.owner.key(),
-        refund_lamports: refund,
-        fee_lamports,
+        refund_lamports: 0,
+        fee_lamports: pda_lamports,
     });
 
     Ok(())

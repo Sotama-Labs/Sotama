@@ -256,7 +256,13 @@ export async function buildCreateAutomationSwapIx(params: {
   const ownerInputAta = associatedTokenAddress(owner, inputMint);
   const automationInputAta = associatedTokenAddress(automation, inputMint);
   const ix = await program.methods
-    .createAutomationSwap(trigger as never, action as never, cadence as never, minIntervalSecs)
+    .createAutomationSwap(
+      trigger as never,
+      action as never,
+      cadence as never,
+      minIntervalSecs,
+      false,
+    )
     .accountsStrict({
       owner,
       config: configPda(program.programId),
@@ -298,11 +304,17 @@ export async function buildCloseAutomationIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
   automation: PublicKey;
+  treasury: PublicKey;
 }): Promise<TransactionInstruction> {
-  const { program, owner, automation } = params;
+  const { program, owner, automation, treasury } = params;
   return program.methods
     .closeAutomation()
-    .accountsStrict({ owner, automation })
+    .accountsStrict({
+      owner,
+      automation,
+      config: configPda(program.programId),
+      treasury,
+    })
     .instruction();
 }
 
@@ -314,12 +326,13 @@ export async function buildCloseAutomationSplIx(params: {
   owner: PublicKey;
   automation: PublicKey;
   mint: PublicKey;
+  treasury: PublicKey;
 }): Promise<{
   ix: TransactionInstruction;
   ownerAta: PublicKey;
   automationAta: PublicKey;
 }> {
-  const { program, owner, automation, mint } = params;
+  const { program, owner, automation, mint, treasury } = params;
   const ownerAta = associatedTokenAddress(owner, mint);
   const automationAta = associatedTokenAddress(automation, mint);
   const ix = await program.methods
@@ -327,6 +340,8 @@ export async function buildCloseAutomationSplIx(params: {
     .accountsStrict({
       owner,
       automation,
+      config: configPda(program.programId),
+      treasury,
       mint,
       ownerAta,
       automationAta,
@@ -343,12 +358,13 @@ export async function buildCloseAutomationSwapIx(params: {
   owner: PublicKey;
   automation: PublicKey;
   inputMint: PublicKey;
+  treasury: PublicKey;
 }): Promise<{
   ix: TransactionInstruction;
   ownerInputAta: PublicKey;
   automationInputAta: PublicKey;
 }> {
-  const { program, owner, automation, inputMint } = params;
+  const { program, owner, automation, inputMint, treasury } = params;
   const ownerInputAta = associatedTokenAddress(owner, inputMint);
   const automationInputAta = associatedTokenAddress(automation, inputMint);
   const ix = await program.methods
@@ -356,6 +372,8 @@ export async function buildCloseAutomationSwapIx(params: {
     .accountsStrict({
       owner,
       automation,
+      config: configPda(program.programId),
+      treasury,
       inputMint,
       ownerInputAta,
       automationInputAta,

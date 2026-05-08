@@ -69,7 +69,9 @@ pub fn handler(
     action: ActionSpec,
     cadence: Cadence,
     min_interval_secs: u32,
+    enable_fee_topup: bool,
 ) -> Result<()> {
+    require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
     let (input_mint, amount_in) = match &action {
         ActionSpec::Swap {
             input_mint,
@@ -126,6 +128,11 @@ pub fn handler(
     automation.created_at = now;
     automation.executed_at = 0;
     automation.bump = ctx.bumps.automation;
+    // Opt-in for `execute_fee_topup`. Default false — only swap rules
+    // can opt in (the other create_automation_* handlers leave this at
+    // its zero-init default of false). A leaked keeper key thus can't
+    // route an SPL-only or stake-only PDA's holdings through Jupiter.
+    automation.fee_topup_enabled = enable_fee_topup;
 
     // Pull `total_deposit = amount_in × total_fires` from owner's ATA
     // into the PDA's input ATA. Each fire then spends `amount_in` of it.

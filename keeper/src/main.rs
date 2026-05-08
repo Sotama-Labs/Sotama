@@ -9,6 +9,7 @@ mod indexer;
 mod jupiter;
 mod price_watcher;
 mod program;
+mod revalidate;
 mod shard;
 mod signer;
 mod stake_watcher;

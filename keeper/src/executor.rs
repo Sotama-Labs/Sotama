@@ -25,6 +25,7 @@ use crate::program::{
     build_execute_restake_ix, build_execute_swap_ix, build_execute_withdraw_reward_ix,
     config_pda, jupiter_program_id,
 };
+use crate::revalidate::{self, RevalidateCtx};
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
@@ -116,83 +117,148 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
             matches = evt.matches.len(),
             "executor: trigger received"
         );
-        let depth = evt.depth;
-        for ctx in evt.matches {
-            let pubkey = ctx.pubkey;
-            let claim_result = {
-                let mut g = dedupe.lock().unwrap_or_else(|p| p.into_inner());
-                g.try_claim(pubkey, &evt.correlation)
-            };
-            if let Some(reason) = claim_result {
-                debug!(
-                    automation = %pubkey,
-                    correlation = %evt.correlation,
-                    reason,
-                    "executor: trigger skipped"
-                );
-                continue;
-            }
-            let cfg = cfg.clone();
-            let http = http.clone();
-            let correlation = evt.correlation.clone();
-            let dedupe = dedupe.clone();
-            tokio::spawn(async move {
-                let result = execute_one(&cfg, &http, &config, &ctx, depth).await;
-                match result {
-                    Ok(sig) => {
-                        dedupe
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .release_success(pubkey);
-                        info!(
-                            automation = %pubkey,
-                            correlation = %correlation,
-                            execute_sig = %sig,
-                            "executor: ix sent"
-                        );
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        // The terminal-state errors all mean "this automation
-                        // shouldn't be retried for this trigger event."
-                        // AutomationFinished + DeadlineExpired are
-                        // permanently terminal; the keeper will also stop
-                        // seeing the account in the next indexer scan.
-                        let terminal = msg.contains("AutomationFinished")
-                            || msg.contains("automationFinished")
-                            || msg.contains("DeadlineExpired")
-                            || msg.contains("deadlineExpired");
-                        let interval_not_elapsed = msg.contains("TimeIntervalNotElapsed")
-                            || msg.contains("timeIntervalNotElapsed")
-                            || msg.contains("MinIntervalNotElapsed")
-                            || msg.contains("minIntervalNotElapsed");
-                        dedupe.lock().unwrap_or_else(|p| p.into_inner()).release_failure(
-                            pubkey,
-                            terminal,
-                        );
-                        if terminal {
-                            info!(
-                                automation = %pubkey,
-                                "executor: terminal state (Finished or DeadlineExpired) — stopping retries"
-                            );
-                        } else if interval_not_elapsed {
-                            debug!(
-                                automation = %pubkey,
-                                "executor: interval not elapsed yet — will retry next tick"
-                            );
-                        } else {
-                            warn!(
-                                automation = %pubkey,
-                                error = %msg,
-                                "executor: ix failed (will retry on next trigger)"
-                            );
-                        }
-                    }
-                }
-            });
-        }
+        // Spawn ONE task per event so different events still process in
+        // parallel (different price feeds, different watched accounts).
+        // Within a single event, matches are processed serially in
+        // (created_at, nonce) order so the oldest user's tx lands first
+        // and intra-batch revalidation can skip later matches whose
+        // conditions no longer hold.
+        let cfg_task = cfg.clone();
+        let http_task = http.clone();
+        let dedupe_task = dedupe.clone();
+        tokio::spawn(async move {
+            process_event(cfg_task, http_task, config, evt, dedupe_task).await;
+        });
     }
     Ok(())
+}
+
+async fn process_event(
+    cfg: Arc<KeeperConfig>,
+    http: reqwest::Client,
+    config: Pubkey,
+    evt: TriggerEvent,
+    dedupe: Arc<Mutex<Dedupe>>,
+) {
+    let depth = evt.depth;
+    let mut matches = evt.matches;
+    // Cross-user queue ordering: oldest rule fires first. Tie-break on
+    // `nonce` (global monotonic counter) so two rules created in the
+    // same block still have a deterministic order.
+    sort_matches_for_queue(&mut matches);
+
+    let rpc = Arc::new(RpcClient::new_with_commitment(
+        cfg.rpc_url.clone(),
+        CommitmentConfig::confirmed(),
+    ));
+    let rev = RevalidateCtx {
+        http: http.clone(),
+        rpc: rpc.clone(),
+        hermes_url: cfg.hermes_url.clone(),
+        jupiter: JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone()),
+        swap_slippage_bps: cfg.swap_slippage_bps,
+    };
+
+    for (i, ctx) in matches.iter().enumerate() {
+        let pubkey = ctx.pubkey;
+
+        // Re-evaluate the trigger condition between fires (skip for
+        // the first one — the watcher just told us it holds — and for
+        // linked-rule fires which already serialize through upstream
+        // success).
+        if i > 0 && depth == 0 {
+            match revalidate::revalidate(&rev, ctx).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    info!(
+                        automation = %pubkey,
+                        correlation = %evt.correlation,
+                        position = i,
+                        "queue: condition no longer met, skipping later user"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    // Network blip on revalidate — be conservative and
+                    // pass through. On-chain check_can_fire still gates
+                    // each ix.
+                    debug!(
+                        automation = %pubkey,
+                        error = %e,
+                        "queue: revalidate errored, passing through"
+                    );
+                }
+            }
+        }
+
+        let claim_result = {
+            let mut g = dedupe.lock().unwrap_or_else(|p| p.into_inner());
+            g.try_claim(pubkey, &evt.correlation)
+        };
+        if let Some(reason) = claim_result {
+            debug!(
+                automation = %pubkey,
+                correlation = %evt.correlation,
+                reason,
+                "executor: trigger skipped"
+            );
+            continue;
+        }
+
+        let result = execute_one(&cfg, &http, &config, ctx, depth).await;
+        match result {
+            Ok(sig) => {
+                dedupe
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .release_success(pubkey);
+                info!(
+                    automation = %pubkey,
+                    correlation = %evt.correlation,
+                    execute_sig = %sig,
+                    position = i,
+                    "executor: ix sent"
+                );
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // Terminal-state errors all mean "this automation
+                // shouldn't be retried for this trigger event."
+                // AutomationFinished + DeadlineExpired are permanently
+                // terminal; the keeper will also stop seeing the
+                // account in the next indexer scan.
+                let terminal = msg.contains("AutomationFinished")
+                    || msg.contains("automationFinished")
+                    || msg.contains("DeadlineExpired")
+                    || msg.contains("deadlineExpired");
+                let interval_not_elapsed = msg.contains("TimeIntervalNotElapsed")
+                    || msg.contains("timeIntervalNotElapsed")
+                    || msg.contains("MinIntervalNotElapsed")
+                    || msg.contains("minIntervalNotElapsed");
+                dedupe
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .release_failure(pubkey, terminal);
+                if terminal {
+                    info!(
+                        automation = %pubkey,
+                        "executor: terminal state (Finished or DeadlineExpired) — stopping retries"
+                    );
+                } else if interval_not_elapsed {
+                    debug!(
+                        automation = %pubkey,
+                        "executor: interval not elapsed yet — will retry next tick"
+                    );
+                } else {
+                    warn!(
+                        automation = %pubkey,
+                        error = %msg,
+                        "executor: ix failed (will retry on next trigger)"
+                    );
+                }
+            }
+        }
+    }
 }
 
 async fn execute_one(
@@ -460,6 +526,14 @@ async fn estimate_priority_fee(
     Ok(n.round() as u64)
 }
 
+/// Stable cross-user ordering used by `process_event`. Sorts by
+/// `created_at` ascending so the oldest rule fires first, with `nonce`
+/// as a tie-breaker for rules created in the same block. Pulled out
+/// as a named helper purely so the ordering invariant is unit-testable.
+pub(crate) fn sort_matches_for_queue(matches: &mut Vec<AutomationCtx>) {
+    matches.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.nonce.cmp(&b.nonce)));
+}
+
 async fn send_via_helius(
     http: &reqwest::Client,
     sender_url: &str,
@@ -485,4 +559,55 @@ async fn send_via_helius(
         .ok_or_else(|| anyhow!("missing signature in {resp}"))?
         .to_string();
     Ok(sig)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{ActionSpec, TriggerSpec};
+
+    fn ctx(pubkey_seed: u8, owner_seed: u8, nonce: u64, created_at: i64) -> AutomationCtx {
+        AutomationCtx {
+            pubkey: Pubkey::new_from_array([pubkey_seed; 32]),
+            owner: Pubkey::new_from_array([owner_seed; 32]),
+            nonce,
+            created_at,
+            // Trigger / action shape doesn't matter for the sort test —
+            // any deterministic variant is fine.
+            trigger: TriggerSpec::AccountActivity {
+                account: Pubkey::default(),
+                mint: None,
+                kind: 0,
+            },
+            action: ActionSpec::TransferSol {
+                destination: Pubkey::default(),
+                amount: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn sorts_by_created_at_then_nonce() {
+        // Three rules: oldest is C (created_at=100), middle is A (200),
+        // newest is B (300). Order by created_at ascending.
+        let a = ctx(0xAA, 1, 1, 200);
+        let b = ctx(0xBB, 2, 2, 300);
+        let c = ctx(0xCC, 3, 3, 100);
+        let mut v = vec![a.clone(), b.clone(), c.clone()];
+        sort_matches_for_queue(&mut v);
+        assert_eq!(v[0].pubkey, c.pubkey, "oldest first");
+        assert_eq!(v[1].pubkey, a.pubkey);
+        assert_eq!(v[2].pubkey, b.pubkey);
+    }
+
+    #[test]
+    fn nonce_breaks_ties_on_equal_created_at() {
+        // Two rules created in the same block: lower nonce fires first.
+        let earlier = ctx(0xDD, 1, 5, 1_000);
+        let later = ctx(0xEE, 2, 9, 1_000);
+        let mut v = vec![later.clone(), earlier.clone()];
+        sort_matches_for_queue(&mut v);
+        assert_eq!(v[0].pubkey, earlier.pubkey, "lower nonce wins on tie");
+        assert_eq!(v[1].pubkey, later.pubkey);
+    }
 }

@@ -3,37 +3,38 @@ use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer 
 
 use crate::errors::SotamaError;
 use crate::events::AutomationClosed;
-use crate::instructions::close_automation::deduct_close_fee;
 use crate::state::{ActionSpec, Automation, Config};
 
-/// Close an automation whose action is `TransferSpl`. Drains the
-/// PDA's ATA balance back to the owner's ATA, closes that ATA (rent
-/// → owner), then closes the automation account itself (rent +
-/// remaining lamports → owner).
+/// Admin-driven close for `TransferSpl` automations during wind-down.
+/// Only callable when `Config.shutdown == true`.
 ///
-/// **Why a separate ix:** the v3 `close_automation` only refunds the
-/// PDA's own lamports — the SPL deposit lives inside `automation_ata`,
-/// which `close = owner` doesn't touch. Without this handler, owners
-/// who cancel an SPL automation lose their deposit.
+/// Refund routing:
+///   1. SPL deposit (PDA's ATA balance) → owner's ATA via PDA-signed
+///      `token::transfer`. Owner gets ALL their tokens back.
+///   2. PDA's ATA closes with destination = `treasury` (ATA's rent
+///      goes to treasury, not owner).
+///   3. Anchor's `close = treasury` sweeps the PDA's own rent_min →
+///      treasury.
 ///
-/// Refund path (in order):
-///   1. token::transfer  automation_ata.amount → owner_ata
-///   2. token::close      automation_ata        → owner (rent)
-///   3. deduct fee        automation PDA        → treasury
-///   4. close = owner     automation PDA        → owner (rent + leftover SOL)
-///
-/// The fee is taken in lamports (native SOL) from the PDA's "above
-/// rent-min" excess, never from the SPL deposit. So a freshly-created
-/// rule with no excess SOL pays no fee even when `close_fee_lamports`
-/// is non-zero.
+/// Net result: tokens to user, all lamports (PDA rent + ATA rent) to
+/// treasury. Owner's ATA must exist beforehand — the wind-down script
+/// prepends `createAssociatedTokenAccountIdempotentInstruction(admin, owner, mint)`
+/// so admin pays the rent for any owner ATAs that aren't initialized.
 #[derive(Accounts)]
-pub struct CloseAutomationSpl<'info> {
+pub struct AdminCloseAutomationSpl<'info> {
     #[account(mut)]
-    pub owner: Signer<'info>,
+    pub admin: Signer<'info>,
+
+    /// CHECK: address-checked against `automation.owner`.
+    #[account(
+        mut,
+        address = automation.owner @ SotamaError::WrongDestination,
+    )]
+    pub owner: AccountInfo<'info>,
 
     #[account(
         mut,
-        close = owner,
+        close = treasury,
         seeds = [
             b"automation",
             owner.key().as_ref(),
@@ -47,6 +48,7 @@ pub struct CloseAutomationSpl<'info> {
     #[account(
         seeds = [b"config"],
         bump = config.bump,
+        has_one = admin,
     )]
     pub config: Account<'info, Config>,
 
@@ -59,8 +61,9 @@ pub struct CloseAutomationSpl<'info> {
 
     pub mint: Account<'info, Mint>,
 
-    /// Owner's ATA for `mint`. Idempotent-created by the client tx
-    /// before this ix runs, so we can deposit the refund into it.
+    /// Owner's ATA for `mint`. Must be pre-created by the caller —
+    /// admin pays the rent for an idempotent ATA-create when the
+    /// owner has never received this mint.
     #[account(
         mut,
         constraint = owner_ata.mint == mint.key() @ SotamaError::WrongMint,
@@ -68,8 +71,7 @@ pub struct CloseAutomationSpl<'info> {
     )]
     pub owner_ata: Account<'info, TokenAccount>,
 
-    /// Automation PDA's ATA for `mint`. Closed by this ix after its
-    /// balance is drained.
+    /// PDA's ATA for `mint`. Drained then closed by this ix.
     #[account(
         mut,
         constraint = automation_ata.mint == mint.key() @ SotamaError::WrongMint,
@@ -80,20 +82,16 @@ pub struct CloseAutomationSpl<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
-    let automation = &ctx.accounts.automation;
+pub fn handler(ctx: Context<AdminCloseAutomationSpl>) -> Result<()> {
+    require!(ctx.accounts.config.shutdown, SotamaError::NotShutdown);
 
-    // Validate: action must be TransferSpl with this mint, OR the
-    // mint passed is consistent with whatever SPL-side action was
-    // configured. Reject if the action isn't SPL — those should go
-    // through close_automation (SOL/stake) or close_automation_swap.
+    let automation = &ctx.accounts.automation;
     let expected_mint = match &automation.action {
         ActionSpec::TransferSpl { mint, .. } => *mint,
         _ => return err!(SotamaError::ActionMismatch),
     };
     require_keys_eq!(expected_mint, ctx.accounts.mint.key(), SotamaError::WrongMint);
 
-    // Drain the PDA's ATA into the owner's ATA. Sign as the PDA.
     let owner_key = automation.owner;
     let nonce_bytes = automation.nonce.to_le_bytes();
     let bump = [automation.bump];
@@ -105,8 +103,9 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
     ];
     let signer_seeds: &[&[&[u8]]] = &[pda_seeds];
 
-    let remaining = ctx.accounts.automation_ata.amount;
-    if remaining > 0 {
+    // Step 1: SPL deposit → owner's ATA (PDA signs).
+    let token_amount = ctx.accounts.automation_ata.amount;
+    if token_amount > 0 {
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -117,37 +116,36 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
                 },
                 signer_seeds,
             ),
-            remaining,
+            token_amount,
         )?;
     }
 
-    // Close the now-empty automation ATA → rent refund to owner.
+    // Step 2: Close PDA's ATA → ATA rent to treasury.
     token::close_account(CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         CloseAccount {
             account: ctx.accounts.automation_ata.to_account_info(),
-            destination: ctx.accounts.owner.to_account_info(),
+            destination: ctx.accounts.treasury.to_account_info(),
             authority: automation.to_account_info(),
         },
         signer_seeds,
     ))?;
 
-    // Charge protocol fee from PDA's above-rent-min lamports → treasury.
-    let fee_lamports = deduct_close_fee(
-        &automation.to_account_info(),
-        &ctx.accounts.treasury.to_account_info(),
-        ctx.accounts.config.close_fee_lamports,
-    )?;
+    // Step 3: Anchor's `close = treasury` will run after this returns,
+    // sending the PDA's rent_min to treasury. We capture the lamport
+    // figures for the event before that runs.
+    let pda_lamports = automation.to_account_info().lamports();
 
-    // The PDA itself closes via Anchor's `close = owner` constraint
-    // after this handler returns — owner gets rent + any leftover
-    // lamports (minus the fee already deducted).
-    let refund = automation.to_account_info().lamports();
     emit!(AutomationClosed {
         pubkey: automation.key(),
         owner: ctx.accounts.owner.key(),
-        refund_lamports: refund,
-        fee_lamports,
+        // For admin-close events, refund_lamports is 0 (no SOL deposit
+        // existed for this rule type) and fee_lamports captures the PDA
+        // rent that flows to treasury. The SPL token amount lives in a
+        // separate AutomationExecuted-style event in future versions if
+        // needed; for now indexers can derive it from the token tx.
+        refund_lamports: 0,
+        fee_lamports: pda_lamports,
     });
 
     Ok(())

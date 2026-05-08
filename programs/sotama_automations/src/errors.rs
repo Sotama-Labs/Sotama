@@ -66,4 +66,18 @@ pub enum SotamaError {
     BadFeeTopupOutput,
     #[msg("Fee topup output ATA must be owned by the automation PDA")]
     BadFeeTopupOwner,
+    #[msg("Fee topup is not enabled for this automation")]
+    FeeTopupNotEnabled,
+    #[msg("Close fee exceeds protocol cap (0.1 SOL)")]
+    FeeTooLarge,
+    #[msg("Provided treasury account does not match Config.treasury")]
+    WrongTreasury,
+    #[msg("Program is in terminal shutdown — operation rejected")]
+    Shutdown,
+    #[msg("Operation requires Config.shutdown = true (kill-switch only)")]
+    NotShutdown,
+    #[msg("Shutdown is one-way; cannot be cleared once set")]
+    ShutdownAlreadySet,
+    #[msg("Caller is neither the automation owner nor the program admin")]
+    UnauthorizedCloser,
 }

@@ -62,10 +62,19 @@ pub fn handler<'info>(
     keeper_wsol_ata_index: u8,
 ) -> Result<()> {
     require!(!ctx.accounts.config.paused, SotamaError::Paused);
+    require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
     require_keys_eq!(
         ctx.accounts.keeper.key(),
         ctx.accounts.config.keeper,
         SotamaError::UnauthorizedKeeper
+    );
+    // Per-PDA opt-in. Without this gate, a leaked keeper signing key
+    // could drain ANY user PDA's token holdings via a Jupiter route
+    // back to a wSOL ATA the keeper owns. Only swap rules whose owner
+    // explicitly opted into auto-fee-management at create time pass.
+    require!(
+        ctx.accounts.automation.fee_topup_enabled,
+        SotamaError::FeeTopupNotEnabled
     );
 
     let remaining = ctx.remaining_accounts;

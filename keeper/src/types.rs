@@ -5,11 +5,21 @@ use crate::state::{ActionSpec, TriggerSpec};
 /// Snapshot of an on-chain automation that the keeper hot-paths against.
 /// Cloned freely; full ActionSpec/TriggerSpec carried so the executor
 /// doesn't need to re-fetch.
+///
+/// `created_at` and `nonce` are deterministic, immutable fields used by
+/// the executor to enforce cross-user ordering: when N users' rules
+/// fire on the same trigger event, the executor sorts by
+/// `(created_at ASC, nonce ASC)` and processes them serially so the
+/// oldest rule executes first, with intra-batch revalidation skipping
+/// later rules whose trigger conditions no longer hold.
 #[derive(Debug, Clone)]
 pub struct AutomationCtx {
     pub pubkey: Pubkey,
     pub owner: Pubkey,
     pub nonce: u64,
+    /// Block timestamp (Unix seconds) at automation creation. Tie-break
+    /// on `nonce` for determinism when multiple rules share a slot.
+    pub created_at: i64,
     pub trigger: TriggerSpec,
     pub action: ActionSpec,
 }
