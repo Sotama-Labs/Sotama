@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/sotama_automations.json`.
  */
 export type SotamaAutomations = {
-  "address": "2gp9bMBEVpQp6Lyyg13Bw6XF9S9saAcm9C4XQ69T8ZqQ",
+  "address": "3FCzDrB9KNUe2JJQFTKjWF1LNnHdcsw3FV5kN7SmGtdw",
   "metadata": {
     "name": "sotamaAutomations",
     "version": "0.1.0",

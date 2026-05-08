@@ -46,6 +46,8 @@ hex = "0.4"
 # code paths don't pull this at runtime, but it's small enough to always
 # compile in.
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+http = "1.4.0"
+pyth-lazer-protocol = "0.41.0"
 
 [profile.release]
 opt-level = 3

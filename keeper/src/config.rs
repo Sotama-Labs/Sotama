@@ -52,6 +52,13 @@ pub struct KeeperConfig {
     pub keeper_fee_lamports: u64,
     pub fee_topup_threshold_lamports: u64,
     pub fee_topup_amount_lamports: u64,
+    /// Optional Pyth Lazer access token. When set, the keeper opens a
+    /// sub-second WebSocket stream to Lazer for `TokenPrice` triggers
+    /// and runs ALONGSIDE the existing Hermes polling watcher.
+    /// Whichever fires first wins; the executor's dedupe layer drops
+    /// the duplicate. When the token expires or is unset, the Hermes
+    /// path keeps running unchanged at its 12s cadence.
+    pub lazer_access_token: Option<String>,
 }
 
 impl KeeperConfig {
@@ -106,6 +113,10 @@ impl KeeperConfig {
         let fee_topup_amount_lamports =
             parse_or::<u64>("FEE_TOPUP_AMOUNT_LAMPORTS", 100_000)?;
 
+        let lazer_access_token = std::env::var("LAZER_ACCESS_TOKEN")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+
         Ok(Self {
             cluster,
             api_key,
@@ -126,6 +137,7 @@ impl KeeperConfig {
             keeper_fee_lamports,
             fee_topup_threshold_lamports,
             fee_topup_amount_lamports,
+            lazer_access_token,
         })
     }
 }

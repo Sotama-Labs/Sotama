@@ -7,6 +7,7 @@ mod config;
 mod executor;
 mod indexer;
 mod jupiter;
+mod lazer_watcher;
 mod price_watcher;
 mod program;
 mod revalidate;
@@ -88,6 +89,22 @@ async fn main() -> Result<()> {
         })
     };
 
+    // Optional Pyth Lazer watcher. Runs alongside price_watcher when
+    // LAZER_ACCESS_TOKEN is set: Lazer fires sub-second, Hermes polls at
+    // 12s as backup, executor's dedupe drops the slower duplicate. Returns
+    // immediately as a no-op if the token is unset, so this spawn is
+    // always safe.
+    let lazer_handle = {
+        let cfg = cfg.clone();
+        let set_rx = set_rx.clone();
+        let trigger_tx = trigger_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = lazer_watcher::run(cfg, set_rx, trigger_tx).await {
+                error!(error = %e, "lazer_watcher task exited");
+            }
+        })
+    };
+
     let executor_handle = {
         let cfg = cfg.clone();
         tokio::spawn(async move {
@@ -105,6 +122,7 @@ async fn main() -> Result<()> {
         _ = subscriber_handle => error!("subscriber task ended unexpectedly"),
         _ = price_handle => error!("price_watcher task ended unexpectedly"),
         _ = stake_handle => error!("stake_watcher task ended unexpectedly"),
+        _ = lazer_handle => error!("lazer_watcher task ended unexpectedly"),
         _ = executor_handle => error!("executor task ended unexpectedly"),
     }
 
