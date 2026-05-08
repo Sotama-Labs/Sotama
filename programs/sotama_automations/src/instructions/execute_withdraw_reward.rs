@@ -69,7 +69,8 @@ pub fn handler(ctx: Context<ExecuteWithdrawReward>, amount: u64) -> Result<()> {
     require!(amount > 0, SotamaError::DepositTooSmall);
 
     let automation = &mut ctx.accounts.automation;
-    require!(!automation.executed, SotamaError::AlreadyExecuted);
+    let now = Clock::get()?.unix_timestamp;
+    automation.check_can_fire(now)?;
 
     let (stake_account_key, destination_key) = match &automation.action {
         ActionSpec::StakeWithdrawReward {
@@ -123,13 +124,14 @@ pub fn handler(ctx: Context<ExecuteWithdrawReward>, amount: u64) -> Result<()> {
         signer_seeds,
     )?;
 
-    automation.executed = true;
-    automation.executed_at = Clock::get()?.unix_timestamp;
+    automation.advance(now);
 
     emit!(AutomationExecuted {
         pubkey: automation.key(),
         action_kind: automation.action.kind_byte(),
         amount,
+        executions: automation.executions,
+        finished: automation.finished,
     });
 
     Ok(())

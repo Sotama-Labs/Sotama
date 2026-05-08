@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
+use crate::jupiter::JupiterClient;
 use crate::state::TriggerSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -31,20 +32,25 @@ pub async fn run(
     let mut tick = interval(cfg.price_poll_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    let jupiter = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
+
     loop {
         tick.tick().await;
         let set = set_rx.borrow().clone();
         if set.price_triggers.is_empty() {
             continue;
         }
+
         let feeds: Vec<Pubkey> = set.price_feeds();
         // Pyth Hermes expects the 32-byte feed ID as hex (lowercase, no
         // 0x), but on-chain we stored it as a Pubkey's raw bytes (base58
         // when Display'd). Convert here for the HTTP query.
-        let feed_hex: Vec<String> = feeds.iter().map(|p| pubkey_to_hex(p)).collect();
+        let feed_hex: Vec<String> = feeds.iter().map(pubkey_to_hex).collect();
+        let quote_mints = set.token_price_quote_mints();
         debug!(
             feeds = feed_hex.len(),
-            "price_watcher: polling Pyth Hermes"
+            quote_mints = quote_mints.len(),
+            "price_watcher: polling Pyth Hermes (+ Jupiter for non-USD quotes)"
         );
 
         let prices = match fetch_prices(&http, &cfg.hermes_url, &feed_hex).await {
@@ -54,6 +60,21 @@ pub async fn run(
                 continue;
             }
         };
+
+        // Per-tick cache of Jupiter `/quote` probes for the quote mints
+        // appearing in any TokenPrice trigger. Cached so a mint shared
+        // across many triggers (USDC most likely) isn't probed twice.
+        let mut mint_quotes: HashMap<Pubkey, MintQuote> = HashMap::new();
+        for mint in quote_mints {
+            match probe_mint(&jupiter, &mint, cfg.swap_slippage_bps).await {
+                Ok(q) => {
+                    mint_quotes.insert(mint, q);
+                }
+                Err(e) => {
+                    warn!(mint = %mint, error = %e, "price_watcher: quote-mint /quote failed");
+                }
+            }
+        }
 
         let mut to_fire: HashMap<String, Vec<AutomationCtx>> = HashMap::new();
         let mut already: HashSet<Pubkey> = HashSet::new();
@@ -68,22 +89,45 @@ pub async fn run(
                 if !already.insert(ctx.pubkey) {
                     continue;
                 }
-                if let TriggerSpec::TokenPrice {
+                let TriggerSpec::TokenPrice {
+                    quote_mint,
                     comparator,
                     threshold,
                     expo,
                     ..
                 } = &ctx.trigger
-                {
-                    let crossed = match *comparator {
+                else {
+                    continue;
+                };
+
+                let crossed = match quote_mint {
+                    None => match *comparator {
+                        // USD-denominated: compare Pyth's raw price
+                        // directly against the threshold.
                         0 => crossed_below(price, *threshold, *expo),
                         1 => crossed_above(price, *threshold, *expo),
                         _ => false,
-                    };
-                    if crossed {
-                        let key = format!("{}:{}", feed_str, price.publish_time);
-                        to_fire.entry(key).or_default().push(ctx.clone());
+                    },
+                    Some(qm) => {
+                        // Quote-denominated: ratio = base_pyth / quote_jupiter.
+                        // Resolve quote via Jupiter; skip if probe failed
+                        // this tick (will retry next tick).
+                        let Some(q) = mint_quotes.get(qm) else {
+                            continue;
+                        };
+                        ratio_compare(
+                            *comparator,
+                            (price.raw as i128, price.expo),
+                            (q.out_amount as i128, -6),
+                            *threshold,
+                            *expo,
+                        )
+                        .unwrap_or(false)
                     }
+                };
+                if crossed {
+                    let key = format!("{}:{}", feed_str, price.publish_time);
+                    to_fire.entry(key).or_default().push(ctx.clone());
                 }
             }
         }
@@ -98,11 +142,91 @@ pub async fn run(
                 source: "price_watcher",
                 correlation,
                 matches,
+                depth: 0,
             };
             if let Err(e) = trigger_tx.send(evt).await {
                 return Err(anyhow!("price_watcher: trigger channel closed: {e}"));
             }
         }
+    }
+}
+
+/// Snapshot of a Jupiter `/quote` for one mint paired against USDC.
+/// Used as the quote leg of a TokenPrice trigger configured with a
+/// non-USD quote mint.
+#[derive(Debug, Clone)]
+struct MintQuote {
+    /// out_amount in USDC base units (6 decimals) when swapping
+    /// `PROBE_AMOUNT_RAW` of the mint.
+    out_amount: u64,
+}
+
+/// USDC mainnet mint. The probe quote is denominated in USDC so all
+/// quote prices are comparable to USD-denominated Pyth feeds. Devnet
+/// USDC is a different mint; this is mainnet-only by design (devnet
+/// liquidity is too thin to make non-USD quotes meaningful anyway).
+const USDC_MINT_STR: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+/// Probe with 1.0 unit at 9-decimal scale; the keeper handles
+/// expo-alignment via cross-multiplication so the actual decimals on
+/// the quote mint don't have to match.
+const PROBE_AMOUNT_RAW: u64 = 1_000_000_000;
+
+async fn probe_mint(
+    jupiter: &JupiterClient,
+    mint: &Pubkey,
+    slippage_bps: u16,
+) -> Result<MintQuote> {
+    use std::str::FromStr;
+    let usdc = Pubkey::from_str(USDC_MINT_STR).expect("USDC mint constant valid");
+    if *mint == usdc {
+        return Ok(MintQuote {
+            out_amount: 1_000_000, // 1 USDC at 6 decimals
+        });
+    }
+    let q = jupiter.quote(mint, &usdc, PROBE_AMOUNT_RAW, slippage_bps).await?;
+    let out: u64 = q
+        .out_amount
+        .parse()
+        .map_err(|e| anyhow!("parse out_amount `{}`: {e}", q.out_amount))?;
+    Ok(MintQuote { out_amount: out })
+}
+
+/// Compute `base/quote comparator threshold*10^expo` using
+/// cross-multiplication to avoid div-by-zero and float drift.
+/// Returns Some(true/false) for the crossing decision, or None if the
+/// comparator byte is invalid.
+fn ratio_compare(
+    comparator: u8,
+    base: (i128, i32),
+    quote: (i128, i32),
+    threshold: i64,
+    threshold_expo: i32,
+) -> Option<bool> {
+    let (b_raw, b_expo) = base;
+    let (q_raw, q_expo) = quote;
+    if q_raw == 0 {
+        return None;
+    }
+    let exp = threshold_expo as i64 + q_expo as i64 - b_expo as i64;
+    if exp >= 0 {
+        let pow = 10i128.saturating_pow(exp as u32);
+        let rhs = (q_raw)
+            .saturating_mul(threshold as i128)
+            .saturating_mul(pow);
+        Some(match comparator {
+            0 => b_raw <= rhs,
+            1 => b_raw >= rhs,
+            _ => return None,
+        })
+    } else {
+        let pow = 10i128.saturating_pow((-exp) as u32);
+        let scaled_b = b_raw.saturating_mul(pow);
+        Some(match comparator {
+            0 => scaled_b <= q_raw.saturating_mul(threshold as i128),
+            1 => scaled_b >= q_raw.saturating_mul(threshold as i128),
+            _ => return None,
+        })
     }
 }
 

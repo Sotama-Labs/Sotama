@@ -3,7 +3,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{ActionSpec, Automation, Config, TriggerSpec};
+use crate::state::{ActionSpec, Automation, Cadence, Config, TriggerSpec};
 
 /// Create an automation whose action is `TransferSpl`. The owner deposits
 /// `amount` of `mint` from their ATA into the Automation PDA's ATA. The
@@ -61,6 +61,8 @@ pub fn handler(
     ctx: Context<CreateAutomationSpl>,
     trigger: TriggerSpec,
     action: ActionSpec,
+    cadence: Cadence,
+    min_interval_secs: u32,
 ) -> Result<()> {
     let (destination, mint, amount) = match &action {
         ActionSpec::TransferSpl {
@@ -74,20 +76,29 @@ pub fn handler(
     require_keys_eq!(mint, ctx.accounts.mint.key(), SotamaError::WrongMint);
     let _ = destination;
     trigger.validate()?;
+    cadence.validate()?;
 
     let trigger_kind_byte = trigger.kind_byte();
     let trigger_pubkey = trigger.primary_pubkey();
     let action_kind_byte = action.kind_byte();
+    let cadence_kind_byte = cadence.kind_byte();
 
     let nonce = ctx.accounts.config.automation_count;
     let now = Clock::get()?.unix_timestamp;
+
+    if let Cadence::Until { unix_deadline } = &cadence {
+        require!(*unix_deadline > now, SotamaError::BadCadence);
+    }
 
     let automation = &mut ctx.accounts.automation;
     automation.owner = ctx.accounts.owner.key();
     automation.nonce = nonce;
     automation.trigger = trigger;
     automation.action = action;
-    automation.executed = false;
+    automation.cadence = cadence;
+    automation.executions = 0;
+    automation.min_interval_secs = min_interval_secs;
+    automation.finished = false;
     automation.created_at = now;
     automation.executed_at = 0;
     automation.bump = ctx.bumps.automation;
@@ -116,6 +127,7 @@ pub fn handler(
         trigger_kind: trigger_kind_byte,
         action_kind: action_kind_byte,
         trigger_pubkey,
+        cadence_kind: cadence_kind_byte,
     });
 
     Ok(())

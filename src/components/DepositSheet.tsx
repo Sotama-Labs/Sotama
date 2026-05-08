@@ -1,9 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  createSyncNativeInstruction,
+  NATIVE_MINT,
+} from "@solana/spl-token";
 import BN from "bn.js";
 import type { Action, Trigger } from "@/lib/types";
 import { fmt } from "@/lib/format";
@@ -13,6 +17,8 @@ import {
   buildCreateAutomationIx,
   buildCreateAutomationSplIx,
   buildCreateAutomationStakeIx,
+  buildCreateAutomationSwapIx,
+  cadenceToOnChain,
   getProgram,
   isProgramConfigured,
   nextNonce,
@@ -100,7 +106,27 @@ type StakeSpec = {
   trigger: OnChainTriggerSpec;
   action: OnChainActionSpec;
 };
-type OnChainSpec = SolSpec | SplSpec | StakeSpec;
+type SwapSpec = {
+  kind: "swap";
+  trigger: OnChainTriggerSpec;
+  action: {
+    swap: {
+      inputMint: PublicKey;
+      outputMint: PublicKey;
+      destination: PublicKey;
+      amountIn: BN;
+      minAmountOut: BN;
+      linkedDownstream: PublicKey | null;
+      linkFeeDeposit: BN;
+    };
+  };
+  inputMint: PublicKey;
+  outputMint: PublicKey;
+  destination: PublicKey;
+  ownerInputAta: PublicKey;
+  destinationOutputAta: PublicKey;
+};
+type OnChainSpec = SolSpec | SplSpec | StakeSpec | SwapSpec;
 
 /** Map UI Trigger → on-chain TriggerSpec. Returns null if shape isn't yet
  *  supported on-chain (or has invalid fields). */
@@ -135,10 +161,26 @@ function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
       })();
       if (!feed) return null;
       const comparator = t.comparator === "below" ? 0 : 1;
-      const expo = DEFAULT_PYTH_EXPO;
+      // USD quote: threshold is denominated in dollars at Pyth's
+      // standard expo (-8). Token quote: threshold is the per-token
+      // ratio at -6 (gives basis-point precision for typical pair
+      // ratios like 0.99 / 1.01) — the keeper resolves the quote
+      // mint's USDC price via Jupiter at fire time.
+      let quoteMint: PublicKey | null = null;
+      let expo: number;
+      if (t.quote.kind === "usd") {
+        expo = DEFAULT_PYTH_EXPO;
+      } else {
+        const m = tryPubkey(t.quote.mint);
+        if (!m) return null;
+        quoteMint = m;
+        expo = -6;
+      }
       const scaled = Math.round(t.threshold * Math.pow(10, -expo));
       const threshold = new BN(scaled);
-      return { tokenPrice: { feed, comparator, threshold, expo } };
+      return {
+        tokenPrice: { feed, quoteMint, comparator, threshold, expo },
+      };
     }
     case "staking_reward_amount": {
       const stake = tryPubkey(t.stakeAccount);
@@ -156,11 +198,11 @@ function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
 }
 
 /** Map UI Action → on-chain ActionSpec + ix routing kind. Returns null
- *  for unsupported (Jupiter swap / sell_for). */
+ *  for unsupported (sell_for is one-shot only and not yet wired). */
 function buildActionSpec(
   owner: PublicKey,
   a: Action
-): { kind: "sol" | "spl" | "stake"; spec: OnChainActionSpec } | null {
+): { kind: "sol" | "spl" | "stake" | "swap"; spec: OnChainActionSpec } | null {
   switch (a.kind) {
     case "transfer": {
       const destination = tryPubkey(a.destination);
@@ -190,7 +232,44 @@ function buildActionSpec(
         },
       };
     }
-    case "swap":
+    case "swap": {
+      // Jupiter aggregates across every Solana DEX, so any (input,
+      // output) mint pair Jupiter can route is fair game — no pool
+      // registry needed at create time. The keeper resolves the
+      // actual route at execute time via Jupiter's `/build` API.
+      const inputMint = tryPubkey(a.inputToken.mint);
+      const outputMint = tryPubkey(a.outputToken.mint);
+      if (!inputMint || !outputMint) return null;
+      const amountIn = new BN(
+        Math.round(a.amount * Math.pow(10, a.inputToken.decimals)),
+      );
+      // MVP: no create-time quote → min_amount_out = 0. The keeper
+      // re-quotes at fire time with the user's desired slippage
+      // (default 0.5%) and the on-chain handler enforces the
+      // pre/post output-balance delta. A real create-time quote
+      // would update this field via Jupiter's /build → outAmount.
+      const minAmountOut = new BN(0);
+      // Optional linked downstream — when the user wires this swap
+      // to feed a downstream automation (auto-deposit pattern).
+      const linkedDownstream = a.linkedDownstream
+        ? tryPubkey(a.linkedDownstream)
+        : null;
+      const linkFeeDeposit = new BN(0); // v4 MVP: keeper handles fees via auto-sell
+      return {
+        kind: "swap",
+        spec: {
+          swap: {
+            inputMint,
+            outputMint,
+            destination: owner,
+            amountIn,
+            minAmountOut,
+            linkedDownstream,
+            linkFeeDeposit,
+          },
+        },
+      };
+    }
     case "sell_for":
       return null;
     case "restake": {
@@ -250,6 +329,32 @@ function getOnChainSpec(
       destinationAta: associatedTokenAddress(
         spl.transferSpl.destination,
         spl.transferSpl.mint
+      ),
+    };
+  }
+  if (action.kind === "swap") {
+    const swap = action.spec as {
+      swap: {
+        inputMint: PublicKey;
+        outputMint: PublicKey;
+        destination: PublicKey;
+        amountIn: BN;
+        minAmountOut: BN;
+        linkedDownstream: PublicKey | null;
+        linkFeeDeposit: BN;
+      };
+    };
+    return {
+      kind: "swap",
+      trigger,
+      action: swap,
+      inputMint: swap.swap.inputMint,
+      outputMint: swap.swap.outputMint,
+      destination: swap.swap.destination,
+      ownerInputAta: associatedTokenAddress(owner, swap.swap.inputMint),
+      destinationOutputAta: associatedTokenAddress(
+        swap.swap.destination,
+        swap.swap.outputMint,
       ),
     };
   }
@@ -380,7 +485,9 @@ export function DepositSheet({
       const result = await sendCreateAutomation(
         connection,
         wallet as Parameters<typeof sendCreateAutomation>[1],
-        onChainSpec
+        onChainSpec,
+        automation.cadence,
+        automation.minIntervalSecs,
       );
       onConfirm(result);
     } catch (e) {
@@ -605,7 +712,9 @@ async function sendCreateAutomation(
     signTransaction: NonNullable<ReturnType<typeof useWallet>["signTransaction"]>;
     sendTransaction?: ReturnType<typeof useWallet>["sendTransaction"];
   },
-  spec: OnChainSpec
+  spec: OnChainSpec,
+  cadence: import("@/lib/types").Cadence,
+  minIntervalSecs: number,
 ): Promise<OnChainResult> {
   if (!wallet.publicKey) throw new Error("wallet not connected");
   const adapterWallet = {
@@ -622,6 +731,7 @@ async function sendCreateAutomation(
 
   const tx = new Transaction();
   let automation: PublicKey;
+  const onChainCadence = cadenceToOnChain(cadence);
 
   if (spec.kind === "sol") {
     const built = await buildCreateAutomationIx({
@@ -629,20 +739,39 @@ async function sendCreateAutomation(
       owner,
       trigger: spec.trigger,
       action: spec.action,
+      cadence: onChainCadence,
+      minIntervalSecs,
       nextNonce: nonce,
     });
     tx.add(built.ix);
     automation = built.automation;
   } else if (spec.kind === "spl") {
-    // Pre-create the destination ATA (idempotent — no-ops if already exists)
-    // and the automation PDA's ATA. Both are paid by the owner.
+    // Pre-create the destination ATA (idempotent — no-ops if already
+    // exists), the automation PDA's ATA, and the owner's ATA. All
+    // three pre-creates are idempotent: they no-op when the ATA
+    // exists. The owner's ATA matters because the on-chain
+    // `create_automation_spl` handler reads it as a typed
+    // `Account<TokenAccount>` and would otherwise revert with
+    // "Account does not exist or has no data" before the deposit
+    // transfer can run.
     const builtBefore = await buildCreateAutomationSplIx({
       program,
       owner,
       trigger: spec.trigger,
       action: spec.action,
+      cadence: onChainCadence,
+      minIntervalSecs,
       nextNonce: nonce,
     });
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        spec.ownerAta,
+        owner,
+        spec.mint,
+        SPL_TOKEN_PROGRAM_ID
+      )
+    );
     tx.add(
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
@@ -663,12 +792,101 @@ async function sendCreateAutomation(
     );
     tx.add(builtBefore.ix);
     automation = builtBefore.automation;
+  } else if (spec.kind === "swap") {
+    // Pre-create the destination wallet's output ATA AND the PDA's
+    // input ATA in the same tx, idempotently. The PDA's input ATA is
+    // where the deposit lands; the destination's output ATA is where
+    // the swap result lands at execute time.
+    const builtBefore = await buildCreateAutomationSwapIx({
+      program,
+      owner,
+      trigger: spec.trigger,
+      action: spec.action,
+      cadence: onChainCadence,
+      minIntervalSecs,
+      nextNonce: nonce,
+    });
+
+    // If the swap input is native SOL, the on-chain create handler
+    // expects wrapped-SOL in the owner's input ATA. Auto-wrap by
+    // (1) creating the owner's wSOL ATA if missing, (2) transferring
+    // the deposit-sized lamports into it, (3) syncNative so the SPL
+    // Token program rolls the lamport balance into the token amount.
+    // This lets users pick "SOL" in the swap editor without an
+    // out-of-band wrap step. The exact wrap amount mirrors the
+    // on-chain `total_deposit = amount_in × max_runs` calculation.
+    // Always idempotent-create the owner's input ATA so a missing ATA
+    // surfaces as a friendlier error. The SOL input branch below also
+    // creates this same ATA via NATIVE_MINT (idempotent — no double
+    // creation tx for the same address).
+    if (spec.inputMint.toBase58() !== SOL_MINT_STR) {
+      tx.add(
+        createAssociatedTokenAccountIdempotentInstruction(
+          owner,
+          spec.ownerInputAta,
+          owner,
+          spec.inputMint,
+          SPL_TOKEN_PROGRAM_ID,
+        ),
+      );
+    }
+    if (spec.inputMint.toBase58() === SOL_MINT_STR) {
+      const totalFires =
+        cadence.kind === "once"
+          ? 1
+          : cadence.kind === "repeat"
+            ? cadence.total
+            : 1; // until is rejected on-chain for swap; default to 1
+      const amountInLamports = BigInt(spec.action.swap.amountIn.toString());
+      const wrapLamports = amountInLamports * BigInt(totalFires);
+      const ownerWsolAta = associatedTokenAddress(owner, NATIVE_MINT);
+      tx.add(
+        createAssociatedTokenAccountIdempotentInstruction(
+          owner,
+          ownerWsolAta,
+          owner,
+          NATIVE_MINT,
+          SPL_TOKEN_PROGRAM_ID,
+        ),
+      );
+      tx.add(
+        SystemProgram.transfer({
+          fromPubkey: owner,
+          toPubkey: ownerWsolAta,
+          lamports: wrapLamports,
+        }),
+      );
+      tx.add(createSyncNativeInstruction(ownerWsolAta, SPL_TOKEN_PROGRAM_ID));
+    }
+
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        builtBefore.automationInputAta,
+        builtBefore.automation,
+        spec.inputMint,
+        SPL_TOKEN_PROGRAM_ID,
+      ),
+    );
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        spec.destinationOutputAta,
+        spec.destination,
+        spec.outputMint,
+        SPL_TOKEN_PROGRAM_ID,
+      ),
+    );
+    tx.add(builtBefore.ix);
+    automation = builtBefore.automation;
   } else {
     const built = await buildCreateAutomationStakeIx({
       program,
       owner,
       trigger: spec.trigger,
       action: spec.action,
+      cadence: onChainCadence,
+      minIntervalSecs,
       nextNonce: nonce,
     });
     tx.add(built.ix);

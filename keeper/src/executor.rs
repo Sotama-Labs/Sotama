@@ -12,23 +12,41 @@ use solana_sdk::rent::Rent;
 use solana_sdk::transaction::Transaction;
 use solana_stake_interface::state::StakeStateV2;
 use std::collections::{HashSet, VecDeque};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
+use crate::jupiter::{self, JupiterClient};
 use crate::program::{
     associated_token_address, build_execute_automation_ix, build_execute_automation_spl_ix,
-    build_execute_restake_ix, build_execute_withdraw_reward_ix, config_pda,
+    build_execute_restake_ix, build_execute_swap_ix, build_execute_withdraw_reward_ix,
+    config_pda, jupiter_program_id,
 };
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
 const PRIORITY_FEE_DEFAULT_MICROLAMPORTS: u64 = 50_000;
-const COMPUTE_UNIT_LIMIT: u32 = 200_000;
+/// Default compute-unit limit for SOL/SPL transfers and stake CPIs.
+const COMPUTE_UNIT_LIMIT_DEFAULT: u32 = 200_000;
+/// Compute-unit limit for Jupiter swap relays. Routes through 3-4 AMMs
+/// can consume 600k-1.2M CU; we allocate the upper bound so a deeper
+/// route doesn't silently exceed and revert at the end.
+const COMPUTE_UNIT_LIMIT_SWAP: u32 = 1_000_000;
 const RECENT_TRIGGER_CACHE_SIZE: usize = 4_096;
+
+/// Per-action compute budget selector. Matched on the action variant so
+/// future ix types (fee topup, link fee debit) can declare their own
+/// ceilings without cluttering the executor's hot path.
+fn compute_unit_limit_for(action: &ActionSpec) -> u32 {
+    match action {
+        ActionSpec::Swap { .. } => COMPUTE_UNIT_LIMIT_SWAP,
+        _ => COMPUTE_UNIT_LIMIT_DEFAULT,
+    }
+}
 
 /// Per-keeper-session deduplication state — see executor module docs in
 /// the v1 keeper (kept verbatim).
@@ -98,10 +116,11 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
             matches = evt.matches.len(),
             "executor: trigger received"
         );
+        let depth = evt.depth;
         for ctx in evt.matches {
             let pubkey = ctx.pubkey;
             let claim_result = {
-                let mut g = dedupe.lock().expect("dedupe lock");
+                let mut g = dedupe.lock().unwrap_or_else(|p| p.into_inner());
                 g.try_claim(pubkey, &evt.correlation)
             };
             if let Some(reason) = claim_result {
@@ -118,12 +137,12 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
             let correlation = evt.correlation.clone();
             let dedupe = dedupe.clone();
             tokio::spawn(async move {
-                let result = execute_one(&cfg, &http, &config, &ctx).await;
+                let result = execute_one(&cfg, &http, &config, &ctx, depth).await;
                 match result {
                     Ok(sig) => {
                         dedupe
                             .lock()
-                            .expect("dedupe lock")
+                            .unwrap_or_else(|p| p.into_inner())
                             .release_success(pubkey);
                         info!(
                             automation = %pubkey,
@@ -134,24 +153,32 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
                     }
                     Err(e) => {
                         let msg = e.to_string();
-                        let already_executed = msg.contains("AlreadyExecuted")
-                            || msg.contains("alreadyExecuted")
-                            || msg.contains("0x1770");
+                        // The terminal-state errors all mean "this automation
+                        // shouldn't be retried for this trigger event."
+                        // AutomationFinished + DeadlineExpired are
+                        // permanently terminal; the keeper will also stop
+                        // seeing the account in the next indexer scan.
+                        let terminal = msg.contains("AutomationFinished")
+                            || msg.contains("automationFinished")
+                            || msg.contains("DeadlineExpired")
+                            || msg.contains("deadlineExpired");
                         let interval_not_elapsed = msg.contains("TimeIntervalNotElapsed")
-                            || msg.contains("timeIntervalNotElapsed");
-                        dedupe.lock().expect("dedupe lock").release_failure(
+                            || msg.contains("timeIntervalNotElapsed")
+                            || msg.contains("MinIntervalNotElapsed")
+                            || msg.contains("minIntervalNotElapsed");
+                        dedupe.lock().unwrap_or_else(|p| p.into_inner()).release_failure(
                             pubkey,
-                            already_executed,
+                            terminal,
                         );
-                        if already_executed {
+                        if terminal {
                             info!(
                                 automation = %pubkey,
-                                "executor: AlreadyExecuted (no-op, on-chain dedupe caught it)"
+                                "executor: terminal state (Finished or DeadlineExpired) — stopping retries"
                             );
                         } else if interval_not_elapsed {
                             debug!(
                                 automation = %pubkey,
-                                "executor: time interval not elapsed yet — will retry next tick"
+                                "executor: interval not elapsed yet — will retry next tick"
                             );
                         } else {
                             warn!(
@@ -173,18 +200,34 @@ async fn execute_one(
     http: &reqwest::Client,
     config: &Pubkey,
     ctx: &AutomationCtx,
+    depth: u8,
 ) -> Result<String> {
     let rpc =
         RpcClient::new_with_commitment(cfg.rpc_url.clone(), CommitmentConfig::confirmed());
 
-    let exec_ix = build_action_ix(&rpc, &cfg.program_id, &cfg.keeper_pubkey, config, ctx).await?;
+    let exec_ix = build_action_ix(cfg, http, &rpc, config, ctx).await?;
     let blockhash = rpc.get_latest_blockhash().await?;
 
+    let cu_limit = compute_unit_limit_for(&ctx.action);
     let mut ixs = vec![
-        ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT),
+        ComputeBudgetInstruction::set_compute_unit_limit(cu_limit),
         ComputeBudgetInstruction::set_compute_unit_price(PRIORITY_FEE_DEFAULT_MICROLAMPORTS),
-        exec_ix,
     ];
+    // For linked fires (depth > 0), atomically debit the per-fire fee
+    // from the PDA's lamport pool BEFORE running the action. Tx
+    // atomicity ensures both ixs land or both revert — no half-fired
+    // fees. Standalone fires (depth == 0) are subsidized by the keeper
+    // signer's main SOL balance.
+    if depth > 0 {
+        ixs.push(crate::program::build_execute_link_fee_debit_ix(
+            &cfg.program_id,
+            &cfg.keeper_pubkey,
+            config,
+            &ctx.pubkey,
+            cfg.keeper_fee_lamports,
+        ));
+    }
+    ixs.push(exec_ix);
     let probe_tx =
         sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, blockhash).await?;
 
@@ -227,12 +270,14 @@ async fn sign_tx(
 }
 
 async fn build_action_ix(
+    cfg: &KeeperConfig,
+    http: &reqwest::Client,
     rpc: &RpcClient,
-    program_id: &Pubkey,
-    keeper: &Pubkey,
     config: &Pubkey,
     ctx: &AutomationCtx,
 ) -> Result<Instruction> {
+    let program_id = &cfg.program_id;
+    let keeper = &cfg.keeper_pubkey;
     match &ctx.action {
         ActionSpec::TransferSol { destination, .. } => Ok(build_execute_automation_ix(
             program_id,
@@ -283,6 +328,92 @@ async fn build_action_ix(
                 stake_account,
                 destination,
                 amount,
+            ))
+        }
+        ActionSpec::Swap {
+            input_mint,
+            output_mint,
+            destination,
+            amount_in,
+            min_amount_out,
+            linked_downstream,
+            link_fee_deposit: _link_fee_deposit,
+        } => {
+            // Build the swap ix off-chain via Jupiter's /build API,
+            // then wrap it through Sotama's execute_swap relay so the
+            // PDA signs the inner ix. The on-chain handler enforces:
+            //   * input ATA mint = input_mint, owner = automation PDA
+            //   * output ATA mint = output_mint, owner = destination
+            //   * post-CPI output balance increase ≥ min_amount_out
+            //   * the inner ix targets the canonical Jupiter v6 ID
+            // We additionally sanity-check Jupiter's quoted out_amount
+            // before submission so we don't spend gas on a quote we
+            // already know will fail the on-chain slippage gate.
+            let automation_input_ata = associated_token_address(&ctx.pubkey, input_mint);
+            let destination_output_ata = associated_token_address(destination, output_mint);
+
+            let jup = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
+            let build = jup
+                .build_swap_cpi_safe(
+                    input_mint,
+                    output_mint,
+                    *amount_in,
+                    cfg.swap_slippage_bps,
+                    &ctx.pubkey,
+                )
+                .await
+                .map_err(|e| anyhow!("jupiter /build: {e}"))?;
+
+            // Jupiter must return the canonical v6 program ID.
+            let returned_program = Pubkey::from_str(&build.swap_instruction.program_id)
+                .map_err(|e| anyhow!("bad programId from jupiter: {e}"))?;
+            if returned_program != *jupiter_program_id() {
+                return Err(anyhow!(
+                    "jupiter /build returned wrong programId {returned_program}, expected {}",
+                    jupiter_program_id()
+                ));
+            }
+
+            // Cross-check quoted out_amount against the user's
+            // min_amount_out so we don't pay gas on a guaranteed revert.
+            let quoted_out: u64 = build
+                .out_amount
+                .parse()
+                .map_err(|e| anyhow!("parse jupiter out_amount `{}`: {e}", build.out_amount))?;
+            if quoted_out < *min_amount_out {
+                return Err(anyhow!(
+                    "jupiter quoted {} < min_amount_out {} — bailing before tx submit",
+                    quoted_out,
+                    min_amount_out
+                ));
+            }
+
+            let inner_accounts = jupiter::into_account_metas(&build.swap_instruction.accounts)
+                .map_err(|e| anyhow!("parse jupiter accounts: {e}"))?;
+            if inner_accounts.len() > jupiter::MAX_CPI_ACCOUNTS as usize {
+                return Err(anyhow!(
+                    "jupiter route returned {} accounts; CPI budget is {}. Try a different pair or maxAccounts.",
+                    inner_accounts.len(),
+                    jupiter::MAX_CPI_ACCOUNTS
+                ));
+            }
+            let inner_data = jupiter::decode_inner_data(&build.swap_instruction.data)?;
+            let (input_idx, output_idx) = jupiter::locate_ata_indices(
+                &inner_accounts,
+                &automation_input_ata,
+                &destination_output_ata,
+            )?;
+
+            Ok(build_execute_swap_ix(
+                program_id,
+                keeper,
+                config,
+                &ctx.pubkey,
+                &inner_accounts,
+                inner_data,
+                input_idx,
+                output_idx,
+                linked_downstream.as_ref(),
             ))
         }
     }

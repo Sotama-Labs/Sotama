@@ -4,7 +4,7 @@ use anchor_lang::system_program;
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
 use crate::state::{
-    ActionSpec, Automation, Config, TriggerSpec, MIN_AMOUNT_LAMPORTS,
+    ActionSpec, Automation, Cadence, Config, TriggerSpec, MIN_AMOUNT_LAMPORTS,
 };
 
 /// Create an automation whose action is `TransferSol`. The deposit is
@@ -43,27 +43,44 @@ pub fn handler(
     ctx: Context<CreateAutomation>,
     trigger: TriggerSpec,
     action: ActionSpec,
+    cadence: Cadence,
+    min_interval_secs: u32,
 ) -> Result<()> {
     let amount = match &action {
         ActionSpec::TransferSol { amount, .. } => *amount,
         _ => return err!(SotamaError::ActionMismatch),
     };
+    // Repeat/Until cadences will fire `executions` times against the same
+    // PDA balance; the program only ever transfers the action's `amount`
+    // out per fire, so the deposit must cover the worst-case sum. The UI
+    // pre-multiplies, but we still gate on a per-fire minimum here.
     require!(amount >= MIN_AMOUNT_LAMPORTS, SotamaError::DepositTooSmall);
     trigger.validate()?;
+    cadence.validate()?;
 
     let trigger_kind_byte = trigger.kind_byte();
     let trigger_pubkey = trigger.primary_pubkey();
     let action_kind_byte = action.kind_byte();
+    let cadence_kind_byte = cadence.kind_byte();
 
     let nonce = ctx.accounts.config.automation_count;
     let now = Clock::get()?.unix_timestamp;
+
+    // For Until cadences, reject deadlines that are already in the past
+    // at create time. (Cadence::validate only checks the value is > 0.)
+    if let Cadence::Until { unix_deadline } = &cadence {
+        require!(*unix_deadline > now, SotamaError::BadCadence);
+    }
 
     let automation = &mut ctx.accounts.automation;
     automation.owner = ctx.accounts.owner.key();
     automation.nonce = nonce;
     automation.trigger = trigger;
     automation.action = action;
-    automation.executed = false;
+    automation.cadence = cadence;
+    automation.executions = 0;
+    automation.min_interval_secs = min_interval_secs;
+    automation.finished = false;
     automation.created_at = now;
     automation.executed_at = 0;
     automation.bump = ctx.bumps.automation;
@@ -90,6 +107,7 @@ pub fn handler(
         trigger_kind: trigger_kind_byte,
         action_kind: action_kind_byte,
         trigger_pubkey,
+        cadence_kind: cadence_kind_byte,
     });
 
     Ok(())

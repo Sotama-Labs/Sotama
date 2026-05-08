@@ -6,21 +6,30 @@ import type {
   ActionOperator,
   Automation,
   ActionKind,
+  Cadence,
   DraftAction,
   DraftTrigger,
   Trigger,
   TriggerKind,
   TriggerOperator,
 } from "@/lib/types";
-import { EMPTY_ACTION, EMPTY_TRIGGER } from "@/lib/types";
 import {
-  TRIGGER_CATEGORIES,
+  DEFAULT_CADENCE,
+  DEFAULT_INTERVAL_BY_CADENCE,
+  DEFAULT_MIN_INTERVAL_SECS,
+  EMPTY_ACTION,
+  EMPTY_TRIGGER,
+} from "@/lib/types";
+import {
   type TriggerCategoryMeta,
   actionsAreCompatible,
-  actionsForTriggers,
+  actionsForCadenceAndTriggers,
   findActionMeta,
   findTriggerCategoryForKind,
   findTriggerMeta,
+  isActionKindAllowedForCadence,
+  isTriggerKindAllowedForCadence,
+  triggerCategoriesForCadence,
 } from "@/lib/catalog";
 import { freezeActions, freezeTriggers } from "@/lib/automations";
 import {
@@ -45,6 +54,12 @@ const TRIGGER_OPERATOR_OPTIONS = ["and", "or"] as const;
 const ACTION_OPERATOR_OPTIONS = ["then", "and"] as const;
 const DEFAULT_TRIGGER_OP: TriggerOperator = "and";
 const DEFAULT_ACTION_OP: ActionOperator = "then";
+
+/** Hard cap on chain length per side. The on-chain Automation account
+ *  doesn't (yet) carry chains anyway, so this is a UX cap to keep the
+ *  sentence readable and to bound the keeper's evaluation cost when
+ *  multi-trigger rules eventually land. */
+const MAX_CHAIN_LENGTH = 5;
 import { TokenPriceEditor } from "./triggers/TokenPriceEditor";
 import { AccountTransferEditor } from "./triggers/AccountTransferEditor";
 import { AccountSwapEditor } from "./triggers/AccountSwapEditor";
@@ -55,6 +70,7 @@ import { SwapEditor } from "./actions/SwapEditor";
 import { RestakeEditor } from "./actions/RestakeEditor";
 import { SellForEditor } from "./actions/SellForEditor";
 import { TransferRewardEditor } from "./actions/TransferRewardEditor";
+import { ControlFlowChip } from "./ControlFlowChip";
 
 type Side = "if" | "then";
 type Stage = "list" | "edit";
@@ -64,6 +80,8 @@ export type BuilderResult = {
   triggerOperators: TriggerOperator[];
   actions: Action[];
   actionOperators: ActionOperator[];
+  cadence: Cadence;
+  minIntervalSecs: number;
 };
 
 function seedTriggers(initial: Automation | null | undefined): DraftTrigger[] {
@@ -151,6 +169,12 @@ export function ConditionalBuilder({
   const [actions, setActions] = useState<DraftAction[]>(() => seedActions(initialState));
   const [triggerOps, setTriggerOps] = useState<TriggerOperator[]>(() => seedTriggerOps(initialState));
   const [actionOps, setActionOps] = useState<ActionOperator[]>(() => seedActionOps(initialState));
+  const [cadence, setCadence] = useState<Cadence>(
+    () => initialState?.cadence ?? DEFAULT_CADENCE,
+  );
+  const [minIntervalSecs, setMinIntervalSecs] = useState<number>(
+    () => initialState?.minIntervalSecs ?? DEFAULT_MIN_INTERVAL_SECS,
+  );
   const [open, setOpen] = useState<{ side: Side; index: number } | null>(null);
   const [stage, setStage] = useState<Stage>("list");
   const [browsingCategory, setBrowsingCategory] = useState<TriggerCategoryMeta | null>(null);
@@ -170,10 +194,44 @@ export function ConditionalBuilder({
     [triggers],
   );
   const availableActions = useMemo(
-    () => actionsForTriggers(completedTriggerKinds),
-    [completedTriggerKinds],
+    () => actionsForCadenceAndTriggers(cadence.kind, completedTriggerKinds),
+    [cadence.kind, completedTriggerKinds],
+  );
+  const triggerCategoriesForMenu = useMemo(
+    () => triggerCategoriesForCadence(cadence.kind),
+    [cadence.kind],
   );
   const anyTriggerKindPicked = triggers.some((t) => t.kind != null);
+
+  // When the user switches cadence (e.g. If → While), any trigger or action
+  // that's no longer allowed under the new cadence resets to empty. Better
+  // to surface "pick again" than to silently keep an invalid combo around.
+  // We also seed `min_interval_secs` from the cadence default — without
+  // this, While-with-a-token-price-trigger would fire on every keeper tick
+  // because the on-chain floor stays at 0. The user can override the
+  // floor in the TuningSheet before signing.
+  const handleCadenceChange = (next: typeof cadence) => {
+    setCadence(next);
+    if (next.kind === "once") {
+      setMinIntervalSecs(0);
+    } else if (cadence.kind === "once") {
+      setMinIntervalSecs(DEFAULT_INTERVAL_BY_CADENCE[next.kind]);
+    }
+    setTriggers((prev) =>
+      prev.map((t) =>
+        t.kind != null && !isTriggerKindAllowedForCadence(t.kind, next.kind)
+          ? { ...EMPTY_TRIGGER }
+          : t,
+      ),
+    );
+    setActions((prev) =>
+      prev.map((a) =>
+        a.kind != null && !isActionKindAllowedForCadence(a.kind, next.kind)
+          ? { ...EMPTY_ACTION }
+          : a,
+      ),
+    );
+  };
 
   const allActionsCompatible = actionsAreCompatible(
     completedTriggerKinds,
@@ -263,6 +321,7 @@ export function ConditionalBuilder({
   };
 
   const addTrigger = () => {
+    if (triggers.length >= MAX_CHAIN_LENGTH) return;
     const newIndex = triggers.length;
     setTriggers((prev) => [...prev, { ...EMPTY_TRIGGER }]);
     // Append a default operator for the new boundary between the previous
@@ -273,6 +332,7 @@ export function ConditionalBuilder({
     setBrowsingCategory(null);
   };
   const addAction = () => {
+    if (actions.length >= MAX_CHAIN_LENGTH) return;
     const newIndex = actions.length;
     setActions((prev) => [...prev, { ...EMPTY_ACTION }]);
     setActionOps((prev) => [...prev, DEFAULT_ACTION_OP]);
@@ -318,6 +378,8 @@ export function ConditionalBuilder({
       triggerOperators: triggerOps,
       actions: a,
       actionOperators: actionOps,
+      cadence,
+      minIntervalSecs,
     });
   };
 
@@ -442,10 +504,16 @@ export function ConditionalBuilder({
     } else if (open.side === "if") {
       const cur = triggers[open.index];
       if (browsingCategory) {
+        // Sub-kind list inside a category — filter by cadence so the
+        // user only sees triggers that read naturally under the current
+        // If/While/For mode.
+        const allowedKinds = browsingCategory.kinds.filter((k) =>
+          isTriggerKindAllowedForCadence(k.kind, cadence.kind),
+        );
         body = (
           <PopoverList
             title={browsingCategory.label}
-            options={browsingCategory.kinds.map((k) => ({
+            options={allowedKinds.map((k) => ({
               kind: k.kind,
               label: k.label,
               description: k.description,
@@ -464,8 +532,14 @@ export function ConditionalBuilder({
             : null;
         body = (
           <PopoverList
-            title="When this happens"
-            options={TRIGGER_CATEGORIES.map((c) => ({
+            title={
+              cadence.kind === "until"
+                ? "While this is true"
+                : cadence.kind === "repeat"
+                ? "Each time this happens"
+                : "When this happens"
+            }
+            options={triggerCategoriesForMenu.map((c) => ({
               kind: c.id,
               label: c.label,
               description: c.description,
@@ -474,7 +548,7 @@ export function ConditionalBuilder({
             }))}
             selectedKind={currentCategoryId}
             onPick={(o) => {
-              const cat = TRIGGER_CATEGORIES.find((c) => c.id === o.kind);
+              const cat = triggerCategoriesForMenu.find((c) => c.id === o.kind);
               if (cat) pickTriggerCategory(open.index, cat);
             }}
           />
@@ -566,7 +640,7 @@ export function ConditionalBuilder({
   const renderChain = (
     side: Side,
     slots: Array<DraftTrigger | DraftAction>,
-    leadWord: string,
+    lead: React.ReactNode,
     placeholder: string,
   ) => {
     const renderSlotAt = (i: number) => {
@@ -658,6 +732,11 @@ export function ConditionalBuilder({
       });
     }
 
+    // Cadence detail (interval, deadline, count) lives in the TuningSheet
+    // step between save and on-chain confirmation — not inline. Keeping
+    // the sentence to just trigger/action makes both If and While read
+    // cleanly: "If price drops below $103, then swap" / "While price is
+    // below $103, then swap" without an interruption mid-clause.
     return (
       <span
         style={{
@@ -675,9 +754,7 @@ export function ConditionalBuilder({
             columnGap: "0.5rem",
           }}
         >
-          <span style={{ color: "var(--label-secondary)", fontWeight: 400 }}>
-            {leadWord}
-          </span>
+          {lead}
           {first}
         </span>
 
@@ -685,7 +762,17 @@ export function ConditionalBuilder({
 
         <AddButton
           onClick={() => (side === "if" ? addTrigger() : addAction())}
-          aria-label={`Add another ${side === "if" ? "trigger" : "action"}`}
+          disabled={slots.length >= MAX_CHAIN_LENGTH}
+          aria-label={
+            slots.length >= MAX_CHAIN_LENGTH
+              ? `Maximum of ${MAX_CHAIN_LENGTH} ${side === "if" ? "triggers" : "actions"} reached`
+              : `Add another ${side === "if" ? "trigger" : "action"}`
+          }
+          title={
+            slots.length >= MAX_CHAIN_LENGTH
+              ? `Maximum of ${MAX_CHAIN_LENGTH} ${side === "if" ? "triggers" : "actions"} reached`
+              : undefined
+          }
         />
       </span>
     );
@@ -726,7 +813,12 @@ export function ConditionalBuilder({
             color: "var(--label-primary)",
           }}
         >
-          {renderChain("if", triggers, "If", "choose a trigger")}
+          {renderChain(
+            "if",
+            triggers,
+            <ControlFlowChip cadence={cadence} onChange={handleCadenceChange} />,
+            "choose a trigger",
+          )}
           <div
             aria-hidden
             style={{
@@ -735,7 +827,14 @@ export function ConditionalBuilder({
               opacity: 0.6,
             }}
           />
-          {renderChain("then", actions, "then", "choose an action")}
+          {renderChain(
+            "then",
+            actions,
+            <span style={{ color: "var(--label-secondary)", fontWeight: 400 }}>
+              then
+            </span>,
+            "choose an action",
+          )}
         </div>
         <button
           disabled={!ready}

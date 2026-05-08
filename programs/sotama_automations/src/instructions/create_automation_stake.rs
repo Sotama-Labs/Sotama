@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{ActionSpec, Automation, Config, TriggerSpec};
+use crate::state::{ActionSpec, Automation, Cadence, Config, TriggerSpec};
 
 /// Create an automation whose action is `StakeRestake` or
 /// `StakeWithdrawReward`. No SOL or SPL deposit happens at create time —
@@ -43,26 +43,37 @@ pub fn handler(
     ctx: Context<CreateAutomationStake>,
     trigger: TriggerSpec,
     action: ActionSpec,
+    cadence: Cadence,
+    min_interval_secs: u32,
 ) -> Result<()> {
     match &action {
         ActionSpec::StakeRestake { .. } | ActionSpec::StakeWithdrawReward { .. } => {}
         _ => return err!(SotamaError::ActionMismatch),
     };
     trigger.validate()?;
+    cadence.validate()?;
 
     let trigger_kind_byte = trigger.kind_byte();
     let trigger_pubkey = trigger.primary_pubkey();
     let action_kind_byte = action.kind_byte();
+    let cadence_kind_byte = cadence.kind_byte();
 
     let nonce = ctx.accounts.config.automation_count;
     let now = Clock::get()?.unix_timestamp;
+
+    if let Cadence::Until { unix_deadline } = &cadence {
+        require!(*unix_deadline > now, SotamaError::BadCadence);
+    }
 
     let automation = &mut ctx.accounts.automation;
     automation.owner = ctx.accounts.owner.key();
     automation.nonce = nonce;
     automation.trigger = trigger;
     automation.action = action;
-    automation.executed = false;
+    automation.cadence = cadence;
+    automation.executions = 0;
+    automation.min_interval_secs = min_interval_secs;
+    automation.finished = false;
     automation.created_at = now;
     automation.executed_at = 0;
     automation.bump = ctx.bumps.automation;
@@ -78,6 +89,7 @@ pub fn handler(
         trigger_kind: trigger_kind_byte,
         action_kind: action_kind_byte,
         trigger_pubkey,
+        cadence_kind: cadence_kind_byte,
     });
 
     Ok(())

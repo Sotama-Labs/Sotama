@@ -44,4 +44,10 @@ pub struct TriggerEvent {
     /// "{feed}:{slot}" for price triggers, "{stake}:{epoch}" for stake.
     pub correlation: String,
     pub matches: Vec<AutomationCtx>,
+    /// Link chain depth. 0 for events from the standalone monitors
+    /// (subscriber, price_watcher, stake_watcher); 1+ for events
+    /// originated by `link_watcher` after observing an upstream fire.
+    /// The executor uses this to bundle `execute_link_fee_debit` (only
+    /// when depth > 0) and to enforce a depth cap (drops past 3).
+    pub depth: u8,
 }

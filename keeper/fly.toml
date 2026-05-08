@@ -27,15 +27,34 @@ primary_region = "iad"
   dockerfile = "Dockerfile"
 
 [env]
+  # Cluster selector — the keeper resolves Helius URLs and the Sender
+  # endpoint based on this. Set to "mainnet-beta" for prod fly app.
+  CLUSTER = "devnet"
+
   HELIUS_DEVNET_RPC = "https://devnet.helius-rpc.com"
   HELIUS_DEVNET_WS = "wss://atlas-devnet.helius-rpc.com"
   HELIUS_DEVNET_SENDER = "https://devnet.helius-rpc.com/?api-key=__APIKEY__"
   PYTH_HERMES_URL = "https://hermes.pyth.network"
+  JUPITER_BASE_URL = "https://api.jup.ag"
   PROGRAM_ID = "2gp9bMBEVpQp6Lyyg13Bw6XF9S9saAcm9C4XQ69T8ZqQ"
+
+  # Watcher cadences. Reconcile is the full getProgramAccounts sweep;
+  # price/stake poll sub-cadences ride between reconciles.
   RECONCILE_INTERVAL_SECS = "60"
   PRICE_POLL_INTERVAL_SECS = "12"
   STAKE_POLL_INTERVAL_SECS = "60"
+  FEE_TOPUP_SCAN_INTERVAL_SECS = "300"
   SHARD_SIZE = "40"
+
+  # v4 swap + fee parameters. Slippage applies to both action swaps and
+  # PriceRatio Mint-side `/quote` probes. Fee constants are documentation
+  # right now (the keeper auto-sells via execute_fee_topup; the
+  # link_fee_debit hot-path bundling is deferred to v4.1).
+  SWAP_SLIPPAGE_BPS = "50"
+  KEEPER_FEE_LAMPORTS = "5000"
+  FEE_TOPUP_THRESHOLD_LAMPORTS = "50000"
+  FEE_TOPUP_AMOUNT_LAMPORTS = "100000"
+
   RUST_LOG = "info,sotama_keeper=debug"
 
 # Single 512MB shared-cpu machine. Bump to performance-1x or 1gb if the

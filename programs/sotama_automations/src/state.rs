@@ -13,6 +13,7 @@ pub mod action_kind {
     pub const TRANSFER_SPL: u8 = 1;
     pub const STAKE_RESTAKE: u8 = 2;
     pub const STAKE_WITHDRAW_REWARD: u8 = 3;
+    pub const SWAP: u8 = 4;
 }
 
 /// Trigger kind discriminators emitted in events.
@@ -46,6 +47,20 @@ pub mod staking_mode {
     pub const TIME: u8 = 1;
 }
 
+/// Cadence kind discriminators. Used for `AutomationCreated` events so
+/// indexers can render the right control-flow icon without re-fetching.
+pub mod cadence_kind {
+    pub const ONCE: u8 = 0;
+    pub const REPEAT: u8 = 1;
+    pub const UNTIL: u8 = 2;
+}
+
+/// Maximum lamports a single `execute_link_fee_debit` ix may transfer
+/// from a linked rule's PDA to the keeper. Caps the keeper's authority
+/// so a misconfigured fee can't drain a PDA. 0.001 SOL = 200× the
+/// default 5_000 lamport per-fire fee, leaving plenty of headroom.
+pub const MAX_LINK_FEE_LAMPORTS: u64 = 1_000_000;
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
 pub enum TriggerSpec {
     /// Watched-account activity (transfer or swap). Detected off-chain by
@@ -57,16 +72,34 @@ pub enum TriggerSpec {
         /// `account_kind::TRANSFER` or `account_kind::SWAP`.
         kind: u8,
     },
-    /// Pyth price crossing. Detected off-chain by the keeper polling
-    /// Hermes. Stored threshold uses the same `expo` as the feed.
+    /// Price crossing. Detected off-chain by the keeper polling Pyth
+    /// Hermes for the base feed. The threshold semantic depends on
+    /// `quote_mint`:
+    ///
+    ///   * `quote_mint = None`  — base feed's USD price compared
+    ///     directly. `threshold` and `expo` follow Pyth's wire format
+    ///     for the feed (typically `expo = -8`, e.g. `threshold =
+    ///     18_000_000_000` for $180.00).
+    ///   * `quote_mint = Some(M)` — compare `base_price / quote_price`,
+    ///     where the keeper resolves the quote price via a Jupiter
+    ///     `/quote` probe of `M → USDC`. `threshold` and `expo` then
+    ///     express the ratio scale (e.g. `expo = -6`, `threshold =
+    ///     990_000` for `0.99`).
+    ///
+    /// The keeper picks the quote-side resolution path. Sotama itself
+    /// doesn't read prices on-chain — same keeper-trust model as v3.
     TokenPrice {
         feed: Pubkey,
+        /// Optional quote mint. `None` denominates in USD (single-feed
+        /// price). `Some(spl_mint)` makes this a base/quote comparison;
+        /// the keeper probes Jupiter for the quote mint's USDC price
+        /// at evaluation time.
+        quote_mint: Option<Pubkey>,
         /// `comparator::BELOW` or `comparator::ABOVE`.
         comparator: u8,
-        /// Price threshold scaled to `10^expo` (matches Pyth's wire format).
+        /// Threshold value scaled to `10^expo`.
         threshold: i64,
-        /// Pyth feed exponent (negative for decimals). Captured at create
-        /// time so the keeper can normalize against future feed updates.
+        /// Decimal exponent applied to the threshold. Must be ≤ 0.
         expo: i32,
     },
     /// Stake account reward trigger. The keeper polls the stake account
@@ -109,6 +142,43 @@ pub enum ActionSpec {
         stake_account: Pubkey,
         destination: Pubkey,
     },
+    /// Swap `amount_in` of `input_mint` for at least `min_amount_out` of
+    /// `output_mint` via Jupiter v6, with the resulting tokens landing in
+    /// `destination`'s ATA for `output_mint`.
+    ///
+    /// Routing is handled entirely off-chain by the keeper: it queries
+    /// Jupiter's `/build` API at execute time, gets a `swapInstruction`,
+    /// and relays it through Sotama's `execute_swap` for PDA-signed
+    /// invocation. This program is DEX-agnostic — Jupiter aggregates
+    /// across every Solana DEX.
+    ///
+    /// On-chain invariants verified at execute time:
+    ///   • input mint of the PDA's input ATA matches `input_mint`
+    ///   • output mint of the destination ATA matches `output_mint`
+    ///   • destination ATA's owner matches `destination`
+    ///   • the relayed inner ix targets the Jupiter v6 program ID
+    ///   • post-CPI output balance increased by ≥ `min_amount_out`
+    ///
+    /// Linked-rule auto-deposit: when `linked_downstream` is `Some(B)`,
+    /// after the swap CPI succeeds the handler also transfers
+    /// `link_fee_deposit` lamports from this PDA to B's PDA. That
+    /// prepays B's next fire and lets a chain perpetuate itself as long
+    /// as the round-trip is profitable. Set both to `None`/`0` for a
+    /// standalone swap.
+    Swap {
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        destination: Pubkey,
+        amount_in: u64,
+        min_amount_out: u64,
+        /// Optional downstream automation PDA that receives the
+        /// auto-deposit fee after this swap fires. The downstream PDA
+        /// must be passed as the LAST remaining account at execute time.
+        linked_downstream: Option<Pubkey>,
+        /// Lamports prepaid to the downstream rule per fire of this
+        /// rule. Capped on-chain at `MAX_LINK_FEE_LAMPORTS`.
+        link_fee_deposit: u64,
+    },
 }
 
 #[account]
@@ -121,6 +191,51 @@ pub struct Config {
     pub bump: u8,
 }
 
+/// Control-flow over the action firing schedule. Maps 1:1 to the UI's
+/// If/For/While selector.
+///
+///  * `Once`  — fire one time when the trigger is satisfied. Terminal
+///    after the first fire (matches v2's original single-shot behavior).
+///  * `Repeat { total }` — fire up to `total` times in total. The
+///    automation becomes terminal once `executions == total`.
+///  * `Until { unix_deadline }` — fire repeatedly while
+///    `now < unix_deadline`. After the deadline, the next attempted fire
+///    becomes terminal without executing.
+///
+/// Both repeating cadences honor `min_interval_secs` between consecutive
+/// fires, so the keeper can't compress a `Repeat { total: 10 }` into a
+/// burst of 10 transactions in a single second.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
+pub enum Cadence {
+    Once,
+    Repeat { total: u32 },
+    Until { unix_deadline: i64 },
+}
+
+impl Cadence {
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Cadence::Once => Ok(()),
+            Cadence::Repeat { total } => {
+                require!(*total >= 1, SotamaError::BadCadence);
+                Ok(())
+            }
+            Cadence::Until { unix_deadline } => {
+                require!(*unix_deadline > 0, SotamaError::BadCadence);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn kind_byte(&self) -> u8 {
+        match self {
+            Cadence::Once => cadence_kind::ONCE,
+            Cadence::Repeat { .. } => cadence_kind::REPEAT,
+            Cadence::Until { .. } => cadence_kind::UNTIL,
+        }
+    }
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct Automation {
@@ -128,10 +243,27 @@ pub struct Automation {
     pub nonce: u64,
     pub trigger: TriggerSpec,
     pub action: ActionSpec,
-    pub executed: bool,
+    /// Cadence/loop semantics chosen by the user (If/While/For in the UI).
+    pub cadence: Cadence,
+    /// Number of times this automation has fired. Increments on every
+    /// successful execute_*. Used by the program to enforce
+    /// `Cadence::Repeat { total }` and surfaced in the UI as the run count.
+    pub executions: u32,
+    /// Minimum seconds between consecutive fires. `0` means no floor.
+    /// Always enforced when `executions > 0`, regardless of cadence.
+    pub min_interval_secs: u32,
+    /// Set true when the automation reaches its terminal state — either
+    /// after a `Once` fire, after `executions == total` for `Repeat`, or
+    /// when the keeper attempts a fire past `unix_deadline` for `Until`.
+    /// Once set, further execute_* calls return `AutomationFinished`.
+    pub finished: bool,
     pub created_at: i64,
     pub executed_at: i64,
     pub bump: u8,
+    /// Reserved bytes for forward-compatible field additions. Lets a
+    /// future v5 add small fields via `realloc` without forcing a
+    /// fresh program ID (which v3→v4 already required). Keep at 32.
+    pub _reserved: [u8; 32],
 }
 
 impl Automation {
@@ -145,6 +277,63 @@ impl Automation {
             ActionSpec::TransferSpl { destination, .. } => Some(*destination),
             ActionSpec::StakeWithdrawReward { destination, .. } => Some(*destination),
             ActionSpec::StakeRestake { .. } => None,
+            ActionSpec::Swap { destination, .. } => Some(*destination),
+        }
+    }
+
+    /// Pre-flight check before executing an action. Run by every
+    /// `execute_*` handler so the gating logic stays in one place.
+    /// Returns `Err` if the automation must not fire right now;
+    /// otherwise returns `Ok(())` and the caller proceeds with the CPI.
+    ///
+    /// Three things are enforced:
+    ///   1. The automation isn't already finished.
+    ///   2. `min_interval_secs` has elapsed since the last fire.
+    ///   3. For `Cadence::Until`, the deadline hasn't passed. (Past the
+    ///      deadline, we mark `finished = true` and return
+    ///      `DeadlineExpired` so the keeper learns to stop polling it.)
+    pub fn check_can_fire(&mut self, now: i64) -> Result<()> {
+        require!(!self.finished, SotamaError::AutomationFinished);
+
+        if self.executions > 0 && self.min_interval_secs > 0 {
+            let earliest = self
+                .executed_at
+                .saturating_add(self.min_interval_secs as i64);
+            require!(now >= earliest, SotamaError::MinIntervalNotElapsed);
+        }
+
+        if let Cadence::Until { unix_deadline } = self.cadence {
+            if now > unix_deadline {
+                self.finished = true;
+                return err!(SotamaError::DeadlineExpired);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Post-CPI bookkeeping. Increment the run count, stamp the time,
+    /// and set `finished` if the cadence bound is now exhausted.
+    /// Always called *after* the action CPI succeeded.
+    pub fn advance(&mut self, now: i64) {
+        self.executions = self.executions.saturating_add(1);
+        self.executed_at = now;
+
+        match self.cadence {
+            Cadence::Once => {
+                self.finished = true;
+            }
+            Cadence::Repeat { total } => {
+                if self.executions >= total {
+                    self.finished = true;
+                }
+            }
+            Cadence::Until { unix_deadline } => {
+                // The next attempt past the deadline will mark finished
+                // via check_can_fire; we don't pre-emptively flip it here
+                // so that a fire on the deadline boundary still counts.
+                let _ = unix_deadline;
+            }
         }
     }
 
@@ -176,13 +365,25 @@ impl TriggerSpec {
                 );
             }
             TriggerSpec::TokenPrice {
-                comparator: c, expo, ..
+                feed,
+                quote_mint,
+                comparator: c,
+                expo,
+                ..
             } => {
                 require!(
                     *c == comparator::BELOW || *c == comparator::ABOVE,
                     SotamaError::BadComparator
                 );
                 require!(*expo <= 0, SotamaError::BadPythExpo);
+                // Quote mint must differ from the base feed pubkey to
+                // ensure the comparison isn't trivially constant. We
+                // compare bytes only; the feed is a 32-byte hex while
+                // the mint is an SPL pubkey, so collisions are
+                // effectively impossible — but still cheap to assert.
+                if let Some(qm) = quote_mint {
+                    require!(qm != feed, SotamaError::BadComparator);
+                }
             }
             TriggerSpec::StakingReward { mode, .. } => {
                 require!(
@@ -220,6 +421,7 @@ impl ActionSpec {
             ActionSpec::TransferSpl { .. } => action_kind::TRANSFER_SPL,
             ActionSpec::StakeRestake { .. } => action_kind::STAKE_RESTAKE,
             ActionSpec::StakeWithdrawReward { .. } => action_kind::STAKE_WITHDRAW_REWARD,
+            ActionSpec::Swap { .. } => action_kind::SWAP,
         }
     }
 }

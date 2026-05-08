@@ -68,7 +68,8 @@ pub fn handler(ctx: Context<ExecuteRestake>) -> Result<()> {
     );
 
     let automation = &mut ctx.accounts.automation;
-    require!(!automation.executed, SotamaError::AlreadyExecuted);
+    let now = Clock::get()?.unix_timestamp;
+    automation.check_can_fire(now)?;
 
     let (stake_account_key, vote_account_key) = match &automation.action {
         ActionSpec::StakeRestake {
@@ -122,13 +123,14 @@ pub fn handler(ctx: Context<ExecuteRestake>) -> Result<()> {
     )?;
 
     let staked_lamports = ctx.accounts.stake_account.lamports();
-    automation.executed = true;
-    automation.executed_at = Clock::get()?.unix_timestamp;
+    automation.advance(now);
 
     emit!(AutomationExecuted {
         pubkey: automation.key(),
         action_kind: automation.action.kind_byte(),
         amount: staked_lamports,
+        executions: automation.executions,
+        finished: automation.finished,
     });
 
     Ok(())

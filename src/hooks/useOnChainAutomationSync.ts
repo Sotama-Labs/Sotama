@@ -67,7 +67,11 @@ export function useOnChainAutomationSync(
     for (let i = 0; i < items.length; i++) {
       const local = items[i];
       const remote = accounts[i] as
-        | { executed?: boolean; executedAt?: { toString(): string } }
+        | {
+            finished?: boolean;
+            executions?: { toString(): string };
+            executedAt?: { toString(): string };
+          }
         | null;
       if (remote == null) {
         // Owner closed the account — local goes terminal as "closed".
@@ -78,7 +82,10 @@ export function useOnChainAutomationSync(
         });
         continue;
       }
-      if (remote.executed === true) {
+      const onChainRuns = remote.executions
+        ? Number(remote.executions.toString())
+        : 0;
+      if (remote.finished === true) {
         const onChainExecutedAtSec =
           remote.executedAt && Number(remote.executedAt.toString());
         const executedAtIso =
@@ -87,12 +94,15 @@ export function useOnChainAutomationSync(
             : now;
         patchRef.current(local.id, {
           executedAt: executedAtIso,
-          runs: Math.max(local.runs, 1),
+          runs: Math.max(local.runs, onChainRuns || 1),
           running: false,
           lastCheck: now,
         });
       } else {
-        patchRef.current(local.id, { lastCheck: now });
+        patchRef.current(local.id, {
+          lastCheck: now,
+          runs: Math.max(local.runs, onChainRuns),
+        });
       }
     }
   }, [connection]);

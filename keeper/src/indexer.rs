@@ -82,6 +82,25 @@ impl WatchedSet {
             .unwrap_or(&[])
     }
 
+    /// Distinct quote mints across all `TokenPrice` triggers — the
+    /// price_watcher probes Jupiter for each at evaluation time when
+    /// the trigger is configured with a non-USD quote.
+    pub fn token_price_quote_mints(&self) -> Vec<Pubkey> {
+        let mut out = HashSet::new();
+        for triggers in self.price_triggers.values() {
+            for ctx in triggers {
+                if let crate::state::TriggerSpec::TokenPrice {
+                    quote_mint: Some(m),
+                    ..
+                } = &ctx.trigger
+                {
+                    out.insert(*m);
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
     fn account_set(&self) -> HashSet<Pubkey> {
         self.by_pubkey.keys().copied().collect()
     }
@@ -172,7 +191,7 @@ async fn fetch_active(client: &RpcClient, program_id: &Pubkey) -> Result<Vec<Aut
     for (pubkey, account) in raw {
         match Automation::from_account_data(&account.data) {
             Ok(a) => {
-                if !a.executed {
+                if !a.finished {
                     out.push(AutomationCtx {
                         pubkey,
                         owner: a.owner,

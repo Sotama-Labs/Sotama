@@ -1,4 +1,10 @@
-import type { ActionKind, DraftAction, DraftTrigger, TriggerKind } from "./types";
+import type {
+  ActionKind,
+  CadenceKind,
+  DraftAction,
+  DraftTrigger,
+  TriggerKind,
+} from "./types";
 
 /* ─────────────────────────────────────────────────────────────────────
    Builder catalog — modular trigger/action metadata.
@@ -249,4 +255,98 @@ export function actionsAreCompatible(
     actionsForTriggers(completedTriggerKinds).map((a) => a.kind),
   );
   return actionKinds.every((k) => allowed.has(k));
+}
+
+/* ── Cadence-aware menu filtering ─────────────────────────────────────
+   The trigger/action menus shown in the builder depend on the current
+   cadence (If / While / For), because not every shape reads naturally in
+   English under every cadence. Events fit "If <event>, …" but not
+   "While <event>"; one-shot actions like sell-for don't fit "For <N>
+   times". The maps below are the single source of truth — bend them, not
+   the picker logic, when adjusting what's offered per cadence.
+   ───────────────────────────────────────────────────────────────────── */
+
+const TRIGGERS_BY_CADENCE: Record<CadenceKind, ReadonlySet<TriggerKind>> = {
+  // If reads as event-driven: any trigger fits.
+  once: new Set<TriggerKind>([
+    "token_price",
+    "account_transfer",
+    "account_swap",
+    "staking_reward_amount",
+    "staking_reward_time",
+  ]),
+  // While reads as a standing predicate. Only token_price fits naturally —
+  // "While SOL price < $180" is a true predicate. The others are events
+  // (account_*) or self-resetting amount thresholds whose semantics under
+  // a recurring loop are confusing.
+  until: new Set<TriggerKind>(["token_price"]),
+  // For reads as "the next N times that …". Event triggers and the time
+  // schedule both fit; amount-thresholds are awkward because they fire
+  // once and then sit at the threshold.
+  repeat: new Set<TriggerKind>([
+    "token_price",
+    "account_transfer",
+    "account_swap",
+    "staking_reward_time",
+  ]),
+};
+
+const ACTIONS_BY_CADENCE: Record<CadenceKind, ReadonlySet<ActionKind>> = {
+  // If accepts every action kind, including the one-shot sell_for.
+  once: new Set<ActionKind>([
+    "transfer",
+    "swap",
+    "restake",
+    "sell_for",
+    "transfer_reward",
+  ]),
+  // While/For exclude sell_for: "sell the entire reward for X" is
+  // intrinsically one-shot. Swap also drops from `until` because the
+  // deposit must cover all fires up front (see SwapUntilNotSupported
+  // on-chain) and `until` has no bounded run count.
+  until: new Set<ActionKind>(["transfer", "restake", "transfer_reward"]),
+  repeat: new Set<ActionKind>([
+    "transfer",
+    "swap",
+    "restake",
+    "transfer_reward",
+  ]),
+};
+
+/** Categories visible in the trigger picker for the given cadence. A
+ *  category survives if at least one of its kinds is allowed under the
+ *  cadence; the remaining kinds inside that category are filtered too. */
+export function triggerCategoriesForCadence(
+  cadence: CadenceKind,
+): TriggerCategoryMeta[] {
+  const allowed = TRIGGERS_BY_CADENCE[cadence];
+  return TRIGGER_CATEGORIES.map((c) => ({
+    ...c,
+    kinds: c.kinds.filter((k) => allowed.has(k.kind)),
+  })).filter((c) => c.kinds.length > 0);
+}
+
+export function isTriggerKindAllowedForCadence(
+  kind: TriggerKind,
+  cadence: CadenceKind,
+): boolean {
+  return TRIGGERS_BY_CADENCE[cadence].has(kind);
+}
+
+export function isActionKindAllowedForCadence(
+  kind: ActionKind,
+  cadence: CadenceKind,
+): boolean {
+  return ACTIONS_BY_CADENCE[cadence].has(kind);
+}
+
+/** Filter actionsForTriggers' result by cadence. Used by the action
+ *  picker so cadence + trigger-compatibility are both honored. */
+export function actionsForCadenceAndTriggers(
+  cadence: CadenceKind,
+  completedTriggerKinds: TriggerKind[],
+): ActionKindMeta[] {
+  const byTrigger = actionsForTriggers(completedTriggerKinds);
+  const allowedByCadence = ACTIONS_BY_CADENCE[cadence];
+  return byTrigger.filter((a) => allowedByCadence.has(a.kind));
 }

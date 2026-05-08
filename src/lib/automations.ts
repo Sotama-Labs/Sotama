@@ -4,12 +4,13 @@ import type {
   Action,
   ActionOperator,
   Automation,
+  Cadence,
   DraftAction,
   DraftTrigger,
   Trigger,
   TriggerOperator,
 } from "./types";
-import { isActionComplete, isTriggerComplete } from "./types";
+import { DEFAULT_CADENCE, DEFAULT_MIN_INTERVAL_SECS, isActionComplete, isTriggerComplete } from "./types";
 
 const DEFAULT_TRIGGER_OP: TriggerOperator = "and";
 const DEFAULT_ACTION_OP: ActionOperator = "then";
@@ -41,7 +42,7 @@ export function loadAutomations(): Automation[] {
     const parsed = JSON.parse(raw) as Automation[];
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .filter((a) => a.schemaVersion === 2)
+      .filter((a) => a.schemaVersion === 3)
       .map((a) => ({
         ...a,
         triggerOperators: fillOperators(
@@ -54,6 +55,10 @@ export function loadAutomations(): Automation[] {
           Math.max(0, a.actions.length - 1),
           DEFAULT_ACTION_OP,
         ),
+        // Records written before loops shipped have no cadence — default
+        // them to `once` so they keep their original single-shot behavior.
+        cadence: a.cadence ?? DEFAULT_CADENCE,
+        minIntervalSecs: a.minIntervalSecs ?? DEFAULT_MIN_INTERVAL_SECS,
       }));
   } catch {
     return [];
@@ -95,6 +100,8 @@ export function makeAutomation(
   actions: Action[],
   triggerOperators: TriggerOperator[],
   actionOperators: ActionOperator[],
+  cadence: Cadence,
+  minIntervalSecs: number,
   overrides: Partial<
     Pick<
       Automation,
@@ -114,7 +121,7 @@ export function makeAutomation(
   const now = new Date().toISOString();
   return {
     id: overrides.id ?? newAutomationId(),
-    schemaVersion: 2,
+    schemaVersion: 3,
     triggers,
     triggerOperators: fillOperators(
       triggerOperators,
@@ -127,6 +134,8 @@ export function makeAutomation(
       Math.max(0, actions.length - 1),
       DEFAULT_ACTION_OP,
     ),
+    cadence,
+    minIntervalSecs,
     running: overrides.running ?? true,
     runs: overrides.runs ?? 0,
     lastCheck: overrides.lastCheck ?? "just now",

@@ -44,7 +44,8 @@ pub fn handler(ctx: Context<ExecuteAutomation>) -> Result<()> {
     );
 
     let automation = &mut ctx.accounts.automation;
-    require!(!automation.executed, SotamaError::AlreadyExecuted);
+    let now = Clock::get()?.unix_timestamp;
+    automation.check_can_fire(now)?;
 
     let (destination_key, amount) = match &automation.action {
         ActionSpec::TransferSol {
@@ -73,13 +74,14 @@ pub fn handler(ctx: Context<ExecuteAutomation>) -> Result<()> {
         .checked_add(amount)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    automation.executed = true;
-    automation.executed_at = Clock::get()?.unix_timestamp;
+    automation.advance(now);
 
     emit!(AutomationExecuted {
         pubkey: automation.key(),
         action_kind: automation.action.kind_byte(),
         amount,
+        executions: automation.executions,
+        finished: automation.finished,
     });
 
     Ok(())

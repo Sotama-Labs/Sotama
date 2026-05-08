@@ -39,14 +39,24 @@ export function PopoverList<T extends GroupableOption>({
     g.items.push(o);
   }
 
+  // The outer Popover handles overflow + scrollbar styling now —
+  // PopoverList just lays out title + groups + items. Title row uses
+  // `position: sticky` so it stays pinned to the top of the popover
+  // when the popover scrolls. Group headers do the same.
   return (
     <div className="fade-slide" style={{ width: "100%" }}>
       <div
         style={{
-          padding: "0.875rem 1rem 0.375rem",
+          padding: "0.75rem 1rem 0.375rem",
           display: "flex",
           alignItems: "center",
           gap: "0.5rem",
+          position: "sticky",
+          top: 0,
+          background: "var(--material-popover)",
+          backdropFilter: "saturate(180%) blur(50px)",
+          WebkitBackdropFilter: "saturate(180%) blur(50px)",
+          zIndex: 2,
         }}
       >
         {onBack && (
@@ -86,11 +96,20 @@ export function PopoverList<T extends GroupableOption>({
               <div
                 className="hig-caption-2"
                 style={{
-                  padding: "0.625rem 1rem 0.25rem",
+                  padding: "0.5rem 1rem 0.25rem",
                   color: "var(--label-tertiary)",
                   textTransform: "uppercase",
                   fontWeight: 600,
                   letterSpacing: "0.04em",
+                  position: "sticky",
+                  // Sit just below the title row so two stickies
+                  // don't overlap when scrolled past their natural
+                  // positions.
+                  top: "2.25rem",
+                  background: "var(--material-popover)",
+                  backdropFilter: "saturate(180%) blur(50px)",
+                  WebkitBackdropFilter: "saturate(180%) blur(50px)",
+                  zIndex: 1,
                 }}
               >
                 {g.name}

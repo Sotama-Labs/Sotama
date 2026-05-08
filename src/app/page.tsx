@@ -6,6 +6,7 @@ import { resolveAppearance, useTweaks } from "@/hooks/useTweaks";
 import { BrandMark } from "@/components/BrandMark";
 import { WalletPill } from "@/components/WalletPill";
 import { AppearanceToggle } from "@/components/AppearanceToggle";
+import { NetworkBadge } from "@/components/NetworkBadge";
 import { SegmentedNav } from "@/components/SegmentedNav";
 import { CompactNav } from "@/components/CompactNav";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -13,6 +14,7 @@ import { Toast } from "@/components/Toast";
 import { ConditionalBuilder, type BuilderResult } from "@/components/builder/ConditionalBuilder";
 import { ActiveStrategiesPage } from "@/components/ActiveStrategiesPage";
 import { DepositSheet, type OnChainResult } from "@/components/DepositSheet";
+import { TuningSheet, type TuningResult } from "@/components/TuningSheet";
 import { hexToRgba } from "@/lib/format";
 import {
   loadAutomations,
@@ -22,6 +24,8 @@ import {
 import { deleteAutomation, submitAutomation } from "@/lib/keeper";
 import { useOnChainAutomationSync } from "@/hooks/useOnChainAutomationSync";
 import { isTerminal } from "@/lib/types";
+import { closeAutomationOnChain } from "@/lib/close-automation";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 
 type View = "compose" | "active";
 
@@ -39,8 +43,14 @@ export default function Page() {
    *  with a fresh blank draft instead of keeping the just-saved state. */
   const [composeKey, setComposeKey] = useState(0);
   const [pendingDeposit, setPendingDeposit] = useState<BuilderResult | null>(null);
+  /** When the user saves a recurring automation (While/For), we route through
+   *  the TuningSheet first so they can dial in the polling floor and the
+   *  bound (deadline / total runs) before signing. `Once` skips this. */
+  const [pendingTuning, setPendingTuning] = useState<BuilderResult | null>(null);
   const [view, setView] = useState<View>("compose");
   const isMobile = useIsMobile();
+  const { connection } = useConnection();
+  const wallet = useWallet();
 
   useEffect(() => {
     setAutomations(loadAutomations());
@@ -80,7 +90,28 @@ export default function Page() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  const handleSave = (data: BuilderResult) => setPendingDeposit(data);
+  const handleSave = (data: BuilderResult) => {
+    // Recurring cadences route through the TuningSheet first so the user
+    // confirms (or adjusts) the polling floor and the bound. The `Once`
+    // case has nothing to tune — go straight to deposit.
+    if (data.cadence.kind === "once") {
+      setPendingDeposit(data);
+    } else {
+      setPendingTuning(data);
+    }
+  };
+
+  const handleTuningConfirm = (tuned: TuningResult) => {
+    if (!pendingTuning) return;
+    setPendingDeposit({
+      ...pendingTuning,
+      cadence: tuned.cadence,
+      minIntervalSecs: tuned.minIntervalSecs,
+    });
+    setPendingTuning(null);
+  };
+
+  const handleTuningCancel = () => setPendingTuning(null);
 
   const handleDepositConfirm = async (result: OnChainResult | null) => {
     const data = pendingDeposit;
@@ -92,6 +123,8 @@ export default function Page() {
       data.actions,
       data.triggerOperators,
       data.actionOperators,
+      data.cadence,
+      data.minIntervalSecs,
       {
         id,
         running: true,
@@ -166,13 +199,46 @@ export default function Page() {
   useOnChainAutomationSync(automations, patchAutomation);
 
   const handleDelete = async (id: string) => {
+    const target = automations.find((a) => a.id === id);
+    // For funded automations, close the on-chain account first so the
+    // owner gets their deposit back. Skip the close-tx for unfunded
+    // drafts (no pubkey), already-closed accounts, and already-finished
+    // accounts (anchor's `close = owner` still works on those, but
+    // close_automation_* requires the action's ATAs to be present —
+    // we'd need a fallthrough plain `closeAutomation` for finished
+    // automations whose ATA was already drained by the keeper).
+    if (target && target.pubkey && !target.closedAt) {
+      if (!wallet.connected || !wallet.publicKey || !wallet.signTransaction) {
+        setToast("Connect wallet to close on-chain and refund deposit");
+        return;
+      }
+      try {
+        await closeAutomationOnChain(
+          connection,
+          {
+            publicKey: wallet.publicKey,
+            signTransaction: wallet.signTransaction,
+          },
+          target,
+        );
+      } catch (e) {
+        const msg = (e as Error).message || "close failed";
+        console.error("close_automation failed", e);
+        setToast(`Close tx failed: ${msg.slice(0, 80)}`);
+        return;
+      }
+    }
     setAutomations((prev) => prev.filter((a) => a.id !== id));
     try {
       await deleteAutomation(id);
     } catch {
       // local removal succeeded; backend will reconcile
     }
-    setToast("Automation deleted");
+    setToast(
+      target?.pubkey && !target.closedAt
+        ? "Automation closed and deposit refunded"
+        : "Automation deleted",
+    );
   };
 
   const editingInitial = useMemo(() => {
@@ -194,6 +260,7 @@ export default function Page() {
           gap: "0.625rem",
         }}
       >
+        <NetworkBadge />
         <AppearanceToggle appearance={tweaks.appearance} onChange={(v) => setTweak("appearance", v)} />
         <WalletPill />
       </div>
@@ -266,6 +333,12 @@ export default function Page() {
       </main>
 
       <Toast message={toast} />
+      <TuningSheet
+        open={!!pendingTuning}
+        draft={pendingTuning}
+        onCancel={handleTuningCancel}
+        onConfirm={handleTuningConfirm}
+      />
       <DepositSheet open={!!pendingDeposit} automation={pendingDeposit} onCancel={handleDepositCancel} onConfirm={handleDepositConfirm} />
     </>
   );

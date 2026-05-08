@@ -16,7 +16,8 @@
     "anchor:initialize:devnet": "ANCHOR_PROVIDER_URL=${ANCHOR_PROVIDER_URL:-https://api.devnet.solana.com} ANCHOR_WALLET=$HOME/.config/solana/id.json ts-node --compilerOptions '{\"target\":\"es2022\",\"module\":\"commonjs\",\"esModuleInterop\":true,\"resolveJsonModule\":true,\"strict\":false,\"skipLibCheck\":true}' migrations/initialize.ts",
     "anchor:e2e:devnet": "ANCHOR_PROVIDER_URL=${ANCHOR_PROVIDER_URL:-https://api.devnet.solana.com} ANCHOR_WALLET=$HOME/.config/solana/id.json ts-node --compilerOptions '{\"target\":\"es2022\",\"module\":\"commonjs\",\"esModuleInterop\":true,\"resolveJsonModule\":true,\"strict\":false,\"skipLibCheck\":true}' migrations/e2e-test.ts",
     "keeper:build": "cargo build --release --manifest-path keeper/Cargo.toml",
-    "keeper:run": "cd keeper && cargo run --release"
+    "keeper:run": "cd keeper && cargo run --release",
+    "keeper:policy": "node scripts/build-turnkey-policy.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",

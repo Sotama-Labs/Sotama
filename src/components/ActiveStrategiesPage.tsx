@@ -14,7 +14,7 @@ const USDC = CANONICAL_MINTS["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"];
 const SAMPLE_AUTOMATIONS: Automation[] = [
   {
     id: "demo_1",
-    schemaVersion: 2,
+    schemaVersion: 3,
     triggers: [
       {
         kind: "token_price",
@@ -32,6 +32,8 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
     triggerOperators: [],
     actions: [{ kind: "swap", inputToken: USDC, outputToken: SOL, amount: 250 }],
     actionOperators: [],
+    cadence: { kind: "once" },
+    minIntervalSecs: 0,
     running: true,
     runs: 3,
     lastCheck: "just now",
@@ -39,7 +41,7 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
   },
   {
     id: "demo_2",
-    schemaVersion: 2,
+    schemaVersion: 3,
     triggers: [
       {
         kind: "token_price",
@@ -57,6 +59,8 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
     triggerOperators: [],
     actions: [{ kind: "swap", inputToken: SOL, outputToken: USDC, amount: 1.5 }],
     actionOperators: [],
+    cadence: { kind: "once" },
+    minIntervalSecs: 0,
     running: true,
     runs: 0,
     lastCheck: "12s ago",
@@ -64,7 +68,7 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
   },
   {
     id: "demo_3",
-    schemaVersion: 2,
+    schemaVersion: 3,
     triggers: [
       {
         kind: "staking_reward_amount",
@@ -81,6 +85,8 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
       },
     ],
     actionOperators: [],
+    cadence: { kind: "repeat", total: 12 },
+    minIntervalSecs: 60 * 60 * 24,
     running: false,
     runs: 1,
     lastCheck: "2m ago",

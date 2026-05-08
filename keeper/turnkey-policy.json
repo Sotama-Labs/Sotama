@@ -1,0 +1,6 @@
+{
+  "policyName": "sotama-keeper-execute-only",
+  "effect": "EFFECT_ALLOW",
+  "consensus": "approvers.any(user, true)",
+  "condition": "activity.type == 'ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2'"
+}

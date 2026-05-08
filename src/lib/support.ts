@@ -28,7 +28,7 @@ export const SUPPORTED_TRIGGER_KINDS: Record<TriggerKind, boolean> = {
 
 export const SUPPORTED_ACTION_KINDS: Record<ActionKind, boolean> = {
   transfer: true,                     // wired ✓ — SOL via execute_automation, SPL via execute_automation_spl
-  swap: false,                        // future — Jupiter mainnet only
+  swap: true,                         // wired ✓ — execute_swap (Orca Whirlpool CPI). MVP: hardcoded pool registry, no quote/slippage UI yet
   restake: true,                      // wired ✓ — execute_restake (DelegateStake CPI)
   sell_for: false,                    // future — Jupiter mainnet only
   transfer_reward: true,              // wired ✓ — execute_withdraw_reward (Stake Withdraw CPI)

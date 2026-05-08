@@ -6,6 +6,7 @@ use tracing::{error, info};
 mod config;
 mod executor;
 mod indexer;
+mod jupiter;
 mod price_watcher;
 mod program;
 mod shard;
@@ -25,10 +26,13 @@ async fn main() -> Result<()> {
 
     let cfg = Arc::new(KeeperConfig::from_env()?);
     info!(
+        cluster = cfg.cluster.label(),
         program_id = %cfg.program_id,
         keeper = %cfg.keeper_pubkey,
         rpc = %cfg.rpc_url,
         ws = %cfg.ws_url,
+        sender = %cfg.sender_url,
+        jupiter = %cfg.jupiter_base_url,
         "sotama-keeper starting"
     );
 

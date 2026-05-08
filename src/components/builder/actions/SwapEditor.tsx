@@ -22,6 +22,14 @@ export function SwapEditor({
 }) {
   const [picking, setPicking] = useState<Picking>(null);
 
+  // Hooks must run in the same order every render — keep them above
+  // any conditional return.
+  const ready =
+    draft.inputToken != null &&
+    draft.outputToken != null &&
+    draft.amount != null &&
+    draft.amount > 0;
+
   if (picking === "input") {
     return (
       <TokenPicker
@@ -50,12 +58,6 @@ export function SwapEditor({
       />
     );
   }
-
-  const ready =
-    draft.inputToken != null &&
-    draft.outputToken != null &&
-    draft.amount != null &&
-    draft.amount > 0;
 
   return (
     <EditorShell title="Swap" side="then" onBack={onBack} onConfirm={onConfirm} ready={ready}>
@@ -104,6 +106,15 @@ export function SwapEditor({
           onCommit={ready ? onConfirm : undefined}
         />
       </FieldRow>
+
+      <div
+        className="hig-caption-1"
+        style={{ color: "var(--label-secondary)", padding: "0.25rem 0.125rem" }}
+      >
+        Routed through Jupiter at execute time — best price across every
+        Solana DEX. The keeper re-quotes on each fire and respects your
+        slippage tolerance (default 0.5%).
+      </div>
     </EditorShell>
   );
 }

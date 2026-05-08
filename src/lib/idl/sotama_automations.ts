@@ -70,6 +70,166 @@ export type SotamaAutomations = {
       "args": []
     },
     {
+      "name": "closeAutomationSpl",
+      "docs": [
+        "Close an SPL-action automation. Drains the PDA-owned ATA back",
+        "to the owner's ATA, closes the ATA, then closes the PDA. Use",
+        "this for `TransferSpl` actions; use `close_automation` for",
+        "SOL/stake and `close_automation_swap` for `Swap` actions."
+      ],
+      "discriminator": [
+        222,
+        158,
+        94,
+        76,
+        125,
+        129,
+        159,
+        145
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "automation"
+          ]
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "ownerAta",
+          "docs": [
+            "Owner's ATA for `mint`. Idempotent-created by the client tx",
+            "before this ix runs, so we can deposit the refund into it."
+          ],
+          "writable": true
+        },
+        {
+          "name": "automationAta",
+          "docs": [
+            "Automation PDA's ATA for `mint`. Closed by this ix after its",
+            "balance is drained."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "closeAutomationSwap",
+      "docs": [
+        "Close a swap-action automation. Drains the PDA-owned input",
+        "ATA back to the owner, closes the ATA, then closes the PDA."
+      ],
+      "discriminator": [
+        236,
+        180,
+        11,
+        100,
+        111,
+        50,
+        165,
+        96
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "automation"
+          ]
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "inputMint"
+        },
+        {
+          "name": "ownerInputAta",
+          "writable": true
+        },
+        {
+          "name": "automationInputAta",
+          "writable": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "createAutomation",
       "discriminator": [
         234,
@@ -159,6 +319,18 @@ export type SotamaAutomations = {
               "name": "actionSpec"
             }
           }
+        },
+        {
+          "name": "cadence",
+          "type": {
+            "defined": {
+              "name": "cadence"
+            }
+          }
+        },
+        {
+          "name": "minIntervalSecs",
+          "type": "u32"
         }
       ]
     },
@@ -273,6 +445,18 @@ export type SotamaAutomations = {
               "name": "actionSpec"
             }
           }
+        },
+        {
+          "name": "cadence",
+          "type": {
+            "defined": {
+              "name": "cadence"
+            }
+          }
+        },
+        {
+          "name": "minIntervalSecs",
+          "type": "u32"
         }
       ]
     },
@@ -366,6 +550,144 @@ export type SotamaAutomations = {
               "name": "actionSpec"
             }
           }
+        },
+        {
+          "name": "cadence",
+          "type": {
+            "defined": {
+              "name": "cadence"
+            }
+          }
+        },
+        {
+          "name": "minIntervalSecs",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "createAutomationSwap",
+      "discriminator": [
+        194,
+        175,
+        106,
+        22,
+        29,
+        218,
+        54,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "config.automation_count",
+                "account": "config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "inputMint"
+        },
+        {
+          "name": "ownerInputAta",
+          "docs": [
+            "Owner's ATA for `input_mint`. Source of the deposit."
+          ],
+          "writable": true
+        },
+        {
+          "name": "automationInputAta",
+          "docs": [
+            "Automation PDA's ATA for `input_mint`. Pre-created by the client."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "trigger",
+          "type": {
+            "defined": {
+              "name": "triggerSpec"
+            }
+          }
+        },
+        {
+          "name": "action",
+          "type": {
+            "defined": {
+              "name": "actionSpec"
+            }
+          }
+        },
+        {
+          "name": "cadence",
+          "type": {
+            "defined": {
+              "name": "cadence"
+            }
+          }
+        },
+        {
+          "name": "minIntervalSecs",
+          "type": "u32"
         }
       ]
     },
@@ -538,6 +860,196 @@ export type SotamaAutomations = {
       "args": []
     },
     {
+      "name": "executeFeeTopup",
+      "docs": [
+        "Keeper-driven token-to-wSOL conversion (auto-fee-management).",
+        "Swaps a slice of the PDA's holdings into wSOL on the keeper's",
+        "own ATA, then the keeper unwraps off-band to refill its tx-fee",
+        "budget. Same Jupiter relay shape as `execute_swap`."
+      ],
+      "discriminator": [
+        109,
+        94,
+        39,
+        221,
+        62,
+        144,
+        17,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "automation.owner",
+                "account": "automation"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "jupiterProgram",
+          "address": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        }
+      ],
+      "args": [
+        {
+          "name": "innerIxData",
+          "type": "bytes"
+        },
+        {
+          "name": "innerIxAccountMetas",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "swapAccountMeta"
+              }
+            }
+          }
+        },
+        {
+          "name": "keeperWsolAtaIndex",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "executeLinkFeeDebit",
+      "docs": [
+        "Linked-rule fee debit. Bundled by the keeper before any",
+        "`execute_*` ix when firing a downstream-of-link automation, so",
+        "the fee debit and the action atomically succeed-or-fail. Caps",
+        "`fee_lamports` at `MAX_LINK_FEE_LAMPORTS` and rejects below-rent",
+        "debits."
+      ],
+      "discriminator": [
+        215,
+        166,
+        203,
+        162,
+        222,
+        248,
+        138,
+        151
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "keeperRecipient",
+          "docs": [
+            "matches `config.keeper` below, so it's effectively the keeper.",
+            "Marked CHECK because we mutate its lamports directly."
+          ],
+          "writable": true
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "automation.owner",
+                "account": "automation"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "automation"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "feeLamports",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "executeRestake",
       "discriminator": [
         44,
@@ -630,6 +1142,104 @@ export type SotamaAutomations = {
         }
       ],
       "args": []
+    },
+    {
+      "name": "executeSwap",
+      "discriminator": [
+        56,
+        182,
+        124,
+        215,
+        155,
+        140,
+        157,
+        102
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "automation.owner",
+                "account": "automation"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "jupiterProgram",
+          "address": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        }
+      ],
+      "args": [
+        {
+          "name": "innerIxData",
+          "type": "bytes"
+        },
+        {
+          "name": "innerIxAccountMetas",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "swapAccountMeta"
+              }
+            }
+          }
+        },
+        {
+          "name": "inputAtaIndex",
+          "type": "u8"
+        },
+        {
+          "name": "outputAtaIndex",
+          "type": "u8"
+        }
+      ]
     },
     {
       "name": "executeWithdrawReward",
@@ -943,8 +1553,8 @@ export type SotamaAutomations = {
   "errors": [
     {
       "code": 6000,
-      "name": "alreadyExecuted",
-      "msg": "Automation already executed"
+      "name": "automationFinished",
+      "msg": "Automation has reached its terminal state and cannot fire again"
     },
     {
       "code": 6001,
@@ -1013,13 +1623,93 @@ export type SotamaAutomations = {
     },
     {
       "code": 6014,
+      "name": "badCadence",
+      "msg": "Cadence configuration is invalid (e.g. Repeat total = 0 or Until deadline not in the future)"
+    },
+    {
+      "code": 6015,
+      "name": "minIntervalNotElapsed",
+      "msg": "Minimum interval between fires has not elapsed yet"
+    },
+    {
+      "code": 6016,
+      "name": "deadlineExpired",
+      "msg": "Until-cadence deadline has passed; automation is now terminal"
+    },
+    {
+      "code": 6017,
+      "name": "wrongInputMint",
+      "msg": "Swap input mint does not match automation"
+    },
+    {
+      "code": 6018,
+      "name": "wrongOutputMint",
+      "msg": "Swap output mint does not match automation"
+    },
+    {
+      "code": 6019,
+      "name": "badSwapAccounts",
+      "msg": "Account count or layout does not match for swap action"
+    },
+    {
+      "code": 6020,
+      "name": "wrongSwapProgram",
+      "msg": "Inner swap instruction must target the Jupiter v6 program"
+    },
+    {
+      "code": 6021,
+      "name": "slippageExceeded",
+      "msg": "Output ATA balance did not increase by at least min_amount_out — slippage exceeded"
+    },
+    {
+      "code": 6022,
+      "name": "swapUntilNotSupported",
+      "msg": "Swap actions cannot use the Until cadence — total runs must be bounded so the deposit can cover all fires"
+    },
+    {
+      "code": 6023,
+      "name": "depositOverflow",
+      "msg": "Deposit amount overflowed during cadence multiplication"
+    },
+    {
+      "code": 6024,
       "name": "badSplAccounts",
       "msg": "Account count or layout does not match for SPL transfer"
     },
     {
-      "code": 6015,
+      "code": 6025,
       "name": "badStakeAccounts",
       "msg": "Account count or layout does not match for stake action"
+    },
+    {
+      "code": 6026,
+      "name": "linkedFeePoolBelowRent",
+      "msg": "Linked-rule fee deposit would push the PDA below rent-exempt minimum"
+    },
+    {
+      "code": 6027,
+      "name": "linkFeeCapExceeded",
+      "msg": "Fee debit exceeds MAX_LINK_FEE_LAMPORTS"
+    },
+    {
+      "code": 6028,
+      "name": "missingDownstreamAccount",
+      "msg": "Linked downstream automation account is missing or wrong"
+    },
+    {
+      "code": 6029,
+      "name": "downstreamMismatch",
+      "msg": "Linked downstream pubkey does not match the action's linked_downstream"
+    },
+    {
+      "code": 6030,
+      "name": "badFeeTopupOutput",
+      "msg": "Fee topup output mint must be wrapped SOL"
+    },
+    {
+      "code": 6031,
+      "name": "badFeeTopupOwner",
+      "msg": "Fee topup output ATA must be owned by the automation PDA"
     }
   ],
   "types": [
@@ -1083,6 +1773,50 @@ export type SotamaAutomations = {
                 "type": "pubkey"
               }
             ]
+          },
+          {
+            "name": "swap",
+            "fields": [
+              {
+                "name": "inputMint",
+                "type": "pubkey"
+              },
+              {
+                "name": "outputMint",
+                "type": "pubkey"
+              },
+              {
+                "name": "destination",
+                "type": "pubkey"
+              },
+              {
+                "name": "amountIn",
+                "type": "u64"
+              },
+              {
+                "name": "minAmountOut",
+                "type": "u64"
+              },
+              {
+                "name": "linkedDownstream",
+                "docs": [
+                  "Optional downstream automation PDA that receives the",
+                  "auto-deposit fee after this swap fires. The downstream PDA",
+                  "must be passed as the LAST remaining account at execute time."
+                ],
+                "type": {
+                  "option": "pubkey"
+                }
+              },
+              {
+                "name": "linkFeeDeposit",
+                "docs": [
+                  "Lamports prepaid to the downstream rule per fire of this",
+                  "rule. Capped on-chain at `MAX_LINK_FEE_LAMPORTS`."
+                ],
+                "type": "u64"
+              }
+            ]
           }
         ]
       }
@@ -1117,7 +1851,41 @@ export type SotamaAutomations = {
             }
           },
           {
-            "name": "executed",
+            "name": "cadence",
+            "docs": [
+              "Cadence/loop semantics chosen by the user (If/While/For in the UI)."
+            ],
+            "type": {
+              "defined": {
+                "name": "cadence"
+              }
+            }
+          },
+          {
+            "name": "executions",
+            "docs": [
+              "Number of times this automation has fired. Increments on every",
+              "successful execute_*. Used by the program to enforce",
+              "`Cadence::Repeat { total }` and surfaced in the UI as the run count."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "minIntervalSecs",
+            "docs": [
+              "Minimum seconds between consecutive fires. `0` means no floor.",
+              "Always enforced when `executions > 0`, regardless of cadence."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "finished",
+            "docs": [
+              "Set true when the automation reaches its terminal state — either",
+              "after a `Once` fire, after `executions == total` for `Repeat`, or",
+              "when the keeper attempts a fire past `unix_deadline` for `Until`.",
+              "Once set, further execute_* calls return `AutomationFinished`."
+            ],
             "type": "bool"
           },
           {
@@ -1131,6 +1899,20 @@ export type SotamaAutomations = {
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "docs": [
+              "Reserved bytes for forward-compatible field additions. Lets a",
+              "future v5 add small fields via `realloc` without forcing a",
+              "fresh program ID (which v3→v4 already required). Keep at 32."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
@@ -1195,6 +1977,15 @@ export type SotamaAutomations = {
               "Watched / feed / stake account, depending on trigger_kind."
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "cadenceKind",
+            "docs": [
+              "`0` = Once (If), `1` = Repeat (For), `2` = Until (While). Lets the",
+              "indexer render the right control-flow icon without decoding the",
+              "account's full Cadence payload."
+            ],
+            "type": "u8"
           }
         ]
       }
@@ -1220,6 +2011,68 @@ export type SotamaAutomations = {
               "amount."
             ],
             "type": "u64"
+          },
+          {
+            "name": "executions",
+            "docs": [
+              "1-indexed run count after this fire (1 = first fire). Lets indexers",
+              "distinguish \"fire 3 of 10\" from \"first fire\" without re-fetching the",
+              "account."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "finished",
+            "docs": [
+              "True iff this fire put the automation into its terminal state — i.e.",
+              "the keeper should stop polling it."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cadence",
+      "docs": [
+        "Control-flow over the action firing schedule. Maps 1:1 to the UI's",
+        "If/For/While selector.",
+        "",
+        "* `Once`  — fire one time when the trigger is satisfied. Terminal",
+        "after the first fire (matches v2's original single-shot behavior).",
+        "* `Repeat { total }` — fire up to `total` times in total. The",
+        "automation becomes terminal once `executions == total`.",
+        "* `Until { unix_deadline }` — fire repeatedly while",
+        "`now < unix_deadline`. After the deadline, the next attempted fire",
+        "becomes terminal without executing.",
+        "",
+        "Both repeating cadences honor `min_interval_secs` between consecutive",
+        "fires, so the keeper can't compress a `Repeat { total: 10 }` into a",
+        "burst of 10 transactions in a single second."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "once"
+          },
+          {
+            "name": "repeat",
+            "fields": [
+              {
+                "name": "total",
+                "type": "u32"
+              }
+            ]
+          },
+          {
+            "name": "until",
+            "fields": [
+              {
+                "name": "unixDeadline",
+                "type": "i64"
+              }
+            ]
           }
         ]
       }
@@ -1248,6 +2101,28 @@ export type SotamaAutomations = {
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "swapAccountMeta",
+      "docs": [
+        "Mirror of Solana's `AccountMeta` flags, serialized over the wire so",
+        "the keeper can describe each relayed account's role without us",
+        "having to introspect AccountInfo flags (which on Solana would",
+        "require trusting the runtime's view, not the inner ix's view)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "isSigner",
+            "type": "bool"
+          },
+          {
+            "name": "isWritable",
+            "type": "bool"
           }
         ]
       }
@@ -1290,6 +2165,18 @@ export type SotamaAutomations = {
                 "type": "pubkey"
               },
               {
+                "name": "quoteMint",
+                "docs": [
+                  "Optional quote mint. `None` denominates in USD (single-feed",
+                  "price). `Some(spl_mint)` makes this a base/quote comparison;",
+                  "the keeper probes Jupiter for the quote mint's USDC price",
+                  "at evaluation time."
+                ],
+                "type": {
+                  "option": "pubkey"
+                }
+              },
+              {
                 "name": "comparator",
                 "docs": [
                   "`comparator::BELOW` or `comparator::ABOVE`."
@@ -1299,15 +2186,14 @@ export type SotamaAutomations = {
               {
                 "name": "threshold",
                 "docs": [
-                  "Price threshold scaled to `10^expo` (matches Pyth's wire format)."
+                  "Threshold value scaled to `10^expo`."
                 ],
                 "type": "i64"
               },
               {
                 "name": "expo",
                 "docs": [
-                  "Pyth feed exponent (negative for decimals). Captured at create",
-                  "time so the keeper can normalize against future feed updates."
+                  "Decimal exponent applied to the threshold. Must be ≤ 0."
                 ],
                 "type": "i32"
               }

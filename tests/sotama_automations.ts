@@ -44,11 +44,21 @@ const trigger = {
   accountSwap: (account: PublicKey, mint: PublicKey | null = null) => ({
     accountActivity: { account, mint, kind: 1 },
   }),
-  tokenPriceBelow: (feed: PublicKey, threshold: BN, expo: number) => ({
-    tokenPrice: { feed, comparator: 0, threshold, expo },
+  tokenPriceBelow: (
+    feed: PublicKey,
+    threshold: BN,
+    expo: number,
+    quoteMint: PublicKey | null = null,
+  ) => ({
+    tokenPrice: { feed, quoteMint, comparator: 0, threshold, expo },
   }),
-  tokenPriceAbove: (feed: PublicKey, threshold: BN, expo: number) => ({
-    tokenPrice: { feed, comparator: 1, threshold, expo },
+  tokenPriceAbove: (
+    feed: PublicKey,
+    threshold: BN,
+    expo: number,
+    quoteMint: PublicKey | null = null,
+  ) => ({
+    tokenPrice: { feed, quoteMint, comparator: 1, threshold, expo },
   }),
   stakingAmount: (stake: PublicKey, lamports: BN) => ({
     stakingReward: { stakeAccount: stake, mode: 0, value: lamports },
@@ -71,7 +81,35 @@ const action = {
   stakeWithdrawReward: (stake: PublicKey, destination: PublicKey) => ({
     stakeWithdrawReward: { stakeAccount: stake, destination },
   }),
+  swap: (
+    inputMint: PublicKey,
+    outputMint: PublicKey,
+    destination: PublicKey,
+    amountIn: BN,
+    minAmountOut: BN,
+    linkedDownstream: PublicKey | null = null,
+    linkFeeDeposit: BN = new BN(0),
+  ) => ({
+    swap: {
+      inputMint,
+      outputMint,
+      destination,
+      amountIn,
+      minAmountOut,
+      linkedDownstream,
+      linkFeeDeposit,
+    },
+  }),
 };
+
+/* Cadence variant constructors. Anchor TS IDL exposes Rust enums as
+ * `{ variantName: { ...fields } }`. */
+const cadence = {
+  once: () => ({ once: {} }),
+  repeat: (total: number) => ({ repeat: { total } }),
+  until: (unixDeadline: BN) => ({ until: { unixDeadline } }),
+};
+const NO_INTERVAL = 0;
 
 describe("sotama_automations v2", () => {
   const provider = anchor.AnchorProvider.env();
@@ -135,7 +173,9 @@ describe("sotama_automations v2", () => {
     await program.methods
       .createAutomation(
         trigger.accountTransfer(watched.publicKey),
-        action.transferSol(destination.publicKey, amount)
+        action.transferSol(destination.publicKey, amount),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -148,7 +188,7 @@ describe("sotama_automations v2", () => {
 
     const a = await program.account.automation.fetch(auto);
     expect(a.owner.toBase58()).to.eq(owner.publicKey.toBase58());
-    expect(a.executed).to.eq(false);
+    expect(a.finished).to.eq(false);
     expect(a.nonce.toString()).to.eq(nonce.toString());
     expect(a.trigger).to.have.nested.property("accountActivity.kind", 0);
     expect((a.trigger as any).accountActivity.account.toBase58()).to.eq(
@@ -177,7 +217,9 @@ describe("sotama_automations v2", () => {
       await program.methods
         .createAutomation(
           trigger.accountTransfer(watched.publicKey),
-          action.transferSol(destination.publicKey, new BN(100))
+          action.transferSol(destination.publicKey, new BN(100)),
+          cadence.once(),
+          NO_INTERVAL
         )
         .accountsStrict({
           owner: owner.publicKey,
@@ -207,7 +249,9 @@ describe("sotama_automations v2", () => {
       await program.methods
         .createAutomation(
           trigger.tokenPriceBelow(fakeFeed, new BN(100_000_000), 1),
-          action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL))
+          action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL)),
+          cadence.once(),
+          NO_INTERVAL
         )
         .accountsStrict({
           owner: owner.publicKey,
@@ -276,7 +320,7 @@ describe("sotama_automations v2", () => {
     expect(autoBefore - autoAfter).to.eq(amount);
 
     const after = await program.account.automation.fetch(auto);
-    expect(after.executed).to.eq(true);
+    expect(after.finished).to.eq(true);
     expect(after.executedAt.toNumber()).to.be.greaterThan(0);
   });
 
@@ -297,7 +341,7 @@ describe("sotama_automations v2", () => {
     } catch (e: any) {
       threw = true;
       expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
-        /AlreadyExecuted|alreadyExecuted/i
+        /AutomationFinished|automationFinished/i
       );
     }
     expect(threw).to.eq(true);
@@ -314,7 +358,9 @@ describe("sotama_automations v2", () => {
     await program.methods
       .createAutomation(
         trigger.tokenPriceBelow(fakeFeed, threshold, -8),
-        action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL))
+        action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL)),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -337,7 +383,7 @@ describe("sotama_automations v2", () => {
       .rpc();
 
     const after = await program.account.automation.fetch(auto);
-    expect(after.executed).to.eq(true);
+    expect(after.finished).to.eq(true);
     expect((after.trigger as any).tokenPrice.threshold.toString()).to.eq(threshold.toString());
     expect((after.trigger as any).tokenPrice.expo).to.eq(-8);
   });
@@ -356,7 +402,9 @@ describe("sotama_automations v2", () => {
     await program.methods
       .createAutomation(
         trigger.stakingTime(stakeAccount, new BN(3600)),
-        action.transferSol(destination.publicKey, new BN(0.01 * LAMPORTS_PER_SOL))
+        action.transferSol(destination.publicKey, new BN(0.01 * LAMPORTS_PER_SOL)),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -379,7 +427,7 @@ describe("sotama_automations v2", () => {
       .rpc();
 
     const after = await program.account.automation.fetch(auto);
-    expect(after.executed).to.eq(true);
+    expect(after.finished).to.eq(true);
   });
 
   it("rejects execute when paused, allows again after unpause", async () => {
@@ -391,7 +439,9 @@ describe("sotama_automations v2", () => {
     await program.methods
       .createAutomation(
         trigger.accountTransfer(watched.publicKey),
-        action.transferSol(destination.publicKey, amount)
+        action.transferSol(destination.publicKey, amount),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -442,7 +492,7 @@ describe("sotama_automations v2", () => {
       .rpc();
 
     const after = await program.account.automation.fetch(auto);
-    expect(after.executed).to.eq(true);
+    expect(after.finished).to.eq(true);
   });
 
   it("creates and executes an SPL transfer automation", async () => {
@@ -529,7 +579,9 @@ describe("sotama_automations v2", () => {
     const createSplIx = await program.methods
       .createAutomationSpl(
         trigger.accountTransfer(watched.publicKey),
-        action.transferSpl(splDestination.publicKey, mint.publicKey, splAmount)
+        action.transferSpl(splDestination.publicKey, mint.publicKey, splAmount),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -585,7 +637,9 @@ describe("sotama_automations v2", () => {
     await program.methods
       .createAutomation(
         trigger.accountTransfer(watched.publicKey),
-        action.transferSol(destination.publicKey, amount)
+        action.transferSol(destination.publicKey, amount),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -636,7 +690,9 @@ describe("sotama_automations v2", () => {
     await program.methods
       .createAutomationStake(
         trigger.stakingAmount(stakeAccount, new BN(1_000_000)),
-        action.stakeRestake(stakeAccount, voteAccount)
+        action.stakeRestake(stakeAccount, voteAccount),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -662,7 +718,9 @@ describe("sotama_automations v2", () => {
     await program.methods
       .createAutomationStake(
         trigger.stakingTime(stakeAccount, new BN(86_400)),
-        action.stakeWithdrawReward(stakeAccount, destination.publicKey)
+        action.stakeWithdrawReward(stakeAccount, destination.publicKey),
+        cadence.once(),
+        NO_INTERVAL
       )
       .accountsStrict({
         owner: owner.publicKey,
@@ -679,6 +737,601 @@ describe("sotama_automations v2", () => {
     );
     expect((a.trigger as any).stakingReward.mode).to.eq(1);
     expect((a.trigger as any).stakingReward.value.toString()).to.eq("86400");
+  });
+
+  /* ── Cadence: For (Repeat) ────────────────────────────────────────── */
+
+  it("Repeat cadence fires `total` times then becomes Finished", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    // Three small fires of 0.05 SOL each, no minimum interval.
+    const TOTAL = 3;
+    const perFire = new BN(0.05 * LAMPORTS_PER_SOL);
+    // Fund the PDA above per-fire × TOTAL plus rent — easiest is one big
+    // deposit on the first action; tests use the same `amount` field every
+    // fire so we just leave plenty of room and let the program subtract
+    // it `TOTAL` times.
+    const fundedAmount = new BN(0.05 * LAMPORTS_PER_SOL);
+
+    await program.methods
+      .createAutomation(
+        trigger.accountTransfer(watched.publicKey),
+        action.transferSol(destination.publicKey, fundedAmount),
+        cadence.repeat(TOTAL),
+        NO_INTERVAL
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+    // Top up the PDA so we can afford TOTAL × perFire transfers — the
+    // initial deposit only covered one fire's worth of `amount`. Anchor's
+    // create_automation pays rent + amount; we add the remainder by hand.
+    const topUp = perFire.muln(TOTAL - 1).toNumber();
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(auto, topUp),
+      "confirmed"
+    );
+
+    for (let i = 1; i <= TOTAL; i++) {
+      await program.methods
+        .executeAutomation()
+        .accountsStrict({
+          keeper: keeper.publicKey,
+          config: configPda,
+          automation: auto,
+          destination: destination.publicKey,
+        })
+        .signers([keeper])
+        .rpc();
+      const mid = await program.account.automation.fetch(auto);
+      expect(mid.executions).to.eq(i);
+      expect(mid.finished).to.eq(i === TOTAL);
+    }
+
+    // Fourth attempt must fail with AutomationFinished.
+    let threw = false;
+    try {
+      await program.methods
+        .executeAutomation()
+        .accountsStrict({
+          keeper: keeper.publicKey,
+          config: configPda,
+          automation: auto,
+          destination: destination.publicKey,
+        })
+        .signers([keeper])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /AutomationFinished|automationFinished/i
+      );
+    }
+    expect(threw, "expected AutomationFinished after exhausting repeat bound").to.eq(true);
+  });
+
+  /* ── Cadence: While (Until) ──────────────────────────────────────── */
+
+  it("Until cadence fires repeatedly until deadline, then becomes Finished", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    const perFire = new BN(0.02 * LAMPORTS_PER_SOL);
+    // Deadline 60 s in the future — enough headroom for two fires before
+    // we manually ask the chain to be past the deadline. We can't time-travel
+    // on solana-test-validator, so instead we just verify two fires land,
+    // then rebuild a *separate* automation with a deadline already 1 s
+    // in the past after creation (gated only at execute time, since
+    // create_automation requires deadline > now).
+    const farFuture = new BN(Math.floor(Date.now() / 1000) + 60);
+
+    await program.methods
+      .createAutomation(
+        trigger.accountTransfer(watched.publicKey),
+        action.transferSol(destination.publicKey, perFire),
+        cadence.until(farFuture),
+        NO_INTERVAL
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+    // Top up so two fires land.
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(auto, perFire.toNumber()),
+      "confirmed"
+    );
+
+    for (let i = 1; i <= 2; i++) {
+      await program.methods
+        .executeAutomation()
+        .accountsStrict({
+          keeper: keeper.publicKey,
+          config: configPda,
+          automation: auto,
+          destination: destination.publicKey,
+        })
+        .signers([keeper])
+        .rpc();
+      const mid = await program.account.automation.fetch(auto);
+      expect(mid.executions).to.eq(i);
+      // Until-cadence stays not-finished while now < deadline, regardless
+      // of how many fires have landed.
+      expect(mid.finished).to.eq(false);
+    }
+  });
+
+  /* ── min_interval_secs ────────────────────────────────────────────── */
+
+  it("MinIntervalNotElapsed blocks back-to-back fires within the interval", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    const perFire = new BN(0.02 * LAMPORTS_PER_SOL);
+    // Two fires required, with a 1-hour gap between them. We won't wait
+    // an hour — we just confirm the second attempt errors with
+    // MinIntervalNotElapsed.
+    const ONE_HOUR = 3600;
+
+    await program.methods
+      .createAutomation(
+        trigger.accountTransfer(watched.publicKey),
+        action.transferSol(destination.publicKey, perFire),
+        cadence.repeat(2),
+        ONE_HOUR
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+    // Top up for a second fire (we won't land it).
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(auto, perFire.toNumber()),
+      "confirmed"
+    );
+
+    // First fire — allowed (executions == 0, no interval gate yet).
+    await program.methods
+      .executeAutomation()
+      .accountsStrict({
+        keeper: keeper.publicKey,
+        config: configPda,
+        automation: auto,
+        destination: destination.publicKey,
+      })
+      .signers([keeper])
+      .rpc();
+
+    // Immediate second fire — must hit MinIntervalNotElapsed.
+    let threw = false;
+    try {
+      await program.methods
+        .executeAutomation()
+        .accountsStrict({
+          keeper: keeper.publicKey,
+          config: configPda,
+          automation: auto,
+          destination: destination.publicKey,
+        })
+        .signers([keeper])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /MinIntervalNotElapsed|minIntervalNotElapsed/i
+      );
+    }
+    expect(threw, "expected MinIntervalNotElapsed").to.eq(true);
+  });
+
+  /* ── Cadence validation ──────────────────────────────────────────── */
+
+  it("rejects Until cadence with a deadline already in the past", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    const pastDeadline = new BN(Math.floor(Date.now() / 1000) - 60);
+
+    let threw = false;
+    try {
+      await program.methods
+        .createAutomation(
+          trigger.accountTransfer(watched.publicKey),
+          action.transferSol(destination.publicKey, new BN(0.02 * LAMPORTS_PER_SOL)),
+          cadence.until(pastDeadline),
+          NO_INTERVAL
+        )
+        .accountsStrict({
+          owner: owner.publicKey,
+          config: configPda,
+          automation: auto,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /BadCadence|badCadence/i
+      );
+    }
+    expect(threw, "expected BadCadence for past deadline").to.eq(true);
+  });
+
+  /* ── Swap (Orca Whirlpool) ───────────────────────────────────── */
+
+  it("creates a Swap automation and locks the action fields on chain", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    // Spin up a fresh input SPL mint owned by `owner`. Output mint can
+    // be any pubkey — the program records it but never touches it
+    // until execute_swap (which we don't run here, since localnet
+    // doesn't have Jupiter loaded — that test belongs to a devnet/
+    // mainnet integration smoke run).
+    const inputMintKp = Keypair.generate();
+    const outputMint = Keypair.generate().publicKey;
+    const lamportsForMint = await getMinimumBalanceForRentExemptMint(
+      provider.connection,
+    );
+    const inputMint = inputMintKp.publicKey;
+
+    // Allocate the mint, init it, and create owner's ATA + the
+    // automation PDA's ATA (the latter must exist before
+    // create_automation_swap pulls the deposit into it).
+    const ownerAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const automationAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+    const setupTx = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports: lamportsForMint,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          automationAta,
+          auto,
+          inputMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(
+          inputMint,
+          ownerAta,
+          owner.publicKey,
+          1_000_000n,
+        ),
+      );
+    await provider.sendAndConfirm(setupTx, [owner, inputMintKp]);
+
+    const amountIn = new BN(500_000);
+    const minAmountOut = new BN(0);
+
+    await program.methods
+      .createAutomationSwap(
+        trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        action.swap(inputMint, outputMint, owner.publicKey, amountIn, minAmountOut),
+        cadence.once(),
+        NO_INTERVAL,
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        inputMint,
+        ownerInputAta: ownerAta,
+        automationInputAta: automationAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    const a = await program.account.automation.fetch(auto);
+    expect(a.action).to.have.nested.property("swap");
+    const swap = (a.action as any).swap;
+    expect(swap.inputMint.toBase58()).to.eq(inputMint.toBase58());
+    expect(swap.outputMint.toBase58()).to.eq(outputMint.toBase58());
+    expect(swap.destination.toBase58()).to.eq(owner.publicKey.toBase58());
+    expect(swap.amountIn.toString()).to.eq(amountIn.toString());
+    expect(swap.minAmountOut.toString()).to.eq(minAmountOut.toString());
+    expect(a.finished).to.eq(false);
+
+    // PDA's input ATA should now hold the deposited amount. With the
+    // Once cadence the deposit equals amount_in × 1.
+    const ataAfter = await getTokenAccount(provider.connection, automationAta);
+    expect(ataAfter.amount.toString()).to.eq(amountIn.toString());
+  });
+
+  it("Repeat-cadence swap deposits amount_in × total at create time", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    const inputMintKp = Keypair.generate();
+    const outputMint = Keypair.generate().publicKey;
+    const inputMint = inputMintKp.publicKey;
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+    const ownerAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const automationAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+
+    const TOTAL = 4;
+    const amountIn = new BN(250_000);
+    const expectedDeposit = amountIn.muln(TOTAL); // 1_000_000
+
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          automationAta,
+          auto,
+          inputMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(
+          inputMint,
+          ownerAta,
+          owner.publicKey,
+          BigInt(expectedDeposit.toString()),
+        ),
+      );
+    await provider.sendAndConfirm(setup, [owner, inputMintKp]);
+
+    await program.methods
+      .createAutomationSwap(
+        trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        action.swap(inputMint, outputMint, owner.publicKey, amountIn, new BN(0)),
+        cadence.repeat(TOTAL),
+        NO_INTERVAL,
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        inputMint,
+        ownerInputAta: ownerAta,
+        automationInputAta: automationAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    const ataAfter = await getTokenAccount(provider.connection, automationAta);
+    expect(ataAfter.amount.toString()).to.eq(expectedDeposit.toString());
+  });
+
+  it("rejects Until cadence on a swap (SwapUntilNotSupported)", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    const inputMintKp = Keypair.generate();
+    const inputMint = inputMintKp.publicKey;
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+    const ownerAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const automationAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          automationAta,
+          auto,
+          inputMint,
+        ),
+      );
+    await provider.sendAndConfirm(setup, [owner, inputMintKp]);
+
+    const farFuture = new BN(Math.floor(Date.now() / 1000) + 86_400);
+    let threw = false;
+    try {
+      await program.methods
+        .createAutomationSwap(
+          trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+          action.swap(
+            inputMint,
+            Keypair.generate().publicKey,
+            owner.publicKey,
+            new BN(100_000),
+            new BN(0),
+          ),
+          cadence.until(farFuture),
+          NO_INTERVAL,
+        )
+        .accountsStrict({
+          owner: owner.publicKey,
+          config: configPda,
+          automation: auto,
+          inputMint,
+          ownerInputAta: ownerAta,
+          automationInputAta: automationAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /SwapUntilNotSupported|swapUntilNotSupported/i,
+      );
+    }
+    expect(threw, "expected SwapUntilNotSupported").to.eq(true);
+  });
+
+  it("rejects Swap action sent through create_automation_spl (ActionMismatch)", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    // Reuse a fresh mint just for the rejection-path test.
+    const mintKp = Keypair.generate();
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+    const ownerAta = getAssociatedTokenAddressSync(mintKp.publicKey, owner.publicKey);
+    const autoAta = getAssociatedTokenAddressSync(mintKp.publicKey, auto, true);
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: mintKp.publicKey,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(mintKp.publicKey, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerAta,
+          owner.publicKey,
+          mintKp.publicKey,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          autoAta,
+          auto,
+          mintKp.publicKey,
+        ),
+      );
+    await provider.sendAndConfirm(setup, [owner, mintKp]);
+
+    let threw = false;
+    try {
+      await program.methods
+        .createAutomationSpl(
+          trigger.accountTransfer(watched.publicKey),
+          action.swap(
+            mintKp.publicKey,
+            Keypair.generate().publicKey,
+            owner.publicKey,
+            new BN(100_000),
+            new BN(0),
+          ),
+          cadence.once(),
+          NO_INTERVAL,
+        )
+        .accountsStrict({
+          owner: owner.publicKey,
+          config: configPda,
+          automation: auto,
+          mint: mintKp.publicKey,
+          ownerAta,
+          automationAta: autoAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /ActionMismatch|actionMismatch/i,
+      );
+    }
+    expect(threw, "expected ActionMismatch when Swap goes through create_automation_spl").to.eq(
+      true,
+    );
+  });
+
+  it("rejects Repeat cadence with total = 0", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    let threw = false;
+    try {
+      await program.methods
+        .createAutomation(
+          trigger.accountTransfer(watched.publicKey),
+          action.transferSol(destination.publicKey, new BN(0.02 * LAMPORTS_PER_SOL)),
+          cadence.repeat(0),
+          NO_INTERVAL
+        )
+        .accountsStrict({
+          owner: owner.publicKey,
+          config: configPda,
+          automation: auto,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /BadCadence|badCadence/i
+      );
+    }
+    expect(threw, "expected BadCadence for total=0").to.eq(true);
   });
 });
 

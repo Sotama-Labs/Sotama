@@ -91,6 +91,12 @@ export type SwapAction = {
   inputToken: TokenRef;
   outputToken: TokenRef;
   amount: number;
+  /** Optional pubkey of a downstream automation. When set, A's swap
+   *  output ATA = B's input ATA (i.e., the next-fire fuel for the
+   *  linked rule). UI uses this for chain visualization + cycle
+   *  detection. The on-chain handler doesn't enforce anything special
+   *  about it — destination routing is the actual fund-flow primitive. */
+  linkedDownstream?: string;
 };
 
 export type RestakeAction = {
@@ -211,6 +217,43 @@ export type DraftAction =
   | DraftSellFor
   | DraftTransferReward;
 
+/* ── Cadence (control-flow) ────────────────────────────────────────── */
+
+/** Maps 1:1 to the on-chain `Cadence` enum and to the UI's If/For/While chip.
+ *
+ *  - `once`  — fire one time when the trigger is met. (UI: "If")
+ *  - `repeat` — fire up to `total` times. (UI: "For ... × N times")
+ *  - `until` — fire repeatedly while now < `unixDeadline`. (UI: "While ... until <date>")
+ *
+ *  `minIntervalSecs` is the user-set throttle between consecutive fires and
+ *  is enforced on-chain regardless of cadence kind. `0` = no floor.
+ */
+export type Cadence =
+  | { kind: "once" }
+  | { kind: "repeat"; total: number }
+  | { kind: "until"; unixDeadline: number };
+
+export type CadenceKind = Cadence["kind"];
+
+/** Default cadence — preserves the v2 "fire once" behavior so existing UI
+ *  flows that don't know about loops still get sensible behavior. */
+export const DEFAULT_CADENCE: Cadence = { kind: "once" };
+export const DEFAULT_MIN_INTERVAL_SECS = 0;
+
+/** Sensible default `min_interval_secs` for each cadence kind. The chosen
+ *  values back-stop the polling rate so a While-with-token-price doesn't
+ *  fire on every keeper tick (which is sub-second). The user adjusts this
+ *  in the TuningSheet — these are only the seed values. */
+export const DEFAULT_INTERVAL_BY_CADENCE: Record<CadenceKind, number> = {
+  once: 0,
+  // 10 minutes — the keeper will still poll the price feed often, but the
+  // on-chain `check_can_fire` floor prevents back-to-back action fires.
+  until: 10 * 60,
+  // 10 minutes — same idea for For. Most "for N times" use cases have
+  // intervals in minutes-to-hours; users dial up in the TuningSheet.
+  repeat: 10 * 60,
+};
+
 /* ── Persisted automation ──────────────────────────────────────────── */
 
 export type TriggerOperator = "and" | "or";
@@ -218,7 +261,7 @@ export type ActionOperator = "then" | "and";
 
 export type Automation = {
   id: string;
-  schemaVersion: 2;
+  schemaVersion: 3;
   triggers: Trigger[];
   /** Operators between adjacent triggers. Length = triggers.length - 1.
    *  Default is "and" for backward-compat. "or"-followed triggers render with
@@ -229,6 +272,11 @@ export type Automation = {
    *  Default is "then" — sequential. "and"-followed actions render with
    *  parentheses to indicate they execute together. */
   actionOperators: ActionOperator[];
+  /** Control-flow chosen by the user (If/For/While). Defaults to `once` for
+   *  records persisted before loops shipped — see `loadAutomations`. */
+  cadence: Cadence;
+  /** Minimum seconds between consecutive fires. `0` = no floor. */
+  minIntervalSecs: number;
   running: boolean;
   runs: number;
   lastCheck: string;
@@ -241,9 +289,9 @@ export type Automation = {
   /** On-chain nonce assigned by the program at create time. Useful for
    *  re-deriving the PDA without re-fetching the account. */
   nonce?: string;
-  /** ISO timestamp when on-chain `executed` was first observed as true.
-   *  Set by `useOnChainAutomationSync`. Single-shot — once set, the
-   *  automation is in its terminal "Completed" state. */
+  /** ISO timestamp when on-chain `finished` was first observed as true.
+   *  Set by `useOnChainAutomationSync`. The automation is in its terminal
+   *  state and the keeper has stopped polling it. */
   executedAt?: string;
   /** ISO timestamp when the on-chain account was first observed missing
    *  (i.e., owner closed it). Mutually exclusive with `executedAt` in
@@ -251,7 +299,7 @@ export type Automation = {
   closedAt?: string;
 };
 
-/** True iff the automation reached its terminal Completed state on chain. */
+/** True iff the automation reached its terminal state on chain. */
 export function isCompleted(a: Automation): boolean {
   return !!a.executedAt;
 }

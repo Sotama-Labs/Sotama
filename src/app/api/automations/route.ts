@@ -16,7 +16,7 @@ const KEEPER_URL = process.env.NEXT_PUBLIC_KEEPER_URL || null;
 function validateAutomation(body: unknown): Automation | string {
   if (!body || typeof body !== "object") return "body must be an object";
   const a = body as Partial<Automation>;
-  if (a.schemaVersion !== 2) return "schemaVersion must be 2";
+  if (a.schemaVersion !== 3) return "schemaVersion must be 3";
   if (typeof a.id !== "string" || !a.id) return "id required";
   if (!Array.isArray(a.triggers) || a.triggers.length === 0) return "triggers required";
   if (!Array.isArray(a.actions) || a.actions.length === 0) return "actions required";

@@ -358,3 +358,35 @@ button:focus-visible, input:focus-visible {
   outline-offset: 1px;
   border-radius: var(--radius-control-m);
 }
+
+/* Clean, minimal scrollbar for popover lists. The track is invisible,
+   the thumb only appears on hover, and a subtle border separates the
+   scroll edge from the popover's blurred surface. */
+.popover-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 160ms ease;
+}
+.popover-scroll:hover {
+  scrollbar-color: var(--separator) transparent;
+}
+.popover-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.popover-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.popover-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 160ms ease;
+}
+.popover-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: var(--separator);
+  background-clip: padding-box;
+}
+.popover-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--label-tertiary);
+}

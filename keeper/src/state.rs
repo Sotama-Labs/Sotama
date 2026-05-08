@@ -14,6 +14,10 @@ pub enum TriggerSpec {
     },
     TokenPrice {
         feed: Pubkey,
+        /// `None` = USD-denominated (single-feed compare).
+        /// `Some(mint)` = compare `pyth(feed) / jupiter_quote(mint, USDC)`
+        /// against `threshold * 10^expo`.
+        quote_mint: Option<Pubkey>,
         comparator: u8,
         threshold: i64,
         expo: i32,
@@ -45,6 +49,23 @@ pub enum ActionSpec {
         stake_account: Pubkey,
         destination: Pubkey,
     },
+    Swap {
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        destination: Pubkey,
+        amount_in: u64,
+        min_amount_out: u64,
+        linked_downstream: Option<Pubkey>,
+        link_fee_deposit: u64,
+    },
+}
+
+/// Borsh-mirror of the on-chain `Cadence` enum.
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub enum Cadence {
+    Once,
+    Repeat { total: u32 },
+    Until { unix_deadline: i64 },
 }
 
 /// Borsh-mirror of the on-chain `Automation` account, excluding the 8-byte
@@ -56,10 +77,15 @@ pub struct Automation {
     pub nonce: u64,
     pub trigger: TriggerSpec,
     pub action: ActionSpec,
-    pub executed: bool,
+    pub cadence: Cadence,
+    pub executions: u32,
+    pub min_interval_secs: u32,
+    pub finished: bool,
     pub created_at: i64,
     pub executed_at: i64,
     pub bump: u8,
+    /// 32 bytes of forward-compat padding. Mirrors the on-chain field.
+    pub _reserved: [u8; 32],
 }
 
 impl Automation {
@@ -88,11 +114,13 @@ impl Automation {
             },
             TriggerSpec::TokenPrice {
                 feed,
+                quote_mint,
                 comparator,
                 threshold,
                 expo,
             } => Monitor::Price {
                 feed: *feed,
+                quote_mint: *quote_mint,
                 comparator: *comparator,
                 threshold: *threshold,
                 expo: *expo,
@@ -121,6 +149,9 @@ pub enum Monitor {
     },
     Price {
         feed: Pubkey,
+        /// None = USD-denominated; Some(mint) = ratio against
+        /// Jupiter-probed mint price.
+        quote_mint: Option<Pubkey>,
         comparator: u8,
         threshold: i64,
         expo: i32,

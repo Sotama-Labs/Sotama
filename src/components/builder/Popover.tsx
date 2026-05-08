@@ -22,12 +22,18 @@ export function Popover({
   width?: number;
   align?: Align;
 }) {
-  const [pos, setPos] = useState({ top: 0, left: 0, effectiveWidth: width });
+  const [pos, setPos] = useState({
+    top: 0,
+    left: 0,
+    effectiveWidth: width,
+    maxHeight: 0,
+  });
   const popRef = useRef<HTMLDivElement | null>(null);
 
   const reposition = () => {
     if (!anchorRef.current) return;
     const r = anchorRef.current.getBoundingClientRect();
+    const vh = window.innerHeight;
     const maxWidth =
       typeof window !== "undefined"
         ? Math.max(240, window.innerWidth - VIEWPORT_MARGIN * 2)
@@ -43,7 +49,22 @@ export function Popover({
       VIEWPORT_MARGIN,
       Math.min(window.innerWidth - effectiveWidth - VIEWPORT_MARGIN, raw),
     );
-    setPos({ top: r.bottom + 8, left, effectiveWidth });
+
+    // Vertical placement: prefer below the anchor, but if the
+    // available room above is meaningfully larger AND below is too
+    // tight, flip above. Either way cap maxHeight to the available
+    // space minus a viewport margin.
+    const gap = 8;
+    const spaceBelow = vh - r.bottom - gap - VIEWPORT_MARGIN;
+    const spaceAbove = r.top - gap - VIEWPORT_MARGIN;
+    const MIN_USABLE = 220;
+    const flip = spaceBelow < MIN_USABLE && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(MIN_USABLE, flip ? spaceAbove : spaceBelow);
+    const top = flip
+      ? Math.max(VIEWPORT_MARGIN, r.top - gap - maxHeight)
+      : r.bottom + gap;
+
+    setPos({ top, left, effectiveWidth, maxHeight });
   };
 
   useLayoutEffect(() => {
@@ -87,12 +108,13 @@ export function Popover({
   return createPortal(
     <div
       ref={popRef}
-      className="popover-anim"
+      className="popover-anim popover-scroll"
       style={{
         position: "fixed",
         top: pos.top,
         left: pos.left,
         width: pos.effectiveWidth,
+        maxHeight: pos.maxHeight || undefined,
         zIndex: 100,
         background: "var(--material-popover)",
         backdropFilter: "saturate(180%) blur(50px)",
@@ -100,7 +122,11 @@ export function Popover({
         border: "0.5px solid var(--separator)",
         borderRadius: "0.875rem",
         boxShadow: "var(--shadow-popover)",
-        overflow: "hidden",
+        // Vertical scroll on overflow — keeps the confirm button on
+        // every editor reachable regardless of viewport height.
+        overflowY: "auto",
+        overflowX: "hidden",
+        overscrollBehavior: "contain",
       }}
     >
       {children}

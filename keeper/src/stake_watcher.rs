@@ -107,6 +107,7 @@ pub async fn run(
                 source: "stake_watcher",
                 correlation: format!("{stake_key}:{now}"),
                 matches,
+                depth: 0,
             };
             if trigger_tx.send(evt).await.is_err() {
                 return Ok(());

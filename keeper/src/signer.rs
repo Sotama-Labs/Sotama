@@ -193,8 +193,23 @@ impl KeeperSigner for TurnkeySigner {
             .header("Content-Type", "application/json")
             .body(body_str)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            // Turnkey returns useful detail in the body on 4xx — policy
+            // name, missing approver, stale stamp, etc. Surface it so
+            // the keeper logs explain WHY the sign was rejected
+            // instead of just "403 Forbidden".
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<no body: {e}>"));
+            return Err(anyhow!(
+                "turnkey http {}: {}",
+                status.as_u16(),
+                text.trim()
+            ));
+        }
         let parsed: SignRawPayloadResponse = resp.json().await?;
 
         let activity = parsed
@@ -263,9 +278,14 @@ fn required(name: &str) -> Result<String> {
 /* ── Selection ──────────────────────────────────────────────────────── */
 
 /// Pick the right signer from env. Prefers Turnkey when its API public
-/// key is configured; falls back to the local keypair file otherwise.
+/// key is configured (and non-empty); falls back to the local keypair
+/// file otherwise. The non-empty check lets the .env carry empty
+/// placeholder lines without forcing the Turnkey path.
 pub fn load_signer() -> Result<std::sync::Arc<dyn KeeperSigner>> {
-    if std::env::var("TURNKEY_API_PUBLIC_KEY").is_ok() {
+    let turnkey_set = std::env::var("TURNKEY_API_PUBLIC_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if turnkey_set {
         let signer = TurnkeySigner::from_env()?;
         Ok(std::sync::Arc::new(signer))
     } else {

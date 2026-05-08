@@ -14,6 +14,10 @@ pub struct AutomationCreated {
     pub action_kind: u8,
     /// Watched / feed / stake account, depending on trigger_kind.
     pub trigger_pubkey: Pubkey,
+    /// `0` = Once (If), `1` = Repeat (For), `2` = Until (While). Lets the
+    /// indexer render the right control-flow icon without decoding the
+    /// account's full Cadence payload.
+    pub cadence_kind: u8,
 }
 
 #[event]
@@ -24,6 +28,13 @@ pub struct AutomationExecuted {
     /// the amount is dynamic (stake reward), otherwise the static action
     /// amount.
     pub amount: u64,
+    /// 1-indexed run count after this fire (1 = first fire). Lets indexers
+    /// distinguish "fire 3 of 10" from "first fire" without re-fetching the
+    /// account.
+    pub executions: u32,
+    /// True iff this fire put the automation into its terminal state — i.e.
+    /// the keeper should stop polling it.
+    pub finished: bool,
 }
 
 #[event]

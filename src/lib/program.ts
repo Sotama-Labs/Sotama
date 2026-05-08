@@ -98,6 +98,7 @@ export type OnChainTriggerSpec =
   | {
       tokenPrice: {
         feed: PublicKey;
+        quoteMint: PublicKey | null;
         comparator: number;
         threshold: BN;
         expo: number;
@@ -131,7 +132,39 @@ export type OnChainActionSpec =
         stakeAccount: PublicKey;
         destination: PublicKey;
       };
+    }
+  | {
+      swap: {
+        inputMint: PublicKey;
+        outputMint: PublicKey;
+        destination: PublicKey;
+        amountIn: BN;
+        minAmountOut: BN;
+        linkedDownstream: PublicKey | null;
+        linkFeeDeposit: BN;
+      };
     };
+
+/** On-chain Cadence variant. Mirrors the Anchor enum verbatim — JS-side
+ *  callers should always go through `cadenceToOnChain` from this module
+ *  rather than constructing the literal directly. */
+export type OnChainCadence =
+  | { once: Record<string, never> }
+  | { repeat: { total: number } }
+  | { until: { unixDeadline: BN } };
+
+import type { Cadence } from "./types";
+
+export function cadenceToOnChain(cadence: Cadence): OnChainCadence {
+  switch (cadence.kind) {
+    case "once":
+      return { once: {} };
+    case "repeat":
+      return { repeat: { total: cadence.total } };
+    case "until":
+      return { until: { unixDeadline: new BN(cadence.unixDeadline) } };
+  }
+}
 
 /* ── Instruction builders ───────────────────────────────────────────── */
 
@@ -140,12 +173,14 @@ export async function buildCreateAutomationIx(params: {
   owner: PublicKey;
   trigger: OnChainTriggerSpec;
   action: OnChainActionSpec & { transferSol: { destination: PublicKey; amount: BN } };
+  cadence: OnChainCadence;
+  minIntervalSecs: number;
   nextNonce: bigint;
 }): Promise<{ ix: TransactionInstruction; automation: PublicKey }> {
-  const { program, owner, trigger, action, nextNonce } = params;
+  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
   const automation = automationPda(owner, nextNonce, program.programId);
   const ix = await program.methods
-    .createAutomation(trigger as never, action as never)
+    .createAutomation(trigger as never, action as never, cadence as never, minIntervalSecs)
     .accountsStrict({
       owner,
       config: configPda(program.programId),
@@ -163,6 +198,8 @@ export async function buildCreateAutomationSplIx(params: {
   action: OnChainActionSpec & {
     transferSpl: { destination: PublicKey; mint: PublicKey; amount: BN };
   };
+  cadence: OnChainCadence;
+  minIntervalSecs: number;
   nextNonce: bigint;
 }): Promise<{
   ix: TransactionInstruction;
@@ -170,13 +207,13 @@ export async function buildCreateAutomationSplIx(params: {
   ownerAta: PublicKey;
   automationAta: PublicKey;
 }> {
-  const { program, owner, trigger, action, nextNonce } = params;
+  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
   const mint = action.transferSpl.mint;
   const automation = automationPda(owner, nextNonce, program.programId);
   const ownerAta = associatedTokenAddress(owner, mint);
   const automationAta = associatedTokenAddress(automation, mint);
   const ix = await program.methods
-    .createAutomationSpl(trigger as never, action as never)
+    .createAutomationSpl(trigger as never, action as never, cadence as never, minIntervalSecs)
     .accountsStrict({
       owner,
       config: configPda(program.programId),
@@ -191,17 +228,62 @@ export async function buildCreateAutomationSplIx(params: {
   return { ix, automation, ownerAta, automationAta };
 }
 
+export async function buildCreateAutomationSwapIx(params: {
+  program: Program<SotamaAutomations>;
+  owner: PublicKey;
+  trigger: OnChainTriggerSpec;
+  action: OnChainActionSpec & {
+    swap: {
+      inputMint: PublicKey;
+      outputMint: PublicKey;
+      destination: PublicKey;
+      amountIn: BN;
+      minAmountOut: BN;
+    };
+  };
+  cadence: OnChainCadence;
+  minIntervalSecs: number;
+  nextNonce: bigint;
+}): Promise<{
+  ix: TransactionInstruction;
+  automation: PublicKey;
+  ownerInputAta: PublicKey;
+  automationInputAta: PublicKey;
+}> {
+  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
+  const inputMint = action.swap.inputMint;
+  const automation = automationPda(owner, nextNonce, program.programId);
+  const ownerInputAta = associatedTokenAddress(owner, inputMint);
+  const automationInputAta = associatedTokenAddress(automation, inputMint);
+  const ix = await program.methods
+    .createAutomationSwap(trigger as never, action as never, cadence as never, minIntervalSecs)
+    .accountsStrict({
+      owner,
+      config: configPda(program.programId),
+      automation,
+      inputMint,
+      ownerInputAta,
+      automationInputAta,
+      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      systemProgram: new PublicKey("11111111111111111111111111111111"),
+    })
+    .instruction();
+  return { ix, automation, ownerInputAta, automationInputAta };
+}
+
 export async function buildCreateAutomationStakeIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
   trigger: OnChainTriggerSpec;
   action: OnChainActionSpec;
+  cadence: OnChainCadence;
+  minIntervalSecs: number;
   nextNonce: bigint;
 }): Promise<{ ix: TransactionInstruction; automation: PublicKey }> {
-  const { program, owner, trigger, action, nextNonce } = params;
+  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
   const automation = automationPda(owner, nextNonce, program.programId);
   const ix = await program.methods
-    .createAutomationStake(trigger as never, action as never)
+    .createAutomationStake(trigger as never, action as never, cadence as never, minIntervalSecs)
     .accountsStrict({
       owner,
       config: configPda(program.programId),
@@ -222,6 +304,65 @@ export async function buildCloseAutomationIx(params: {
     .closeAutomation()
     .accountsStrict({ owner, automation })
     .instruction();
+}
+
+/** Close an SPL-action automation. Drains the PDA's ATA back to
+ *  `ownerAta` (which must exist — caller is expected to prepend an
+ *  idempotent ATA-create), closes the ATA, then closes the PDA. */
+export async function buildCloseAutomationSplIx(params: {
+  program: Program<SotamaAutomations>;
+  owner: PublicKey;
+  automation: PublicKey;
+  mint: PublicKey;
+}): Promise<{
+  ix: TransactionInstruction;
+  ownerAta: PublicKey;
+  automationAta: PublicKey;
+}> {
+  const { program, owner, automation, mint } = params;
+  const ownerAta = associatedTokenAddress(owner, mint);
+  const automationAta = associatedTokenAddress(automation, mint);
+  const ix = await program.methods
+    .closeAutomationSpl()
+    .accountsStrict({
+      owner,
+      automation,
+      mint,
+      ownerAta,
+      automationAta,
+      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+    })
+    .instruction();
+  return { ix, ownerAta, automationAta };
+}
+
+/** Close a swap-action automation. Drains the PDA's input ATA back
+ *  to `ownerInputAta`, closes the input ATA, then closes the PDA. */
+export async function buildCloseAutomationSwapIx(params: {
+  program: Program<SotamaAutomations>;
+  owner: PublicKey;
+  automation: PublicKey;
+  inputMint: PublicKey;
+}): Promise<{
+  ix: TransactionInstruction;
+  ownerInputAta: PublicKey;
+  automationInputAta: PublicKey;
+}> {
+  const { program, owner, automation, inputMint } = params;
+  const ownerInputAta = associatedTokenAddress(owner, inputMint);
+  const automationInputAta = associatedTokenAddress(automation, inputMint);
+  const ix = await program.methods
+    .closeAutomationSwap()
+    .accountsStrict({
+      owner,
+      automation,
+      inputMint,
+      ownerInputAta,
+      automationInputAta,
+      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+    })
+    .instruction();
+  return { ix, ownerInputAta, automationInputAta };
 }
 
 export async function fetchConfig(program: Program<SotamaAutomations>) {

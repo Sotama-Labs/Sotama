@@ -11,6 +11,13 @@ sotama_automations = "2gp9bMBEVpQp6Lyyg13Bw6XF9S9saAcm9C4XQ69T8ZqQ"
 [programs.devnet]
 sotama_automations = "2gp9bMBEVpQp6Lyyg13Bw6XF9S9saAcm9C4XQ69T8ZqQ"
 
+# Mainnet program ID is generated in Phase 4 (mainnet deploy). Until that
+# keypair exists, leave commented to avoid accidental deploys against
+# the wrong cluster. After `solana-keygen new -o keys/mainnet-program.json`,
+# uncomment and paste the resulting pubkey.
+# [programs.mainnet]
+# sotama_automations = "<paste fresh mainnet pubkey here>"
+
 [registry]
 url = "https://api.apr.dev"
 
