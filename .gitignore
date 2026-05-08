@@ -12,6 +12,7 @@ marketing-video
 /claude-session.jsonl
 /skills-lock.json
 brand.md
+.claude
 # Anchor / Solana
 target/
 .anchor/
@@ -38,3 +39,4 @@ keeper/.env
 # *identity* of a deployed program, not its upgrade authority. Losing
 # one means losing control of that specific program ID.
 /keys/
+/.claude/fly-lazer-cmd.md
