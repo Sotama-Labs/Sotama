@@ -6,6 +6,7 @@ import type {
   ActionOperator,
   Automation,
   ActionKind,
+  BuilderResult,
   Cadence,
   DraftAction,
   DraftTrigger,
@@ -67,14 +68,9 @@ import { SwapEditor } from "./actions/SwapEditor";
 type Side = "if" | "then";
 type Stage = "list" | "edit";
 
-export type BuilderResult = {
-  triggers: Trigger[];
-  triggerOperators: TriggerOperator[];
-  actions: Action[];
-  actionOperators: ActionOperator[];
-  cadence: Cadence;
-  minIntervalSecs: number;
-};
+// BuilderResult is defined in lib/types and re-exported here for components
+// that import it from this path (backward-compat surface).
+export type { BuilderResult };
 
 function seedTriggers(initial: Automation | null | undefined): DraftTrigger[] {
   if (initial?.triggers?.length) return initial.triggers as DraftTrigger[];

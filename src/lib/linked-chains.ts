@@ -62,12 +62,13 @@ import {
   MAX_TIME_ELAPSED_SECS,
   SELF_LOOP_INFINITE_FUND_CYCLES,
   timeElapsedToSecs,
+  type BuilderResult,
   type Cadence,
+  type ChainLinkClass,
   type LoopMode,
   type Trigger,
   type Action,
 } from "./types";
-import type { BuilderResult } from "@/components/builder/ConditionalBuilder";
 
 const SOL_MINT_STR = "So11111111111111111111111111111111111111112";
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -99,6 +100,40 @@ export type ChainNodeDraft = {
  *    which is purely cadence-driven (no destination routing — input
  *    ATA depletes over time). */
 export type ChainNodeNextDraft = { kind: "rule"; ruleIndex: number };
+
+/** Pure classifier for an adjacent rule pair. Inverted-pair is checked
+ *  first for non-degenerate cases (A→B then B→A); matched_mints wins
+ *  only when both tokens are identical (degenerate symmetric swap) or
+ *  the mints line up without inversion; everything else is
+ *  bridge_required. */
+export function classifyChainLink(
+  upstream: BuilderResult,
+  downstream: BuilderResult,
+): ChainLinkClass {
+  const up = upstream.actions[0];
+  const down = downstream.actions[0];
+  if (!up || up.kind !== "swap" || !down || down.kind !== "swap") {
+    // Non-swap chain rules already rejected by validateChainDraft;
+    // default to bridge_required so the validator surfaces the error.
+    return "bridge_required";
+  }
+  const isInverted =
+    up.inputToken.mint === down.outputToken.mint &&
+    up.outputToken.mint === down.inputToken.mint;
+  const isMatched = up.outputToken.mint === down.inputToken.mint;
+  // Degenerate case: both conditions hold AND the swap is same-token
+  // (up.in == up.out). In this case matched_mints takes precedence.
+  if (isInverted && isMatched && up.inputToken.mint === up.outputToken.mint) {
+    return "matched_mints";
+  }
+  if (isInverted) {
+    return "inverted_pair";
+  }
+  if (isMatched) {
+    return "matched_mints";
+  }
+  return "bridge_required";
+}
 
 /** Validate a chain draft. Returns null when valid; an error code +
  *  the offending node index otherwise. The keeper can't gracefully

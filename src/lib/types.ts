@@ -152,6 +152,20 @@ export type Action = TransferAction | SwapAction;
 
 export type ActionKind = Action["kind"];
 
+/** Resolved (non-draft) automation spec produced by the builder and
+ *  consumed by the deposit flow and chain library. This type is defined
+ *  here (lib/types) so non-UI modules (linked-chains, keeper) can import
+ *  it without pulling in React component code. ConditionalBuilder
+ *  re-exports it for backward compatibility. */
+export type BuilderResult = {
+  triggers: Trigger[];
+  triggerOperators: TriggerOperator[];
+  actions: Action[];
+  actionOperators: ActionOperator[];
+  cadence: Cadence;
+  minIntervalSecs: number;
+};
+
 /* ── Drafts (in-flight builder state with nullable fields) ─────────── */
 
 export type DraftAssetPrice = {
@@ -371,6 +385,11 @@ export type ChainLink = {
    *  error and offer a "retry funding" affordance. */
   fundingError?: string;
 };
+
+/** Classification of an adjacent rule pair in a chain. Drives the
+ *  builder UI affordances (chip / badge) and the keeper-side dispatch
+ *  (fixed amount vs. balance-resolved vs. bridge-then-fire). */
+export type ChainLinkClass = "matched_mints" | "inverted_pair" | "bridge_required";
 
 /** True iff the automation reached its terminal state on chain. */
 export function isCompleted(a: Automation): boolean {
