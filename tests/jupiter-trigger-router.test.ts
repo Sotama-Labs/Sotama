@@ -234,6 +234,34 @@ describe("routeAutomation", () => {
       expect(decision).to.deep.equal({ route: "keeper", reason: "linked_downstream" });
     });
 
+    it("consume_upstream_output rule routes to keeper", () => {
+      // A chain rule with consumeUpstreamOutput=true is, by definition,
+      // the downstream of an inverted-pair link — it's part of a linked
+      // chain (chainId set) and therefore should always route to keeper.
+      // This regression confirms the new flag doesn't accidentally enable
+      // Jupiter Trigger v2 routing.
+      const swap: SwapAction = {
+        kind: "swap",
+        inputToken: USDC,
+        outputToken: JUP,
+        amount: 1,
+        consumeUpstreamOutput: true,
+      };
+      const decision = routeAutomation(
+        makeAuto({
+          actions: [swap],
+          link: {
+            chainId: "c1",
+            position: 1,
+            total: 2,
+            next: null,
+            isHead: false,
+          },
+        }),
+      );
+      expect(decision).to.deep.equal({ route: "keeper", reason: "linked_chain" });
+    });
+
     it("non-USD quote (asset-vs-asset ratio)", () => {
       const decision = routeAutomation(
         makeAuto({
