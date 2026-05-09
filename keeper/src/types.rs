@@ -22,6 +22,12 @@ pub struct AutomationCtx {
     pub created_at: i64,
     pub trigger: TriggerSpec,
     pub action: ActionSpec,
+    /// Mirrors `Automation.bridge_enabled`. The bridge dispatcher reads
+    /// this to decide whether to scan a PDA's token accounts for stuck
+    /// non-input-mint tokens. Carried in `AutomationCtx` so the
+    /// dispatcher doesn't have to refetch the on-chain account every
+    /// tick — the indexer already pulls it during reconcile.
+    pub bridge_enabled: bool,
 }
 
 impl AutomationCtx {

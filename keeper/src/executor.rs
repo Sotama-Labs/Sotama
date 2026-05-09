@@ -569,6 +569,7 @@ mod tests {
                 destination: Pubkey::default(),
                 amount: 0,
             },
+            bridge_enabled: false,
         }
     }
 

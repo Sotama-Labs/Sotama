@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info};
 
+mod bridge_dispatcher;
 mod config;
 mod executor;
 mod indexer;
@@ -136,6 +137,23 @@ async fn main() -> Result<()> {
         })
     };
 
+    // Bridge dispatcher. Polls every `bridge_scan_interval` for
+    // automations with `bridge_enabled = true` and converts any stuck
+    // non-input-mint balance back to the canonical input mint via
+    // `execute_bridge`. This keeps linked-rule chains liquid even when
+    // the downstream leg never crosses (orphaned arb output cleanup).
+    // Doesn't share the trigger_tx — it bypasses the executor and ships
+    // its own tx directly, since it's not condition-driven.
+    let bridge_handle = {
+        let cfg = cfg.clone();
+        let set_rx = set_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = bridge_dispatcher::run(cfg, set_rx).await {
+                error!(error = %e, "bridge_dispatcher task exited");
+            }
+        })
+    };
+
     let executor_handle = {
         let cfg = cfg.clone();
         tokio::spawn(async move {
@@ -155,6 +173,7 @@ async fn main() -> Result<()> {
         _ = lazer_handle => error!("lazer_watcher task ended unexpectedly"),
         _ = jupiter_price_handle => error!("jupiter_watcher task ended unexpectedly"),
         _ = time_handle => error!("time_watcher task ended unexpectedly"),
+        _ = bridge_handle => error!("bridge_dispatcher task ended unexpectedly"),
         _ = executor_handle => error!("executor task ended unexpectedly"),
     }
 

@@ -51,6 +51,21 @@ pub struct KeeperConfig {
     /// 60s is plenty for "5 minutes from now" semantics — the user
     /// won't notice ±30s drift on a 1-hour timer.
     pub time_watcher_interval: Duration,
+    /// Tick interval for `bridge_dispatcher`. Defaults to 30s — the
+    /// dispatcher's job is "convert stuck arb output back into the input
+    /// mint so the next fire has buying power," and a couple of misses
+    /// at 30s only delay the next fire by a few ticks.
+    pub bridge_scan_interval: Duration,
+    /// Per-mint dust threshold below which the dispatcher ignores a
+    /// stuck balance. Avoids paying gas on swaps whose output covers
+    /// less than the swap fees themselves. 100k base units is roughly
+    /// $0.10 of USDC (6 decimals) — a sensible floor.
+    pub bridge_min_balance: u64,
+    /// Slippage budget the dispatcher applies on top of Jupiter's quote
+    /// when computing `min_amount_out` for `execute_bridge`. The
+    /// on-chain handler enforces the floor; if the route worsens
+    /// between quote and CPI, the tx reverts.
+    pub bridge_slippage_bps: u16,
     pub shard_size: usize,
     pub swap_slippage_bps: u16,
     pub keeper_fee_lamports: u64,
@@ -123,6 +138,10 @@ impl KeeperConfig {
             Duration::from_secs(parse_or("FEE_TOPUP_SCAN_INTERVAL_SECS", 300)?);
         let time_watcher_interval =
             Duration::from_secs(parse_or("TIME_WATCHER_INTERVAL_SECS", 60)?);
+        let bridge_scan_interval =
+            Duration::from_secs(parse_or("BRIDGE_SCAN_INTERVAL_SECS", 30)?);
+        let bridge_min_balance = parse_or::<u64>("BRIDGE_MIN_BALANCE", 100_000)?;
+        let bridge_slippage_bps = parse_or::<u16>("BRIDGE_SLIPPAGE_BPS", 50)?.max(1);
         let shard_size = parse_or::<usize>("SHARD_SIZE", 40)?.max(1);
         let swap_slippage_bps = parse_or::<u16>("SWAP_SLIPPAGE_BPS", 50)?.max(1);
         let keeper_fee_lamports = parse_or::<u64>("KEEPER_FEE_LAMPORTS", 5_000)?;
@@ -159,6 +178,9 @@ impl KeeperConfig {
             price_poll_interval,
             fee_topup_scan_interval,
             time_watcher_interval,
+            bridge_scan_interval,
+            bridge_min_balance,
+            bridge_slippage_bps,
             shard_size,
             swap_slippage_bps,
             keeper_fee_lamports,

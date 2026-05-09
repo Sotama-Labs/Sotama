@@ -260,6 +260,7 @@ async fn fetch_active(client: &RpcClient, program_id: &Pubkey) -> Result<Vec<Aut
                         created_at: a.created_at,
                         trigger: a.trigger,
                         action: a.action,
+                        bridge_enabled: a.bridge_enabled,
                     });
                 }
             }
