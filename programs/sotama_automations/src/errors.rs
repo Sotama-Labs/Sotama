@@ -62,6 +62,14 @@ pub enum SotamaError {
     BadFeeTopupOwner,
     #[msg("Fee topup is not enabled for this automation")]
     FeeTopupNotEnabled,
+    #[msg("Bridge is not enabled for this automation.")]
+    BridgeNotEnabled,
+    #[msg("Bridge output ATA mint must equal the automation's input mint.")]
+    BadBridgeOutput,
+    #[msg("Bridge output ATA owner must be the automation PDA.")]
+    BadBridgeOwner,
+    #[msg("Bridge swap delivered fewer tokens than min_amount_out.")]
+    BridgeSlippageExceeded,
     #[msg("Close fee exceeds protocol cap (0.1 SOL)")]
     FeeTooLarge,
     #[msg("Provided treasury account does not match Config.treasury")]
