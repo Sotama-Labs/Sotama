@@ -69,8 +69,7 @@ export function LinkedChainBuilder({
   /** Single-rule edit case. When provided, the chain seeds with one
    *  card initialised from this automation (no chain UI shown). The
    *  page-level handler still routes through `onSaveSingle` for the
-   *  one-card path so existing TuningSheet/DepositSheet flows keep
-   *  working unchanged. */
+   *  one-card path so the existing DepositSheet flow stays unchanged. */
   initialState?: Automation | null;
   /** Fires when the user saves a 1-card chain — same shape and
    *  semantics as the old standalone ConditionalBuilder save. */
@@ -92,8 +91,8 @@ export function LinkedChainBuilder({
 
   // Chain mode kicks in whenever there are 2+ cards OR the user
   // selected a loop on a single card. Single-card non-looped saves
-  // continue through the legacy single-rule path so existing UX
-  // (TuningSheet, single-rule DepositSheet) is undisturbed.
+  // continue through the legacy single-rule path so the
+  // single-rule DepositSheet flow stays undisturbed.
   const isChain = cards.length > 1 || loopMode != null;
 
   /* ── Card lifecycle ──────────────────────────────────────────── */

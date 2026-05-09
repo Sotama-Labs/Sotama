@@ -40,3 +40,7 @@ keeper/.env
 # one means losing control of that specific program ID.
 /keys/
 /.claude/fly-lazer-cmd.md
+
+# Internal design docs / brainstorming specs — local only, not in the
+# public repo.
+/docs/superpowers/

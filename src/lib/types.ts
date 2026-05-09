@@ -221,11 +221,15 @@ export type DraftAction =
 
 /* ── Cadence (control-flow) ────────────────────────────────────────── */
 
-/** Maps 1:1 to the on-chain `Cadence` enum and to the UI's If/For/While chip.
+/** Maps 1:1 to the on-chain `Cadence` enum.
  *
- *  - `once`  — fire one time when the trigger is met. (UI: "If")
- *  - `repeat` — fire up to `total` times. (UI: "For ... × N times")
- *  - `until` — fire repeatedly while now < `unixDeadline`. (UI: "While ... until <date>")
+ *  - `once`   — fire one time when the trigger is met. The only cadence the
+ *               builder produces directly; multi-fire behavior is expressed
+ *               by linked-chain self-links and back-link loops.
+ *  - `repeat` — fire up to `total` times. Produced by `loopModeToCadence`
+ *               for "frequency" loops.
+ *  - `until`  — fire repeatedly while now < `unixDeadline`. Produced by
+ *               `loopModeToCadence` for "infinite" loops.
  *
  *  `minIntervalSecs` is the user-set throttle between consecutive fires and
  *  is enforced on-chain regardless of cadence kind. `0` = no floor.
@@ -237,24 +241,10 @@ export type Cadence =
 
 export type CadenceKind = Cadence["kind"];
 
-/** Default cadence — preserves the v2 "fire once" behavior so existing UI
- *  flows that don't know about loops still get sensible behavior. */
+/** Default cadence — every rule the standalone builder produces uses this.
+ *  Loops override the cadence at chain submit time. */
 export const DEFAULT_CADENCE: Cadence = { kind: "once" };
 export const DEFAULT_MIN_INTERVAL_SECS = 0;
-
-/** Sensible default `min_interval_secs` for each cadence kind. The chosen
- *  values back-stop the polling rate so a While-with-token-price doesn't
- *  fire on every keeper tick (which is sub-second). The user adjusts this
- *  in the TuningSheet — these are only the seed values. */
-export const DEFAULT_INTERVAL_BY_CADENCE: Record<CadenceKind, number> = {
-  once: 0,
-  // 10 minutes — the keeper will still poll the price feed often, but the
-  // on-chain `check_can_fire` floor prevents back-to-back action fires.
-  until: 10 * 60,
-  // 10 minutes — same idea for For. Most "for N times" use cases have
-  // intervals in minutes-to-hours; users dial up in the TuningSheet.
-  repeat: 10 * 60,
-};
 
 /* ── Persisted automation ──────────────────────────────────────────── */
 
@@ -274,8 +264,10 @@ export type Automation = {
    *  Default is "then" — sequential. "and"-followed actions render with
    *  parentheses to indicate they execute together. */
   actionOperators: ActionOperator[];
-  /** Control-flow chosen by the user (If/For/While). Defaults to `once` for
-   *  records persisted before loops shipped — see `loadAutomations`. */
+  /** Control-flow for this rule. Standalone rules are always `once`; chain
+   *  members get `repeat` / `until` overridden onto them by
+   *  `loopModeToCadence` at submit time. Defaults to `once` for records
+   *  persisted before loops shipped — see `loadAutomations`. */
   cadence: Cadence;
   /** Minimum seconds between consecutive fires. `0` = no floor. */
   minIntervalSecs: number;
@@ -329,8 +321,8 @@ export const INFINITE_LOOP_UNIX_DEADLINE = 4_102_444_800;
 /** Default deposit multiplier when the user picks "Loop · infinite" on
  *  a SINGLE-RULE self-loop (not a chain — chains self-feed). Deposit =
  *  amount_in × this number. The rule will fire that many times before
- *  the input ATA depletes. User can adjust via TuningSheet, or close
- *  and reopen for a bigger deposit. */
+ *  the input ATA depletes. User can close and reopen for a bigger
+ *  deposit. */
 export const SELF_LOOP_INFINITE_FUND_CYCLES = 100;
 
 /** Loop topology applied to a chain at submit time. Set on the

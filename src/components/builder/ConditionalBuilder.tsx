@@ -15,21 +15,18 @@ import type {
 } from "@/lib/types";
 import {
   DEFAULT_CADENCE,
-  DEFAULT_INTERVAL_BY_CADENCE,
   DEFAULT_MIN_INTERVAL_SECS,
   EMPTY_ACTION,
   EMPTY_TRIGGER,
 } from "@/lib/types";
 import {
+  TRIGGER_CATEGORIES,
   type TriggerCategoryMeta,
   actionsAreCompatible,
-  actionsForCadenceAndTriggers,
+  actionsForTriggers,
   findActionMeta,
   findTriggerCategoryForKind,
   findTriggerMeta,
-  isActionKindAllowedForCadence,
-  isTriggerKindAllowedForCadence,
-  triggerCategoriesForCadence,
 } from "@/lib/catalog";
 import { freezeActions, freezeTriggers } from "@/lib/automations";
 import {
@@ -66,7 +63,6 @@ import { AccountSwapEditor } from "./triggers/AccountSwapEditor";
 import { TimeElapsedEditor } from "./triggers/TimeElapsedEditor";
 import { TransferEditor } from "./actions/TransferEditor";
 import { SwapEditor } from "./actions/SwapEditor";
-import { ControlFlowChip } from "./ControlFlowChip";
 
 type Side = "if" | "then";
 type Stage = "list" | "edit";
@@ -184,12 +180,15 @@ export function ConditionalBuilder({
   const [actions, setActions] = useState<DraftAction[]>(() => seedActions(initialState));
   const [triggerOps, setTriggerOps] = useState<TriggerOperator[]>(() => seedTriggerOps(initialState));
   const [actionOps, setActionOps] = useState<ActionOperator[]>(() => seedActionOps(initialState));
-  const [cadence, setCadence] = useState<Cadence>(
-    () => initialState?.cadence ?? DEFAULT_CADENCE,
-  );
-  const [minIntervalSecs, setMinIntervalSecs] = useState<number>(
-    () => initialState?.minIntervalSecs ?? DEFAULT_MIN_INTERVAL_SECS,
-  );
+  // The standalone builder always emits the default cadence (once) with no
+  // interval floor — multi-fire behavior is expressed via linked-chain
+  // self-links and back-link loops, not a per-rule cadence chip. The
+  // initialState's cadence is preserved verbatim so editing an existing
+  // rule with a non-once cadence (e.g. a chain rule pulled in for edit)
+  // round-trips losslessly.
+  const cadence: Cadence = initialState?.cadence ?? DEFAULT_CADENCE;
+  const minIntervalSecs: number =
+    initialState?.minIntervalSecs ?? DEFAULT_MIN_INTERVAL_SECS;
   const [open, setOpen] = useState<{ side: Side; index: number } | null>(null);
   const [stage, setStage] = useState<Stage>("list");
   const [browsingCategory, setBrowsingCategory] = useState<TriggerCategoryMeta | null>(null);
@@ -209,44 +208,10 @@ export function ConditionalBuilder({
     [triggers],
   );
   const availableActions = useMemo(
-    () => actionsForCadenceAndTriggers(cadence.kind, completedTriggerKinds),
-    [cadence.kind, completedTriggerKinds],
-  );
-  const triggerCategoriesForMenu = useMemo(
-    () => triggerCategoriesForCadence(cadence.kind),
-    [cadence.kind],
+    () => actionsForTriggers(completedTriggerKinds),
+    [completedTriggerKinds],
   );
   const anyTriggerKindPicked = triggers.some((t) => t.kind != null);
-
-  // When the user switches cadence (e.g. If → While), any trigger or action
-  // that's no longer allowed under the new cadence resets to empty. Better
-  // to surface "pick again" than to silently keep an invalid combo around.
-  // We also seed `min_interval_secs` from the cadence default — without
-  // this, While-with-a-token-price-trigger would fire on every keeper tick
-  // because the on-chain floor stays at 0. The user can override the
-  // floor in the TuningSheet before signing.
-  const handleCadenceChange = (next: typeof cadence) => {
-    setCadence(next);
-    if (next.kind === "once") {
-      setMinIntervalSecs(0);
-    } else if (cadence.kind === "once") {
-      setMinIntervalSecs(DEFAULT_INTERVAL_BY_CADENCE[next.kind]);
-    }
-    setTriggers((prev) =>
-      prev.map((t) =>
-        t.kind != null && !isTriggerKindAllowedForCadence(t.kind, next.kind)
-          ? { ...EMPTY_TRIGGER }
-          : t,
-      ),
-    );
-    setActions((prev) =>
-      prev.map((a) =>
-        a.kind != null && !isActionKindAllowedForCadence(a.kind, next.kind)
-          ? { ...EMPTY_ACTION }
-          : a,
-      ),
-    );
-  };
 
   const allActionsCompatible = actionsAreCompatible(
     completedTriggerKinds,
@@ -515,16 +480,14 @@ export function ConditionalBuilder({
     } else if (open.side === "if") {
       const cur = triggers[open.index];
       if (browsingCategory) {
-        // Sub-kind list inside a category — filter by cadence so the
-        // user only sees triggers that read naturally under the current
-        // If/While/For mode.
-        const allowedKinds = browsingCategory.kinds.filter((k) =>
-          isTriggerKindAllowedForCadence(k.kind, cadence.kind),
-        );
+        // Sub-kind list inside a category. The builder always runs in
+        // the once-cadence shape, so every kind in the category is
+        // allowed; the only filter is whether the kind is supported
+        // by the current build of the program.
         body = (
           <PopoverList
             title={browsingCategory.label}
-            options={allowedKinds.map((k) => ({
+            options={browsingCategory.kinds.map((k) => ({
               kind: k.kind,
               label: k.label,
               description: k.description,
@@ -543,14 +506,8 @@ export function ConditionalBuilder({
             : null;
         body = (
           <PopoverList
-            title={
-              cadence.kind === "until"
-                ? "While this is true"
-                : cadence.kind === "repeat"
-                ? "Each time this happens"
-                : "When this happens"
-            }
-            options={triggerCategoriesForMenu.map((c) => ({
+            title="When this happens"
+            options={TRIGGER_CATEGORIES.map((c) => ({
               kind: c.id,
               label: c.label,
               description: c.description,
@@ -559,7 +516,7 @@ export function ConditionalBuilder({
             }))}
             selectedKind={currentCategoryId}
             onPick={(o) => {
-              const cat = triggerCategoriesForMenu.find((c) => c.id === o.kind);
+              const cat = TRIGGER_CATEGORIES.find((c) => c.id === o.kind);
               if (cat) pickTriggerCategory(open.index, cat);
             }}
           />
@@ -743,11 +700,11 @@ export function ConditionalBuilder({
       });
     }
 
-    // Cadence detail (interval, deadline, count) lives in the TuningSheet
-    // step between save and on-chain confirmation — not inline. Keeping
-    // the sentence to just trigger/action makes both If and While read
-    // cleanly: "If price drops below $103, then swap" / "While price is
-    // below $103, then swap" without an interruption mid-clause.
+    // The standalone builder reads as a flat "If <triggers>, then
+    // <actions>" sentence. Loop semantics (count, deadline, interval)
+    // are owned by the LinkedChainBuilder's loop affordances, not by
+    // an inline cadence chip — keeping the sentence single-shot makes
+    // it read cleanly without an interruption mid-clause.
     return (
       <span
         style={{
@@ -881,7 +838,9 @@ export function ConditionalBuilder({
           {renderChain(
             "if",
             triggers,
-            <ControlFlowChip cadence={cadence} onChange={handleCadenceChange} />,
+            <span style={{ color: "var(--label-secondary)", fontWeight: 400 }}>
+              If
+            </span>,
             "choose a trigger",
           )}
           <div

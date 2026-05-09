@@ -1,6 +1,5 @@
 import type {
   ActionKind,
-  CadenceKind,
   DraftAction,
   DraftTrigger,
   TriggerKind,
@@ -210,79 +209,3 @@ export function actionsAreCompatible(
   return actionKinds.every((k) => allowed.has(k));
 }
 
-/* ── Cadence-aware menu filtering ─────────────────────────────────────
-   The trigger/action menus shown in the builder depend on the current
-   cadence (If / While / For), because not every shape reads naturally in
-   English under every cadence.
-   ───────────────────────────────────────────────────────────────────── */
-
-const TRIGGERS_BY_CADENCE: Record<CadenceKind, ReadonlySet<TriggerKind>> = {
-  once: new Set<TriggerKind>([
-    "asset_price",
-    "account_transfer",
-    "account_swap",
-    "time_elapsed",
-  ]),
-  // While reads as a standing predicate. Only asset_price fits naturally —
-  // "While SOL price < $180" is a true predicate. TimeElapsed is one-shot
-  // by definition so it doesn't compose with While.
-  until: new Set<TriggerKind>(["asset_price"]),
-  // For reads as "the next N times that …". Event triggers fit.
-  // TimeElapsed excluded: a single delay can't fire N times.
-  repeat: new Set<TriggerKind>([
-    "asset_price",
-    "account_transfer",
-    "account_swap",
-  ]),
-};
-
-const ACTIONS_BY_CADENCE: Record<CadenceKind, ReadonlySet<ActionKind>> = {
-  once: new Set<ActionKind>(["transfer", "swap"]),
-  // Swap is allowed for `until` when going through the linked ix
-  // (`create_automation_swap_linked`), which decouples deposit from
-  // fire count and accepts any cadence. The legacy
-  // `create_automation_swap` ix still rejects until via
-  // SwapUntilNotSupported, so the deposit dispatcher must route
-  // until-cadence swap rules through the linked path. Allowed in the
-  // catalog so the LoopSlot's "Loop · infinite" option is selectable.
-  until: new Set<ActionKind>(["transfer", "swap"]),
-  repeat: new Set<ActionKind>(["transfer", "swap"]),
-};
-
-/** Categories visible in the trigger picker for the given cadence. A
- *  category survives if at least one of its kinds is allowed under the
- *  cadence; the remaining kinds inside that category are filtered too. */
-export function triggerCategoriesForCadence(
-  cadence: CadenceKind,
-): TriggerCategoryMeta[] {
-  const allowed = TRIGGERS_BY_CADENCE[cadence];
-  return TRIGGER_CATEGORIES.map((c) => ({
-    ...c,
-    kinds: c.kinds.filter((k) => allowed.has(k.kind)),
-  })).filter((c) => c.kinds.length > 0);
-}
-
-export function isTriggerKindAllowedForCadence(
-  kind: TriggerKind,
-  cadence: CadenceKind,
-): boolean {
-  return TRIGGERS_BY_CADENCE[cadence].has(kind);
-}
-
-export function isActionKindAllowedForCadence(
-  kind: ActionKind,
-  cadence: CadenceKind,
-): boolean {
-  return ACTIONS_BY_CADENCE[cadence].has(kind);
-}
-
-/** Filter actionsForTriggers' result by cadence. Used by the action
- *  picker so cadence + trigger-compatibility are both honored. */
-export function actionsForCadenceAndTriggers(
-  cadence: CadenceKind,
-  completedTriggerKinds: TriggerKind[],
-): ActionKindMeta[] {
-  const byTrigger = actionsForTriggers(completedTriggerKinds);
-  const allowedByCadence = ACTIONS_BY_CADENCE[cadence];
-  return byTrigger.filter((a) => allowedByCadence.has(a.kind));
-}

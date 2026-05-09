@@ -17,7 +17,6 @@ import { LinkedChainBuilder, type ChainSaveData } from "@/components/builder/Lin
 import { ActiveStrategiesPage } from "@/components/ActiveStrategiesPage";
 import { DepositSheet, type OnChainResult } from "@/components/DepositSheet";
 import { ChainDepositSheet, type ChainOnChainResult } from "@/components/ChainDepositSheet";
-import { TuningSheet, type TuningResult } from "@/components/TuningSheet";
 import { hexToRgba } from "@/lib/format";
 import {
   loadAutomations,
@@ -47,14 +46,9 @@ export default function Page() {
    *  with a fresh blank draft instead of keeping the just-saved state. */
   const [composeKey, setComposeKey] = useState(0);
   const [pendingDeposit, setPendingDeposit] = useState<BuilderResult | null>(null);
-  /** When the user saves a recurring automation (While/For), we route through
-   *  the TuningSheet first so they can dial in the polling floor and the
-   *  bound (deadline / total runs) before signing. `Once` skips this. */
-  const [pendingTuning, setPendingTuning] = useState<BuilderResult | null>(null);
   /** When the user saves a 2-3 rule linked chain, route through the
    *  ChainDepositSheet so the atomic multi-create tx is signed in one
-   *  click. The chain handler doesn't go through the TuningSheet — each
-   *  rule's cadence/interval is set per-card in the LinkedChainBuilder. */
+   *  click. */
   const [pendingChainDeposit, setPendingChainDeposit] = useState<ChainSaveData | null>(null);
   /** When the user clicks delete or pause on a chained rule, surface
    *  a cascade-confirmation modal listing every sibling that will be
@@ -108,14 +102,10 @@ export default function Page() {
   }, [toast]);
 
   const handleSave = (data: BuilderResult) => {
-    // Recurring cadences route through the TuningSheet first so the user
-    // confirms (or adjusts) the polling floor and the bound. The `Once`
-    // case has nothing to tune — go straight to deposit.
-    if (data.cadence.kind === "once") {
-      setPendingDeposit(data);
-    } else {
-      setPendingTuning(data);
-    }
+    // The standalone builder only produces once-cadence rules (loops are
+    // expressed via the LinkedChainBuilder), so there's nothing to tune
+    // between save and deposit.
+    setPendingDeposit(data);
   };
 
   const handleSaveChain = (data: ChainSaveData) => {
@@ -230,18 +220,6 @@ export default function Page() {
     setPendingChainDeposit(null);
     setComposeKey((n) => n + 1);
   };
-
-  const handleTuningConfirm = (tuned: TuningResult) => {
-    if (!pendingTuning) return;
-    setPendingDeposit({
-      ...pendingTuning,
-      cadence: tuned.cadence,
-      minIntervalSecs: tuned.minIntervalSecs,
-    });
-    setPendingTuning(null);
-  };
-
-  const handleTuningCancel = () => setPendingTuning(null);
 
   const handleDepositConfirm = async (result: OnChainResult | null) => {
     const data = pendingDeposit;
@@ -549,12 +527,6 @@ export default function Page() {
       </main>
 
       <Toast message={toast} />
-      <TuningSheet
-        open={!!pendingTuning}
-        draft={pendingTuning}
-        onCancel={handleTuningCancel}
-        onConfirm={handleTuningConfirm}
-      />
       <DepositSheet open={!!pendingDeposit} automation={pendingDeposit} onCancel={handleDepositCancel} onConfirm={handleDepositConfirm} />
       <ChainDepositSheet
         open={!!pendingChainDeposit}
