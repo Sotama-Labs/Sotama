@@ -1124,6 +1124,10 @@ export type SotamaAutomations = {
         {
           "name": "seedAmount",
           "type": "u64"
+        },
+        {
+          "name": "bridgeEnabled",
+          "type": "bool"
         }
       ]
     },
@@ -1294,6 +1298,112 @@ export type SotamaAutomations = {
         }
       ],
       "args": []
+    },
+    {
+      "name": "executeBridge",
+      "docs": [
+        "Keeper-driven, per-PDA-authorized Jupiter swap that converts",
+        "any non-input-mint holdings of the PDA into the rule's expected",
+        "`Swap.input_mint`. Used by the chain bridge dispatcher to",
+        "reconcile mint mismatches between adjacent linked rules so the",
+        "downstream rule's next fire has the correct input balance.",
+        "Output ATA must be owned by the PDA and sized in the canonical",
+        "input mint; `min_amount_out` is enforced post-CPI."
+      ],
+      "discriminator": [
+        78,
+        154,
+        19,
+        79,
+        237,
+        49,
+        38,
+        247
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "automation.owner",
+                "account": "automation"
+              },
+              {
+                "kind": "account",
+                "path": "automation.nonce",
+                "account": "automation"
+              }
+            ]
+          }
+        },
+        {
+          "name": "jupiterProgram",
+          "address": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        }
+      ],
+      "args": [
+        {
+          "name": "innerIxData",
+          "type": "bytes"
+        },
+        {
+          "name": "innerIxAccountMetas",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "swapAccountMeta"
+              }
+            }
+          }
+        },
+        {
+          "name": "outputAtaIndex",
+          "type": "u8"
+        },
+        {
+          "name": "minAmountOut",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "executeFeeTopup",
@@ -2208,33 +2318,58 @@ export type SotamaAutomations = {
     },
     {
       "code": 6030,
+      "name": "bridgeNotEnabled",
+      "msg": "Bridge is not enabled for this automation."
+    },
+    {
+      "code": 6031,
+      "name": "badBridgeOutput",
+      "msg": "Bridge output ATA mint must equal the automation's input mint."
+    },
+    {
+      "code": 6032,
+      "name": "badBridgeOwner",
+      "msg": "Bridge output ATA owner must be the automation PDA."
+    },
+    {
+      "code": 6033,
+      "name": "bridgeSlippageExceeded",
+      "msg": "Bridge swap delivered fewer tokens than min_amount_out."
+    },
+    {
+      "code": 6034,
       "name": "feeTooLarge",
       "msg": "Close fee exceeds protocol cap (0.1 SOL)"
     },
     {
-      "code": 6031,
+      "code": 6035,
       "name": "wrongTreasury",
       "msg": "Provided treasury account does not match Config.treasury"
     },
     {
-      "code": 6032,
+      "code": 6036,
       "name": "shutdown",
       "msg": "Program is in terminal shutdown — operation rejected"
     },
     {
-      "code": 6033,
+      "code": 6037,
       "name": "notShutdown",
       "msg": "Operation requires Config.shutdown = true (kill-switch only)"
     },
     {
-      "code": 6034,
+      "code": 6038,
       "name": "shutdownAlreadySet",
       "msg": "Shutdown is one-way; cannot be cleared once set"
     },
     {
-      "code": 6035,
+      "code": 6039,
       "name": "unauthorizedCloser",
       "msg": "Caller is neither the automation owner nor the program admin"
+    },
+    {
+      "code": 6040,
+      "name": "badCloseAccounts",
+      "msg": "Close pair accounts must be (PDA-owned ATA, owner-owned ATA) of matching mint != input_mint."
     }
   ],
   "types": [
@@ -2314,6 +2449,17 @@ export type SotamaAutomations = {
                   "rule. Capped on-chain at `MAX_LINK_FEE_LAMPORTS`."
                 ],
                 "type": "u64"
+              },
+              {
+                "name": "consumeUpstreamOutput",
+                "docs": [
+                  "Keeper-side flag for inverted-pair chain links. When true, the",
+                  "keeper resolves `amount_in` at fire time from the PDA's input",
+                  "ATA balance and ignores the field above. The program never",
+                  "reads this — `amount_in` is informational at this layer (see",
+                  "execute_swap.rs)."
+                ],
+                "type": "bool"
               }
             ]
           }
@@ -2406,8 +2552,20 @@ export type SotamaAutomations = {
               "so a leaked keeper signing key cannot route arbitrary token",
               "holdings through Jupiter. Only set true at create time on Swap",
               "rules where the user explicitly enables auto-fee-management.",
-              "Carved out of the original 32-byte `_reserved` budget: 1 byte",
-              "here, 31 bytes still reserved below."
+              "Carved out of the original 32-byte `_reserved` budget: 2 bytes",
+              "(one for fee_topup_enabled, one for bridge_enabled below). Update",
+              "this comment if more bytes get carved."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bridgeEnabled",
+            "docs": [
+              "Per-PDA opt-in for `execute_bridge`. Authorizes the keeper to",
+              "route any non-input-mint token holdings of this PDA through",
+              "Jupiter into the input mint, with `min_amount_out` slippage",
+              "guard enforced on-chain. Set at create time by the chain",
+              "classifier when the upstream link is `bridge_required`."
             ],
             "type": "bool"
           },
@@ -2417,12 +2575,13 @@ export type SotamaAutomations = {
               "Reserved bytes for forward-compatible field additions. Lets a",
               "future v5 add small fields via `realloc` without forcing a",
               "fresh program ID (which v3→v4 already required). Was [u8; 32];",
-              "shrunk to 31 to make room for `fee_topup_enabled` above."
+              "shrunk to 30 to make room for `fee_topup_enabled` and",
+              "`bridge_enabled` above."
             ],
             "type": {
               "array": [
                 "u8",
-                31
+                30
               ]
             }
           }

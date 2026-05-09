@@ -1983,6 +1983,323 @@ describe("sotama_automations v2", () => {
     expect(threw, "expected BadBridgeOutput").to.eq(true);
   });
 
+  /* ── close_automation_swap: dust-drain via remaining_accounts ───────── */
+
+  it("close_automation_swap drains non-input-mint dust from PDA", async () => {
+    // Stage: create a swap automation, then mint a foreign-mint ATA
+    // owned by the PDA (simulating residual dust from a partial bridge
+    // or stale chain output). Close should sweep the foreign balance
+    // back to the owner and close the foreign ATA along with the input
+    // ATA and the Automation PDA.
+    const cfg0 = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg0.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    const inputMintKp = Keypair.generate();
+    const inputMint = inputMintKp.publicKey;
+    const foreignMintKp = Keypair.generate();
+    const foreignMint = foreignMintKp.publicKey;
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+
+    const ownerInputAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const autoInputAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+    const ownerForeignAta = getAssociatedTokenAddressSync(foreignMint, owner.publicKey);
+    const autoForeignAta = getAssociatedTokenAddressSync(foreignMint, auto, true);
+
+    const inputDeposit = 200_000n;
+    const foreignDust = 333_000n;
+
+    // Setup mints + ATAs + balances. Input ATA gets the swap deposit
+    // (via create_automation_swap below); foreign ATA is funded directly
+    // to simulate dust the keeper failed to bridge.
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: foreignMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(foreignMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerInputAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          autoInputAta,
+          auto,
+          inputMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(inputMint, ownerInputAta, owner.publicKey, inputDeposit),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerForeignAta,
+          owner.publicKey,
+          foreignMint,
+        ),
+      )
+      // Pre-create the PDA's foreign-mint ATA and pre-fund it directly
+      // (the Automation PDA doesn't yet exist, but the ATA derivation
+      // is independent of whether the owner is initialized — `auto` is
+      // just a pubkey).
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          autoForeignAta,
+          auto,
+          foreignMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(foreignMint, autoForeignAta, owner.publicKey, foreignDust),
+      );
+    await provider.sendAndConfirm(setup, [owner, inputMintKp, foreignMintKp]);
+
+    // Create the swap automation. amount_in × max_runs (1) = 200_000.
+    await program.methods
+      .createAutomationSwap(
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        action.swap(inputMint, Keypair.generate().publicKey, owner.publicKey, new BN(Number(inputDeposit)), new BN(0)),
+        cadence.once(),
+        NO_INTERVAL,
+        false,        // enable_fee_topup
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        inputMint,
+        ownerInputAta,
+        automationInputAta: autoInputAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    // Sanity: PDA owns both ATAs; foreign holds dust; input holds deposit.
+    expect((await getTokenAccount(provider.connection, autoInputAta)).amount).to.eq(inputDeposit);
+    expect((await getTokenAccount(provider.connection, autoForeignAta)).amount).to.eq(foreignDust);
+
+    const ownerInputBefore = (await getTokenAccount(provider.connection, ownerInputAta)).amount;
+    const ownerForeignBefore = (await getTokenAccount(provider.connection, ownerForeignAta)).amount;
+
+    // Close — pass (pda_foreign_ata, owner_foreign_ata) as the dust pair.
+    const cfg = await program.account.config.fetch(configPda);
+    await program.methods
+      .closeAutomationSwap()
+      .accountsStrict({
+        owner: owner.publicKey,
+        automation: auto,
+        config: configPda,
+        treasury: cfg.treasury,
+        inputMint,
+        ownerInputAta,
+        automationInputAta: autoInputAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .remainingAccounts([
+        { pubkey: autoForeignAta, isSigner: false, isWritable: true },
+        { pubkey: ownerForeignAta, isSigner: false, isWritable: true },
+      ])
+      .signers([owner])
+      .rpc();
+
+    // Owner received both balances.
+    const ownerInputAfter = (await getTokenAccount(provider.connection, ownerInputAta)).amount;
+    const ownerForeignAfter = (await getTokenAccount(provider.connection, ownerForeignAta)).amount;
+    expect(ownerInputAfter - ownerInputBefore).to.eq(inputDeposit, "input deposit refunded");
+    expect(ownerForeignAfter - ownerForeignBefore).to.eq(foreignDust, "foreign dust drained");
+
+    // Both PDA ATAs and the Automation PDA itself are closed.
+    expect(await provider.connection.getAccountInfo(autoInputAta)).to.eq(null);
+    expect(await provider.connection.getAccountInfo(autoForeignAta)).to.eq(null);
+    expect(await provider.connection.getAccountInfo(auto)).to.eq(null);
+  });
+
+  it("close_automation_swap rejects malformed dust-pair (BadCloseAccounts)", async () => {
+    // Pass an odd number of remaining accounts, or a pair where the
+    // second account isn't owner-owned, to assert the validation fires.
+    const cfg0 = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg0.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    const inputMintKp = Keypair.generate();
+    const inputMint = inputMintKp.publicKey;
+    const foreignMintKp = Keypair.generate();
+    const foreignMint = foreignMintKp.publicKey;
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+
+    const ownerInputAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const autoInputAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+    const autoForeignAta = getAssociatedTokenAddressSync(foreignMint, auto, true);
+    // Wrong "destination" — second-slot account whose owner ≠ owner.
+    const intruderForeignAta = getAssociatedTokenAddressSync(foreignMint, intruder.publicKey);
+
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: foreignMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(foreignMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerInputAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          autoInputAta,
+          auto,
+          inputMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(inputMint, ownerInputAta, owner.publicKey, 100_000n),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          autoForeignAta,
+          auto,
+          foreignMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          intruderForeignAta,
+          intruder.publicKey,
+          foreignMint,
+        ),
+      );
+    await provider.sendAndConfirm(setup, [owner, inputMintKp, foreignMintKp]);
+
+    await program.methods
+      .createAutomationSwap(
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        action.swap(inputMint, Keypair.generate().publicKey, owner.publicKey, new BN(100_000), new BN(0)),
+        cadence.once(),
+        NO_INTERVAL,
+        false,
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        inputMint,
+        ownerInputAta,
+        automationInputAta: autoInputAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    const cfg = await program.account.config.fetch(configPda);
+
+    // Case: the second-slot ATA isn't owned by `owner` (intruder is).
+    let threw = false;
+    try {
+      await program.methods
+        .closeAutomationSwap()
+        .accountsStrict({
+          owner: owner.publicKey,
+          automation: auto,
+          config: configPda,
+          treasury: cfg.treasury,
+          inputMint,
+          ownerInputAta,
+          automationInputAta: autoInputAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .remainingAccounts([
+          { pubkey: autoForeignAta, isSigner: false, isWritable: true },
+          { pubkey: intruderForeignAta, isSigner: false, isWritable: true },
+        ])
+        .signers([owner])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /BadCloseAccounts|badCloseAccounts/i,
+      );
+    }
+    expect(threw, "expected BadCloseAccounts on intruder ATA").to.eq(true);
+
+    // Cleanup: close cleanly with no remaining accounts so subsequent
+    // tests aren't affected by this leftover automation/ATA.
+    await program.methods
+      .closeAutomationSwap()
+      .accountsStrict({
+        owner: owner.publicKey,
+        automation: auto,
+        config: configPda,
+        treasury: cfg.treasury,
+        inputMint,
+        ownerInputAta,
+        automationInputAta: autoInputAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .remainingAccounts([
+        // Pass the (auto, owner) pair correctly so dust paths exit cleanly
+        // and the foreign ATA is closed too.
+        { pubkey: autoForeignAta, isSigner: false, isWritable: true },
+        { pubkey: getAssociatedTokenAddressSync(foreignMint, owner.publicKey), isSigner: false, isWritable: true },
+      ])
+      .preInstructions([
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          getAssociatedTokenAddressSync(foreignMint, owner.publicKey),
+          owner.publicKey,
+          foreignMint,
+        ),
+      ])
+      .signers([owner])
+      .rpc();
+  });
+
   /* ── v4.1: kill switch (shutdown) and admin-driven wind-down close ─── */
 
   // Captured at suite scope so the shutdown block can reference automations

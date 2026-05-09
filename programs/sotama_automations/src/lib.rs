@@ -230,7 +230,9 @@ pub mod sotama_automations {
 
     /// Close a swap-action automation. Drains the PDA-owned input
     /// ATA back to the owner, closes the ATA, then closes the PDA.
-    pub fn close_automation_swap(ctx: Context<CloseAutomationSwap>) -> Result<()> {
+    pub fn close_automation_swap<'info>(
+        ctx: Context<'_, '_, '_, 'info, CloseAutomationSwap<'info>>,
+    ) -> Result<()> {
         instructions::close_automation_swap::handler(ctx)
     }
 

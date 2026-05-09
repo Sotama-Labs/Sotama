@@ -65,7 +65,9 @@ pub struct CloseAutomationSwap<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn handler(ctx: Context<CloseAutomationSwap>) -> Result<()> {
+pub fn handler<'info>(
+    ctx: Context<'_, '_, '_, 'info, CloseAutomationSwap<'info>>,
+) -> Result<()> {
     let automation = &ctx.accounts.automation;
 
     let expected_input_mint = match &automation.action {
@@ -114,6 +116,57 @@ pub fn handler(ctx: Context<CloseAutomationSwap>) -> Result<()> {
         },
         signer_seeds,
     ))?;
+
+    // Drain any non-input-mint token balances the PDA may hold (e.g.
+    // dust from interrupted bridges, stale chain output that the keeper
+    // didn't auto-bridge before close). Each pair is (pda_ata,
+    // owner_ata) for the same mint. Validate strictly so this close ix
+    // can't double as an arbitrary token-transfer primitive.
+    let input_mint_key = ctx.accounts.input_mint.key();
+    let automation_key = ctx.accounts.automation.key();
+    let owner_key_acct = ctx.accounts.owner.key();
+
+    for chunk in ctx.remaining_accounts.chunks(2) {
+        if chunk.len() != 2 {
+            return err!(SotamaError::BadCloseAccounts);
+        }
+        let pda_ata_info = &chunk[0];
+        let owner_ata_info = &chunk[1];
+        let pda_ata: TokenAccount = TokenAccount::try_deserialize(
+            &mut &pda_ata_info.try_borrow_data()?[..],
+        )?;
+        let owner_ata: TokenAccount = TokenAccount::try_deserialize(
+            &mut &owner_ata_info.try_borrow_data()?[..],
+        )?;
+        require_keys_eq!(pda_ata.owner, automation_key, SotamaError::BadCloseAccounts);
+        require_keys_eq!(owner_ata.owner, owner_key_acct, SotamaError::BadCloseAccounts);
+        require_keys_eq!(pda_ata.mint, owner_ata.mint, SotamaError::BadCloseAccounts);
+        require!(pda_ata.mint != input_mint_key, SotamaError::BadCloseAccounts);
+
+        if pda_ata.amount > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    SplTransfer {
+                        from: pda_ata_info.clone(),
+                        to: owner_ata_info.clone(),
+                        authority: automation.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                pda_ata.amount,
+            )?;
+        }
+        token::close_account(CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            CloseAccount {
+                account: pda_ata_info.clone(),
+                destination: ctx.accounts.owner.to_account_info(),
+                authority: automation.to_account_info(),
+            },
+            signer_seeds,
+        ))?;
+    }
 
     let fee_lamports = deduct_close_fee(
         &automation.to_account_info(),

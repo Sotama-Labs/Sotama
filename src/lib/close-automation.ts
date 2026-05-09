@@ -4,14 +4,20 @@ import {
   Connection,
   PublicKey,
   Transaction,
+  type AccountMeta,
   type TransactionInstruction,
 } from "@solana/web3.js";
-import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import type { Automation } from "@/lib/types";
 import {
   buildCloseAutomationIx,
   buildCloseAutomationSplIx,
   buildCloseAutomationSwapIx,
+  configPda,
   fetchConfig,
   getProgram,
   SPL_TOKEN_PROGRAM_ID,
@@ -102,7 +108,41 @@ export async function closeAutomationOnChain(
       treasury,
     });
     tx.add(prependOwnerAtaCreate(owner, built.ownerInputAta, inputMint));
-    tx.add(built.ix);
+
+    // Enumerate any non-input-mint ATAs the PDA may hold (dust from a
+    // bridge that failed mid-flight, stale chain output, etc.) and pass
+    // each (pda_ata, owner_ata) pair as remaining accounts so the
+    // on-chain handler drains and closes them. For each, idempotently
+    // create the owner's same-mint ATA so the on-chain `transfer` CPI
+    // has a valid destination.
+    const dust = await collectPdaDustAtas(connection, automation, inputMint);
+    const remaining: AccountMeta[] = [];
+    for (const { pdaAta, mint } of dust) {
+      const ownerForeignAta = getAssociatedTokenAddressSync(mint, owner);
+      tx.add(prependOwnerAtaCreate(owner, ownerForeignAta, mint));
+      remaining.push({ pubkey: pdaAta, isSigner: false, isWritable: true });
+      remaining.push({ pubkey: ownerForeignAta, isSigner: false, isWritable: true });
+    }
+    if (remaining.length === 0) {
+      tx.add(built.ix);
+    } else {
+      // Re-build the ix with remainingAccounts attached.
+      const ixWithRemaining = await program.methods
+        .closeAutomationSwap()
+        .accountsStrict({
+          owner,
+          automation,
+          config: configPda(program.programId),
+          treasury,
+          inputMint,
+          ownerInputAta: built.ownerInputAta,
+          automationInputAta: built.automationInputAta,
+          tokenProgram: SPL_TOKEN_PROGRAM_ID,
+        })
+        .remainingAccounts(remaining)
+        .instruction();
+      tx.add(ixWithRemaining);
+    }
   } else {
     // SOL transfer — no ATA refund needed; plain close.
     const ix = await buildCloseAutomationIx({ program, owner, automation, treasury });
@@ -137,4 +177,45 @@ function prependOwnerAtaCreate(
     mint,
     SPL_TOKEN_PROGRAM_ID,
   );
+}
+
+/**
+ * Enumerate all SPL token accounts owned by the automation PDA whose
+ * mint differs from `inputMint`. These are dust ATAs the on-chain
+ * close handler will drain into the owner's same-mint ATA.
+ *
+ * Filters out:
+ *   - the input ATA (handled directly by the close handler).
+ *   - any non-ATA token accounts (we only handle the canonical
+ *     associated-token-account derivation; non-ATA accounts wouldn't
+ *     have been created by Sotama's flows and shouldn't accumulate).
+ */
+async function collectPdaDustAtas(
+  connection: Connection,
+  pda: PublicKey,
+  inputMint: PublicKey,
+): Promise<{ pdaAta: PublicKey; mint: PublicKey }[]> {
+  const accounts = await connection.getTokenAccountsByOwner(pda, {
+    programId: SPL_TOKEN_PROGRAM_ID,
+  });
+  const out: { pdaAta: PublicKey; mint: PublicKey }[] = [];
+  for (const a of accounts.value) {
+    // Mint pubkey lives at offset 0 of the SPL token account layout.
+    const mint = new PublicKey(a.account.data.subarray(0, 32));
+    if (mint.equals(inputMint)) continue;
+    // Confirm the account is the canonical ATA for (pda, mint); if a
+    // non-ATA token account ever appeared we'd skip it (the on-chain
+    // handler validates owner+mint anyway, but mismatched ATA derivation
+    // would cause downstream caller assumptions to break).
+    const expectedAta = getAssociatedTokenAddressSync(
+      mint,
+      pda,
+      true,
+      SPL_TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+    if (!expectedAta.equals(a.pubkey)) continue;
+    out.push({ pdaAta: a.pubkey, mint });
+  }
+  return out;
 }

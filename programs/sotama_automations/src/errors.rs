@@ -82,4 +82,6 @@ pub enum SotamaError {
     ShutdownAlreadySet,
     #[msg("Caller is neither the automation owner nor the program admin")]
     UnauthorizedCloser,
+    #[msg("Close pair accounts must be (PDA-owned ATA, owner-owned ATA) of matching mint != input_mint.")]
+    BadCloseAccounts,
 }
