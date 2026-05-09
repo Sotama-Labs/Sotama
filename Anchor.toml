@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-sotama_automations = "3FCzDrB9KNUe2JJQFTKjWF1LNnHdcsw3FV5kN7SmGtdw"
+sotama_automations = "5U9GqtAmk2pKXMPfBYVVAhQ7AmNUEztW1bfZaEJarK5g"
 
 [programs.devnet]
-sotama_automations = "3FCzDrB9KNUe2JJQFTKjWF1LNnHdcsw3FV5kN7SmGtdw"
+sotama_automations = "5U9GqtAmk2pKXMPfBYVVAhQ7AmNUEztW1bfZaEJarK5g"
 
 # Mainnet program ID is generated in Phase 4 (mainnet deploy). Until that
 # keypair exists, leave commented to avoid accidental deploys against
