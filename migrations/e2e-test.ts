@@ -70,7 +70,7 @@ async function main() {
       await runSplVariant(provider, program, conn, owner, configPda);
       break;
     case "token-price":
-      await runTokenPriceVariant(provider, program, conn, owner, configPda);
+      await runAssetPriceVariant(provider, program, conn, owner, configPda);
       break;
   }
 }
@@ -354,7 +354,7 @@ async function runSplVariant(
   process.exit(1);
 }
 
-async function runTokenPriceVariant(
+async function runAssetPriceVariant(
   provider: anchor.AnchorProvider,
   program: anchor.Program<SotamaAutomations>,
   conn: anchor.web3.Connection,
@@ -390,11 +390,13 @@ async function runTokenPriceVariant(
   const createSig = await program.methods
     .createAutomation(
       {
-        tokenPrice: {
+        assetPrice: {
           feed: feedPubkey,
+          quoteMint: null,
           comparator: 1,
           threshold: thresholdRaw,
           expo: -8,
+          source: 0, // oracle_source::PYTH
         },
       } as never,
       { transferSol: { destination: destination.publicKey, amount: new BN(amountLamports) } } as never

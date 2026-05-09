@@ -28,6 +28,8 @@ pub enum SotamaError {
     BadStakingMode,
     #[msg("Pyth feed expo cannot be positive")]
     BadPythExpo,
+    #[msg("AssetPrice oracle source byte is not a recognized provider")]
+    BadOracleSource,
     #[msg("Time-based trigger fired before the configured interval elapsed")]
     TimeIntervalNotElapsed,
     #[msg("Cadence configuration is invalid (e.g. Repeat total = 0 or Until deadline not in the future)")]

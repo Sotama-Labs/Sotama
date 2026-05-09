@@ -5,7 +5,7 @@ pub struct AutomationCreated {
     pub pubkey: Pubkey,
     pub owner: Pubkey,
     pub nonce: u64,
-    /// `0` = AccountActivity, `1` = TokenPrice, `2` = StakingReward — keeps
+    /// `0` = AccountActivity, `1` = AssetPrice, `2` = StakingReward — keeps
     /// the event slim while still letting indexers route to the right
     /// subscriber without re-fetching the account.
     pub trigger_kind: u8,

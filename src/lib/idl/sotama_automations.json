@@ -2263,131 +2263,136 @@
     },
     {
       "code": 6013,
+      "name": "BadOracleSource",
+      "msg": "AssetPrice oracle source byte is not a recognized provider"
+    },
+    {
+      "code": 6014,
       "name": "TimeIntervalNotElapsed",
       "msg": "Time-based trigger fired before the configured interval elapsed"
     },
     {
-      "code": 6014,
+      "code": 6015,
       "name": "BadCadence",
       "msg": "Cadence configuration is invalid (e.g. Repeat total = 0 or Until deadline not in the future)"
     },
     {
-      "code": 6015,
+      "code": 6016,
       "name": "MinIntervalNotElapsed",
       "msg": "Minimum interval between fires has not elapsed yet"
     },
     {
-      "code": 6016,
+      "code": 6017,
       "name": "DeadlineExpired",
       "msg": "Until-cadence deadline has passed; automation is now terminal"
     },
     {
-      "code": 6017,
+      "code": 6018,
       "name": "WrongInputMint",
       "msg": "Swap input mint does not match automation"
     },
     {
-      "code": 6018,
+      "code": 6019,
       "name": "WrongOutputMint",
       "msg": "Swap output mint does not match automation"
     },
     {
-      "code": 6019,
+      "code": 6020,
       "name": "BadSwapAccounts",
       "msg": "Account count or layout does not match for swap action"
     },
     {
-      "code": 6020,
+      "code": 6021,
       "name": "WrongSwapProgram",
       "msg": "Inner swap instruction must target the Jupiter v6 program"
     },
     {
-      "code": 6021,
+      "code": 6022,
       "name": "SlippageExceeded",
       "msg": "Output ATA balance did not increase by at least min_amount_out — slippage exceeded"
     },
     {
-      "code": 6022,
+      "code": 6023,
       "name": "SwapUntilNotSupported",
       "msg": "Swap actions cannot use the Until cadence — total runs must be bounded so the deposit can cover all fires"
     },
     {
-      "code": 6023,
+      "code": 6024,
       "name": "DepositOverflow",
       "msg": "Deposit amount overflowed during cadence multiplication"
     },
     {
-      "code": 6024,
+      "code": 6025,
       "name": "BadSplAccounts",
       "msg": "Account count or layout does not match for SPL transfer"
     },
     {
-      "code": 6025,
+      "code": 6026,
       "name": "BadStakeAccounts",
       "msg": "Account count or layout does not match for stake action"
     },
     {
-      "code": 6026,
+      "code": 6027,
       "name": "LinkedFeePoolBelowRent",
       "msg": "Linked-rule fee deposit would push the PDA below rent-exempt minimum"
     },
     {
-      "code": 6027,
+      "code": 6028,
       "name": "LinkFeeCapExceeded",
       "msg": "Fee debit exceeds MAX_LINK_FEE_LAMPORTS"
     },
     {
-      "code": 6028,
+      "code": 6029,
       "name": "MissingDownstreamAccount",
       "msg": "Linked downstream automation account is missing or wrong"
     },
     {
-      "code": 6029,
+      "code": 6030,
       "name": "DownstreamMismatch",
       "msg": "Linked downstream pubkey does not match the action's linked_downstream"
     },
     {
-      "code": 6030,
+      "code": 6031,
       "name": "BadFeeTopupOutput",
       "msg": "Fee topup output mint must be wrapped SOL"
     },
     {
-      "code": 6031,
+      "code": 6032,
       "name": "BadFeeTopupOwner",
       "msg": "Fee topup output ATA must be owned by the automation PDA"
     },
     {
-      "code": 6032,
+      "code": 6033,
       "name": "FeeTopupNotEnabled",
       "msg": "Fee topup is not enabled for this automation"
     },
     {
-      "code": 6033,
+      "code": 6034,
       "name": "FeeTooLarge",
       "msg": "Close fee exceeds protocol cap (0.1 SOL)"
     },
     {
-      "code": 6034,
+      "code": 6035,
       "name": "WrongTreasury",
       "msg": "Provided treasury account does not match Config.treasury"
     },
     {
-      "code": 6035,
+      "code": 6036,
       "name": "Shutdown",
       "msg": "Program is in terminal shutdown — operation rejected"
     },
     {
-      "code": 6036,
+      "code": 6037,
       "name": "NotShutdown",
       "msg": "Operation requires Config.shutdown = true (kill-switch only)"
     },
     {
-      "code": 6037,
+      "code": 6038,
       "name": "ShutdownAlreadySet",
       "msg": "Shutdown is one-way; cannot be cleared once set"
     },
     {
-      "code": 6038,
+      "code": 6039,
       "name": "UnauthorizedCloser",
       "msg": "Caller is neither the automation owner nor the program admin"
     }
@@ -2659,7 +2664,7 @@
           {
             "name": "trigger_kind",
             "docs": [
-              "`0` = AccountActivity, `1` = TokenPrice, `2` = StakingReward — keeps",
+              "`0` = AccountActivity, `1` = AssetPrice, `2` = StakingReward — keeps",
               "the event slim while still letting indexers route to the right",
               "subscriber without re-fetching the account."
             ],
@@ -2897,10 +2902,14 @@
             ]
           },
           {
-            "name": "TokenPrice",
+            "name": "AssetPrice",
             "fields": [
               {
                 "name": "feed",
+                "docs": [
+                  "32-byte feed identifier. Interpretation depends on `source`:",
+                  "Pyth feed id (PYTH), SPL mint (JUPITER), …"
+                ],
                 "type": "pubkey"
               },
               {
@@ -2935,6 +2944,14 @@
                   "Decimal exponent applied to the threshold. Must be ≤ 0."
                 ],
                 "type": "i32"
+              },
+              {
+                "name": "source",
+                "docs": [
+                  "`oracle_source::PYTH`, `oracle_source::JUPITER`, … The keeper",
+                  "dispatches to the matching adapter; on-chain is oracle-agnostic."
+                ],
+                "type": "u8"
               }
             ]
           },

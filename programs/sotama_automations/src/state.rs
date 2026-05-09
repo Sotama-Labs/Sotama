@@ -19,16 +19,32 @@ pub mod action_kind {
 /// Trigger kind discriminators emitted in events.
 pub mod trigger_kind {
     pub const ACCOUNT_ACTIVITY: u8 = 0;
-    pub const TOKEN_PRICE: u8 = 1;
+    pub const ASSET_PRICE: u8 = 1;
     pub const STAKING_REWARD: u8 = 2;
 }
 
-/// Comparator codes for `TokenPrice` triggers. Stored as u8 because Anchor
+/// Comparator codes for `AssetPrice` triggers. Stored as u8 because Anchor
 /// IDL doesn't expose enums-with-data plus simple enums in a single account
 /// without name collisions on every variant.
 pub mod comparator {
     pub const BELOW: u8 = 0;
     pub const ABOVE: u8 = 1;
+}
+
+/// Oracle source codes for `AssetPrice` triggers. The on-chain program
+/// itself doesn't read prices — the keeper does — but the byte tells the
+/// keeper which adapter to dispatch to. Hot-swappable: adding a new
+/// provider is one constant + one keeper-side adapter, no schema change.
+pub mod oracle_source {
+    /// `feed` = 32-byte Pyth feed id (Hermes pull / Lazer stream).
+    pub const PYTH: u8 = 0;
+    /// `feed` = SPL mint pubkey; keeper polls Jupiter Price API v3
+    /// (covers tokens that don't have a Pyth feed).
+    pub const JUPITER: u8 = 1;
+    // Reserved for future adapters: SWITCHBOARD = 2, CHAINLINK = 3, …
+    /// Highest known source. `validate()` rejects anything above this so
+    /// the keeper never has to handle unknown bytes.
+    pub const MAX: u8 = JUPITER;
 }
 
 /// Sub-kind for `AccountActivity`. The on-chain program does not
@@ -77,23 +93,30 @@ pub enum TriggerSpec {
         /// `account_kind::TRANSFER` or `account_kind::SWAP`.
         kind: u8,
     },
-    /// Price crossing. Detected off-chain by the keeper polling Pyth
-    /// Hermes for the base feed. The threshold semantic depends on
-    /// `quote_mint`:
+    /// Price crossing on any oracle-supported asset (SPL token, equity, FX,
+    /// commodity, index, …). The on-chain program is oracle-agnostic — the
+    /// keeper picks an adapter based on `source` and resolves `feed`
+    /// accordingly:
     ///
-    ///   * `quote_mint = None`  — base feed's USD price compared
-    ///     directly. `threshold` and `expo` follow Pyth's wire format
-    ///     for the feed (typically `expo = -8`, e.g. `threshold =
-    ///     18_000_000_000` for $180.00).
+    ///   * `source = oracle_source::PYTH` — `feed` is a 32-byte Pyth feed
+    ///     id (Hermes pull or Lazer stream). Threshold semantics follow
+    ///     Pyth's wire format (typically `expo = -8`, e.g.
+    ///     `threshold = 18_000_000_000` for $180.00).
+    ///   * `source = oracle_source::JUPITER` — `feed` is an SPL mint
+    ///     pubkey. The keeper polls Jupiter Price API v3 for that mint.
+    ///     Threshold is in USD at `expo = -6` (Jupiter's native quote scale).
+    ///
+    /// The threshold semantic also depends on `quote_mint`:
+    ///   * `quote_mint = None`  — single-feed comparison (base USD price).
     ///   * `quote_mint = Some(M)` — compare `base_price / quote_price`,
-    ///     where the keeper resolves the quote price via a Jupiter
-    ///     `/quote` probe of `M → USDC`. `threshold` and `expo` then
-    ///     express the ratio scale (e.g. `expo = -6`, `threshold =
-    ///     990_000` for `0.99`).
-    ///
-    /// The keeper picks the quote-side resolution path. Sotama itself
-    /// doesn't read prices on-chain — same keeper-trust model as v3.
-    TokenPrice {
+    ///     where the keeper resolves the quote price via a Jupiter `/quote`
+    ///     probe of `M → USDC`. `threshold` and `expo` then express the
+    ///     ratio scale (e.g. `expo = -6`, `threshold = 990_000` for `0.99`).
+    ///     Only meaningful when the base asset is itself an SPL token; non-
+    ///     token assets must be quoted in USD.
+    AssetPrice {
+        /// 32-byte feed identifier. Interpretation depends on `source`:
+        /// Pyth feed id (PYTH), SPL mint (JUPITER), …
         feed: Pubkey,
         /// Optional quote mint. `None` denominates in USD (single-feed
         /// price). `Some(spl_mint)` makes this a base/quote comparison;
@@ -106,6 +129,9 @@ pub enum TriggerSpec {
         threshold: i64,
         /// Decimal exponent applied to the threshold. Must be ≤ 0.
         expo: i32,
+        /// `oracle_source::PYTH`, `oracle_source::JUPITER`, … The keeper
+        /// dispatches to the matching adapter; on-chain is oracle-agnostic.
+        source: u8,
     },
     /// Stake account reward trigger. The keeper polls the stake account
     /// and fires when the configured threshold (mode = AMOUNT) is reached
@@ -399,11 +425,12 @@ impl TriggerSpec {
                     SotamaError::BadAccountKind
                 );
             }
-            TriggerSpec::TokenPrice {
+            TriggerSpec::AssetPrice {
                 feed,
                 quote_mint,
                 comparator: c,
                 expo,
+                source,
                 ..
             } => {
                 require!(
@@ -411,6 +438,7 @@ impl TriggerSpec {
                     SotamaError::BadComparator
                 );
                 require!(*expo <= 0, SotamaError::BadPythExpo);
+                require!(*source <= oracle_source::MAX, SotamaError::BadOracleSource);
                 // Quote mint must differ from the base feed pubkey to
                 // ensure the comparison isn't trivially constant. We
                 // compare bytes only; the feed is a 32-byte hex while
@@ -434,7 +462,7 @@ impl TriggerSpec {
     pub fn kind_byte(&self) -> u8 {
         match self {
             TriggerSpec::AccountActivity { .. } => trigger_kind::ACCOUNT_ACTIVITY,
-            TriggerSpec::TokenPrice { .. } => trigger_kind::TOKEN_PRICE,
+            TriggerSpec::AssetPrice { .. } => trigger_kind::ASSET_PRICE,
             TriggerSpec::StakingReward { .. } => trigger_kind::STAKING_REWARD,
         }
     }
@@ -443,7 +471,7 @@ impl TriggerSpec {
     pub fn primary_pubkey(&self) -> Pubkey {
         match self {
             TriggerSpec::AccountActivity { account, .. } => *account,
-            TriggerSpec::TokenPrice { feed, .. } => *feed,
+            TriggerSpec::AssetPrice { feed, .. } => *feed,
             TriggerSpec::StakingReward { stake_account, .. } => *stake_account,
         }
     }

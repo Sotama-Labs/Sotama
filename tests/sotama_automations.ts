@@ -44,21 +44,23 @@ const trigger = {
   accountSwap: (account: PublicKey, mint: PublicKey | null = null) => ({
     accountActivity: { account, mint, kind: 1 },
   }),
-  tokenPriceBelow: (
+  assetPriceBelow: (
     feed: PublicKey,
     threshold: BN,
     expo: number,
     quoteMint: PublicKey | null = null,
+    source: number = 0, // oracle_source::PYTH
   ) => ({
-    tokenPrice: { feed, quoteMint, comparator: 0, threshold, expo },
+    assetPrice: { feed, quoteMint, comparator: 0, threshold, expo, source },
   }),
-  tokenPriceAbove: (
+  assetPriceAbove: (
     feed: PublicKey,
     threshold: BN,
     expo: number,
     quoteMint: PublicKey | null = null,
+    source: number = 0,
   ) => ({
-    tokenPrice: { feed, quoteMint, comparator: 1, threshold, expo },
+    assetPrice: { feed, quoteMint, comparator: 1, threshold, expo, source },
   }),
   stakingAmount: (stake: PublicKey, lamports: BN) => ({
     stakingReward: { stakeAccount: stake, mode: 0, value: lamports },
@@ -251,7 +253,7 @@ describe("sotama_automations v2", () => {
     try {
       await program.methods
         .createAutomation(
-          trigger.tokenPriceBelow(fakeFeed, new BN(100_000_000), 1),
+          trigger.assetPriceBelow(fakeFeed, new BN(100_000_000), 1),
           action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL)),
           cadence.once(),
           NO_INTERVAL
@@ -360,7 +362,7 @@ describe("sotama_automations v2", () => {
 
     await program.methods
       .createAutomation(
-        trigger.tokenPriceBelow(fakeFeed, threshold, -8),
+        trigger.assetPriceBelow(fakeFeed, threshold, -8),
         action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL)),
         cadence.once(),
         NO_INTERVAL
@@ -387,8 +389,72 @@ describe("sotama_automations v2", () => {
 
     const after = await program.account.automation.fetch(auto);
     expect(after.finished).to.eq(true);
-    expect((after.trigger as any).tokenPrice.threshold.toString()).to.eq(threshold.toString());
-    expect((after.trigger as any).tokenPrice.expo).to.eq(-8);
+    expect((after.trigger as any).assetPrice.threshold.toString()).to.eq(threshold.toString());
+    expect((after.trigger as any).assetPrice.expo).to.eq(-8);
+    expect((after.trigger as any).assetPrice.source).to.eq(0); // PYTH default
+  });
+
+  it("creates a Jupiter-source AssetPrice automation (mint as feed)", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    // Jupiter prices use expo=-6 by convention (USDC scale).
+    const threshold = new BN("1500000"); // $1.50
+    const fakeMint = Keypair.generate().publicKey;
+
+    await program.methods
+      .createAutomation(
+        trigger.assetPriceAbove(fakeMint, threshold, -6, null, 1 /* JUPITER */),
+        action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL)),
+        cadence.once(),
+        NO_INTERVAL
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    const after = await program.account.automation.fetch(auto);
+    expect((after.trigger as any).assetPrice.source).to.eq(1);
+    expect((after.trigger as any).assetPrice.feed.toBase58()).to.eq(fakeMint.toBase58());
+  });
+
+  it("rejects AssetPrice with unknown oracle source", async () => {
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    let threw = false;
+    try {
+      await program.methods
+        .createAutomation(
+          trigger.assetPriceBelow(
+            Keypair.generate().publicKey,
+            new BN("1000000"),
+            -6,
+            null,
+            99 /* unknown source */,
+          ),
+          action.transferSol(destination.publicKey, new BN(0.05 * LAMPORTS_PER_SOL)),
+          cadence.once(),
+          NO_INTERVAL,
+        )
+        .accountsStrict({
+          owner: owner.publicKey,
+          config: configPda,
+          automation: auto,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+    } catch (err) {
+      threw = true;
+      expect(String(err)).to.include("BadOracleSource");
+    }
+    expect(threw).to.eq(true);
   });
 
   it("enforces time-window on staking-time triggers", async () => {
@@ -1046,7 +1112,7 @@ describe("sotama_automations v2", () => {
 
     await program.methods
       .createAutomationSwap(
-        trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
         action.swap(inputMint, outputMint, owner.publicKey, amountIn, minAmountOut),
         cadence.once(),
         NO_INTERVAL,
@@ -1136,7 +1202,7 @@ describe("sotama_automations v2", () => {
 
     await program.methods
       .createAutomationSwap(
-        trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
         action.swap(inputMint, outputMint, owner.publicKey, amountIn, new BN(0)),
         cadence.repeat(TOTAL),
         NO_INTERVAL,
@@ -1204,7 +1270,7 @@ describe("sotama_automations v2", () => {
     try {
       await program.methods
         .createAutomationSwap(
-          trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+          trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
           action.swap(
             inputMint,
             Keypair.generate().publicKey,
@@ -1631,7 +1697,7 @@ describe("sotama_automations v2", () => {
 
     await program.methods
       .createAutomationSwap(
-        trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
         action.swap(inputMint, outputMint, owner.publicKey, new BN(500_000), new BN(0)),
         cadence.once(),
         NO_INTERVAL,
@@ -1841,7 +1907,7 @@ describe("sotama_automations v2", () => {
 
     await program.methods
       .createAutomationSwap(
-        trigger.tokenPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
         action.swap(pre_shutdown_swap_input_mint, Keypair.generate().publicKey, owner.publicKey, new BN(400_000), new BN(0)),
         cadence.once(),
         NO_INTERVAL,
