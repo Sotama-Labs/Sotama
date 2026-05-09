@@ -194,6 +194,12 @@ pub enum ActionSpec {
         /// Lamports prepaid to the downstream rule per fire of this
         /// rule. Capped on-chain at `MAX_LINK_FEE_LAMPORTS`.
         link_fee_deposit: u64,
+        /// Keeper-side flag for inverted-pair chain links. When true, the
+        /// keeper resolves `amount_in` at fire time from the PDA's input
+        /// ATA balance and ignores the field above. The program never
+        /// reads this — `amount_in` is informational at this layer (see
+        /// execute_swap.rs).
+        consume_upstream_output: bool,
     },
 }
 

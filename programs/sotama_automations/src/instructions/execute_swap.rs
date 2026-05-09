@@ -94,6 +94,7 @@ pub fn handler<'info>(
             min_amount_out,
             linked_downstream,
             link_fee_deposit,
+            consume_upstream_output: _,
         } => (
             *input_mint,
             *output_mint,
