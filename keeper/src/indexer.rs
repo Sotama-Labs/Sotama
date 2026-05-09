@@ -18,7 +18,7 @@ use crate::types::AutomationCtx;
 
 /// Sub-classification of active automations by trigger kind. Each map's
 /// key is the off-chain monitor's "primary watch target" — the watched
-/// account for AccountActivity, the Pyth feed for TokenPrice, the stake
+/// account for AccountActivity, the Pyth feed for AssetPrice, the stake
 /// account for StakingReward. Values are lists because multiple
 /// automations can share the same target.
 #[derive(Debug, Clone, Default)]
@@ -38,7 +38,7 @@ impl WatchedSet {
                 crate::state::TriggerSpec::AccountActivity { account, .. } => {
                     s.account_triggers.entry(*account).or_default().push(ctx);
                 }
-                crate::state::TriggerSpec::TokenPrice { feed, .. } => {
+                crate::state::TriggerSpec::AssetPrice { feed, .. } => {
                     s.price_triggers.entry(*feed).or_default().push(ctx);
                 }
                 crate::state::TriggerSpec::StakingReward { stake_account, .. } => {
@@ -55,6 +55,26 @@ impl WatchedSet {
 
     pub fn price_feeds(&self) -> Vec<Pubkey> {
         self.price_triggers.keys().copied().collect()
+    }
+
+    /// Feeds (or mints, depending on source) for triggers using the given
+    /// oracle adapter. Each watcher (Pyth Hermes, Pyth Lazer, Jupiter, …)
+    /// calls this with its own `source` byte to get only the keys it
+    /// should subscribe to. Adding a new oracle = pass a new source byte.
+    pub fn price_feeds_for_source(&self, source: u8) -> Vec<Pubkey> {
+        let mut out: Vec<Pubkey> = Vec::new();
+        let mut seen: HashSet<Pubkey> = HashSet::new();
+        for (feed, triggers) in &self.price_triggers {
+            for ctx in triggers {
+                if let crate::state::TriggerSpec::AssetPrice { source: s, .. } = &ctx.trigger {
+                    if *s == source && seen.insert(*feed) {
+                        out.push(*feed);
+                        break;
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn stake_accounts(&self) -> Vec<Pubkey> {
@@ -75,6 +95,24 @@ impl WatchedSet {
             .unwrap_or(&[])
     }
 
+    /// Matches for a given feed restricted to triggers using `source`.
+    /// Each watcher uses this to evaluate only its own triggers.
+    pub fn price_matches_for_source(&self, feed: &Pubkey, source: u8) -> Vec<AutomationCtx> {
+        match self.price_triggers.get(feed) {
+            Some(v) => v
+                .iter()
+                .filter(|ctx| {
+                    matches!(
+                        &ctx.trigger,
+                        crate::state::TriggerSpec::AssetPrice { source: s, .. } if *s == source,
+                    )
+                })
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     pub fn stake_matches(&self, stake_account: &Pubkey) -> &[AutomationCtx] {
         self.stake_triggers
             .get(stake_account)
@@ -82,14 +120,14 @@ impl WatchedSet {
             .unwrap_or(&[])
     }
 
-    /// Distinct quote mints across all `TokenPrice` triggers — the
+    /// Distinct quote mints across all `AssetPrice` triggers — the
     /// price_watcher probes Jupiter for each at evaluation time when
     /// the trigger is configured with a non-USD quote.
-    pub fn token_price_quote_mints(&self) -> Vec<Pubkey> {
+    pub fn asset_price_quote_mints(&self) -> Vec<Pubkey> {
         let mut out = HashSet::new();
         for triggers in self.price_triggers.values() {
             for ctx in triggers {
-                if let crate::state::TriggerSpec::TokenPrice {
+                if let crate::state::TriggerSpec::AssetPrice {
                     quote_mint: Some(m),
                     ..
                 } = &ctx.trigger
@@ -103,6 +141,37 @@ impl WatchedSet {
 
     fn account_set(&self) -> HashSet<Pubkey> {
         self.by_pubkey.keys().copied().collect()
+    }
+
+    /// Content fingerprint covering every dimension a watcher actually
+    /// cares about: PDA pubkey + trigger kind + primary target + oracle
+    /// source. Catches in-place edits where the PDA stays the same but
+    /// the trigger underneath swaps (e.g., feed swap or source flip from
+    /// PYTH → JUPITER). The plain pubkey-set comparison used to miss
+    /// those, leaving stale Lazer subscriptions behind (H2).
+    fn fingerprint(&self) -> Vec<(Pubkey, u8, Pubkey, u8)> {
+        let mut out: Vec<(Pubkey, u8, Pubkey, u8)> = self
+            .by_pubkey
+            .iter()
+            .map(|(pk, ctx)| {
+                let (kind, target, source) = match &ctx.trigger {
+                    crate::state::TriggerSpec::AccountActivity { account, kind, .. } => {
+                        (0u8, *account, *kind)
+                    }
+                    crate::state::TriggerSpec::AssetPrice { feed, source, .. } => {
+                        (1u8, *feed, *source)
+                    }
+                    crate::state::TriggerSpec::StakingReward {
+                        stake_account,
+                        mode,
+                        ..
+                    } => (2u8, *stake_account, *mode),
+                };
+                (*pk, kind, target, source)
+            })
+            .collect();
+        out.sort_unstable();
+        out
     }
 
     pub fn len(&self) -> usize {
@@ -127,11 +196,13 @@ pub async fn run(cfg: Arc<KeeperConfig>, set_tx: watch::Sender<WatchedSet>) -> R
             Ok(active) => {
                 let new_set = WatchedSet::from_index(active);
                 let changed = set_tx.send_if_modified(|current| {
-                    let prev_keys = current.account_set();
-                    let next_keys = new_set.account_set();
-                    if prev_keys == next_keys {
+                    let prev_fp = current.fingerprint();
+                    let next_fp = new_set.fingerprint();
+                    if prev_fp == next_fp {
                         false
                     } else {
+                        let prev_keys = current.account_set();
+                        let next_keys = new_set.account_set();
                         let added: Vec<_> = next_keys.difference(&prev_keys).copied().collect();
                         let removed: Vec<_> = prev_keys.difference(&next_keys).copied().collect();
                         info!(

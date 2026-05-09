@@ -9,7 +9,7 @@
 //! executed.
 //!
 //! Per trigger kind:
-//!   * `TokenPrice`     — re-poll Pyth Hermes (and Jupiter for non-USD
+//!   * `AssetPrice`    — re-poll Pyth Hermes (and Jupiter for non-USD
 //!     quotes) and re-evaluate the comparator. This is the trigger
 //!     where revalidation matters most: tens of seconds between fires
 //!     can see meaningful price moves.
@@ -62,19 +62,21 @@ pub struct RevalidateCtx {
 pub async fn revalidate(rev: &RevalidateCtx, ctx: &AutomationCtx) -> Result<bool> {
     match &ctx.trigger {
         TriggerSpec::AccountActivity { .. } => Ok(true),
-        TriggerSpec::TokenPrice {
+        TriggerSpec::AssetPrice {
             feed,
             quote_mint,
             comparator,
             threshold,
             expo,
-        } => revalidate_token_price(
+            source,
+        } => revalidate_asset_price(
             rev,
             feed,
             quote_mint,
             *comparator,
             *threshold,
             *expo,
+            *source,
         )
         .await,
         TriggerSpec::StakingReward {
@@ -85,27 +87,43 @@ pub async fn revalidate(rev: &RevalidateCtx, ctx: &AutomationCtx) -> Result<bool
     }
 }
 
-async fn revalidate_token_price(
+async fn revalidate_asset_price(
     rev: &RevalidateCtx,
     feed: &Pubkey,
     quote_mint: &Option<Pubkey>,
     comparator: u8,
     threshold: i64,
     expo: i32,
+    source: u8,
 ) -> Result<bool> {
-    let feed_hex = pubkey_to_hex(feed);
-    let prices = fetch_prices(&rev.http, &rev.hermes_url, &[feed_hex.clone()]).await?;
-    let Some(price) = prices.get(&feed_hex) else {
-        // Hermes didn't return the feed — be conservative and let the
-        // fire proceed (on-chain has no price gate, the keeper's the
-        // only check, but the watcher already greenlit this match).
-        debug!(feed = %feed, "revalidate: hermes returned no price; passing through");
-        return Ok(true);
+    let price = match source {
+        crate::state::oracle_source::PYTH => {
+            let feed_hex = pubkey_to_hex(feed);
+            let prices = fetch_prices(&rev.http, &rev.hermes_url, &[feed_hex.clone()]).await?;
+            match prices.get(&feed_hex).cloned() {
+                Some(p) => p,
+                None => {
+                    debug!(feed = %feed, "revalidate: hermes returned no price; passing through");
+                    return Ok(true);
+                }
+            }
+        }
+        crate::state::oracle_source::JUPITER => {
+            // `feed` is an SPL mint when source = JUPITER. The watcher
+            // path is authoritative here; revalidate trusts the watcher's
+            // green light and lets the fire proceed without a second
+            // probe (Jupiter rate-limits reward conservative usage).
+            return Ok(true);
+        }
+        unknown => {
+            debug!(source = unknown, "revalidate: unknown oracle source; passing through");
+            return Ok(true);
+        }
     };
     let still = match quote_mint {
         None => match comparator {
-            0 => crossed_below(price, threshold, expo),
-            1 => crossed_above(price, threshold, expo),
+            0 => crossed_below(&price, threshold, expo),
+            1 => crossed_above(&price, threshold, expo),
             _ => return Ok(true),
         },
         Some(qm) => {

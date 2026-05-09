@@ -53,12 +53,25 @@ pub struct KeeperConfig {
     pub fee_topup_threshold_lamports: u64,
     pub fee_topup_amount_lamports: u64,
     /// Optional Pyth Lazer access token. When set, the keeper opens a
-    /// sub-second WebSocket stream to Lazer for `TokenPrice` triggers
+    /// sub-second WebSocket stream to Lazer for `AssetPrice` triggers
     /// and runs ALONGSIDE the existing Hermes polling watcher.
     /// Whichever fires first wins; the executor's dedupe layer drops
     /// the duplicate. When the token expires or is unset, the Hermes
     /// path keeps running unchanged at its 12s cadence.
     pub lazer_access_token: Option<String>,
+    /// When true (default), the keeper polls Jupiter Price API v3 for
+    /// AssetPrice triggers with `source = oracle_source::JUPITER`. Tokens
+    /// without a Pyth feed go through this path. Disable by setting
+    /// `JUPITER_PRICE_ENABLED=0` (testing or rate-limit recovery).
+    pub jupiter_price_enabled: bool,
+    /// Jupiter Price API v3 endpoint. The keeper hits
+    /// `<jupiter_price_url>?ids=<mint1>,<mint2>,…`. Hot-swap point: a
+    /// future provider (Pyth pull v3, Switchboard, …) drops in here.
+    pub jupiter_price_url: String,
+    /// Optional Jupiter Pro API key. Sent as `x-api-key` on all Jupiter
+    /// calls (price + swap). Free tier ignores it; Pro tier (api.jup.ag)
+    /// requires it for higher rate limits.
+    pub jupiter_api_key: Option<String>,
 }
 
 impl KeeperConfig {
@@ -117,6 +130,15 @@ impl KeeperConfig {
             .ok()
             .filter(|s| !s.trim().is_empty());
 
+        let jupiter_price_enabled = parse_or::<u8>("JUPITER_PRICE_ENABLED", 1)? != 0;
+        let jupiter_price_url = required_or(
+            "JUPITER_PRICE_URL",
+            "https://lite-api.jup.ag/price/v3",
+        )?;
+        let jupiter_api_key = std::env::var("JUPITER_API_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+
         Ok(Self {
             cluster,
             api_key,
@@ -138,6 +160,9 @@ impl KeeperConfig {
             fee_topup_threshold_lamports,
             fee_topup_amount_lamports,
             lazer_access_token,
+            jupiter_price_enabled,
+            jupiter_price_url,
+            jupiter_api_key,
         })
     }
 }

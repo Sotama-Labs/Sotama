@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info};
@@ -7,6 +8,7 @@ mod config;
 mod executor;
 mod indexer;
 mod jupiter;
+mod jupiter_watcher;
 mod lazer_watcher;
 mod price_watcher;
 mod program;
@@ -47,6 +49,13 @@ async fn main() -> Result<()> {
 
     let (trigger_tx, trigger_rx) = mpsc::channel::<types::TriggerEvent>(1024);
 
+    // Shared state: which feed pubkeys is Lazer currently streaming?
+    // price_watcher (Hermes) reads this and skips them so the two paths
+    // don't both fire on the same crossing. Empty when Lazer is down,
+    // so Hermes covers everything during Lazer outages.
+    let (lazer_active_feeds_tx, lazer_active_feeds_rx) =
+        watch::channel::<HashSet<solana_sdk::pubkey::Pubkey>>(HashSet::new());
+
     let indexer_handle = {
         let cfg = cfg.clone();
         tokio::spawn(async move {
@@ -71,8 +80,11 @@ async fn main() -> Result<()> {
         let cfg = cfg.clone();
         let set_rx = set_rx.clone();
         let trigger_tx = trigger_tx.clone();
+        let lazer_active_feeds_rx = lazer_active_feeds_rx.clone();
         tokio::spawn(async move {
-            if let Err(e) = price_watcher::run(cfg, set_rx, trigger_tx).await {
+            if let Err(e) =
+                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx).await
+            {
                 error!(error = %e, "price_watcher task exited");
             }
         })
@@ -98,9 +110,26 @@ async fn main() -> Result<()> {
         let cfg = cfg.clone();
         let set_rx = set_rx.clone();
         let trigger_tx = trigger_tx.clone();
+        let lazer_active_feeds_tx = lazer_active_feeds_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = lazer_watcher::run(cfg, set_rx, trigger_tx).await {
+            if let Err(e) =
+                lazer_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_tx).await
+            {
                 error!(error = %e, "lazer_watcher task exited");
+            }
+        })
+    };
+
+    // Jupiter Price v3 watcher. Handles AssetPrice triggers whose
+    // `source = oracle_source::JUPITER` (tokens without a Pyth feed).
+    // Returns immediately as a no-op when JUPITER_PRICE_ENABLED=0.
+    let jupiter_price_handle = {
+        let cfg = cfg.clone();
+        let set_rx = set_rx.clone();
+        let trigger_tx = trigger_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = jupiter_watcher::run(cfg, set_rx, trigger_tx).await {
+                error!(error = %e, "jupiter_watcher task exited");
             }
         })
     };
@@ -123,6 +152,7 @@ async fn main() -> Result<()> {
         _ = price_handle => error!("price_watcher task ended unexpectedly"),
         _ = stake_handle => error!("stake_watcher task ended unexpectedly"),
         _ = lazer_handle => error!("lazer_watcher task ended unexpectedly"),
+        _ = jupiter_price_handle => error!("jupiter_watcher task ended unexpectedly"),
         _ = executor_handle => error!("executor task ended unexpectedly"),
     }
 

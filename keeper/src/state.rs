@@ -3,6 +3,13 @@ use solana_sdk::pubkey::Pubkey;
 
 use crate::program::automation_discriminator;
 
+/// Oracle source byte mirror of the on-chain `oracle_source` mod.
+/// MUST match `programs/sotama_automations/src/state.rs::oracle_source`.
+pub mod oracle_source {
+    pub const PYTH: u8 = 0;
+    pub const JUPITER: u8 = 1;
+}
+
 /// Borsh-mirror of the on-chain `TriggerSpec` enum. Layout MUST match
 /// `programs/sotama_automations/src/state.rs::TriggerSpec`.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -12,15 +19,19 @@ pub enum TriggerSpec {
         mint: Option<Pubkey>,
         kind: u8,
     },
-    TokenPrice {
+    AssetPrice {
+        /// 32-byte feed id. Interpretation depends on `source`:
+        /// Pyth feed id (PYTH=0), SPL mint (JUPITER=1), …
         feed: Pubkey,
         /// `None` = USD-denominated (single-feed compare).
-        /// `Some(mint)` = compare `pyth(feed) / jupiter_quote(mint, USDC)`
+        /// `Some(mint)` = compare `feed_price / jupiter_quote(mint, USDC)`
         /// against `threshold * 10^expo`.
         quote_mint: Option<Pubkey>,
         comparator: u8,
         threshold: i64,
         expo: i32,
+        /// Oracle adapter to dispatch to. See `oracle_source` mod.
+        source: u8,
     },
     StakingReward {
         stake_account: Pubkey,
@@ -116,18 +127,20 @@ impl Automation {
                 watched: *account,
                 swap: *kind == 1,
             },
-            TriggerSpec::TokenPrice {
+            TriggerSpec::AssetPrice {
                 feed,
                 quote_mint,
                 comparator,
                 threshold,
                 expo,
+                source,
             } => Monitor::Price {
                 feed: *feed,
                 quote_mint: *quote_mint,
                 comparator: *comparator,
                 threshold: *threshold,
                 expo: *expo,
+                source: *source,
             },
             TriggerSpec::StakingReward {
                 stake_account,
@@ -159,6 +172,9 @@ pub enum Monitor {
         comparator: u8,
         threshold: i64,
         expo: i32,
+        /// `oracle_source` byte. Picks which adapter the dispatcher
+        /// routes this trigger to (Pyth Hermes/Lazer, Jupiter, …).
+        source: u8,
     },
     Stake {
         stake_account: Pubkey,

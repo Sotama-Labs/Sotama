@@ -19,13 +19,13 @@
 //! Auth   : `Authorization: Bearer <LAZER_ACCESS_TOKEN>` on the upgrade.
 //! Mapping: at startup we GET `https://history.pyth-lazer.dourolabs.app/v1/symbols`
 //!          and build `hermes_hex → (lazer_id, exponent)`. Sotama's
-//!          on-chain TokenPrice trigger stores the feed as a Pubkey
+//!          on-chain AssetPrice trigger stores the feed as a Pubkey
 //!          containing the 32 bytes of the Hermes hex feed id, so this
 //!          map is exactly what we need to translate to Lazer-native
 //!          numeric ids for the SubscribeRequest.
 //!
 //! Scope:
-//! - Plain `TokenPrice` triggers (`quote_mint = None`) go through Lazer.
+//! - Plain `AssetPrice` triggers (`quote_mint = None`) go through Lazer.
 //! - `PriceRatio` triggers (`quote_mint = Some(mint)`) need a Jupiter
 //!   `/quote` round-trip per evaluation, which would erase the latency
 //!   win. Hermes price_watcher handles those at its 12s tick.
@@ -40,7 +40,7 @@ use pyth_lazer_protocol::time::FixedRate;
 use pyth_lazer_protocol::{PriceFeedId, PriceFeedProperty};
 use serde::Deserialize;
 use solana_sdk::pubkey::Pubkey;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -51,7 +51,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
-use crate::price_watcher::{crossed_above, crossed_below, pubkey_to_hex, LatestPrice};
+use crate::price_watcher::{crossed_above, crossed_below, LatestPrice};
 use crate::state::TriggerSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -68,7 +68,7 @@ const SYMBOLS_URL: &str = "https://history.pyth-lazer.dourolabs.app/v1/symbols";
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Per-feed metadata we cache from `/v1/symbols` at startup. Keyed by
-/// the 32-byte Hermes feed id (same bytes the on-chain TokenPrice
+/// the 32-byte Hermes feed id (same bytes the on-chain AssetPrice
 /// trigger stores in its `feed: Pubkey`).
 #[derive(Debug, Clone)]
 struct FeedMeta {
@@ -76,15 +76,24 @@ struct FeedMeta {
     exponent: i32,
 }
 
+// `active_feeds_tx`: set of feed pubkeys Lazer is currently streaming.
+// Hermes (price_watcher) reads this and skips polling those feeds so
+// the two paths don't both fire on the same crossing — Lazer is the
+// primary source whenever it's connected; Hermes only handles gaps.
+// Cleared on disconnect so Hermes resumes covering them.
 pub async fn run(
     cfg: Arc<KeeperConfig>,
     set_rx: watch::Receiver<WatchedSet>,
     trigger_tx: mpsc::Sender<TriggerEvent>,
+    active_feeds_tx: watch::Sender<HashSet<Pubkey>>,
 ) -> Result<()> {
     let token = match cfg.lazer_access_token.as_ref() {
         Some(t) => t.clone(),
         None => {
             info!("lazer_watcher: LAZER_ACCESS_TOKEN not set; Hermes polling will cover all price triggers");
+            // Make sure the active set stays empty so Hermes covers
+            // everything. (It already is via the channel default.)
+            let _ = active_feeds_tx.send(HashSet::new());
             return Ok(());
         }
     };
@@ -116,16 +125,23 @@ pub async fn run(
         let endpoint = LAZER_ENDPOINTS[endpoint_idx % LAZER_ENDPOINTS.len()];
         endpoint_idx = endpoint_idx.wrapping_add(1);
 
-        match connect_and_run(
+        let result = connect_and_run(
             endpoint,
             &token,
             &set_rx,
             &trigger_tx,
             &hermes_to_meta,
             &lazer_to_hermes,
+            &active_feeds_tx,
         )
-        .await
-        {
+        .await;
+
+        // Whether the connection ended cleanly or with an error, we're
+        // no longer streaming — clear the active set so price_watcher
+        // knows to take over those feeds until we reconnect.
+        let _ = active_feeds_tx.send(HashSet::new());
+
+        match result {
             Ok(()) => {
                 debug!(endpoint, "lazer_watcher: stream closed cleanly; reconnecting");
                 backoff = Duration::from_secs(1);
@@ -135,7 +151,7 @@ pub async fn run(
                     endpoint,
                     error = format!("{e:#}"),
                     backoff_secs = backoff.as_secs(),
-                    "lazer_watcher: connection failed; backing off"
+                    "lazer_watcher: connection failed; backing off — Hermes covers the feeds"
                 );
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -198,6 +214,7 @@ async fn connect_and_run(
     trigger_tx: &mpsc::Sender<TriggerEvent>,
     hermes_to_meta: &Arc<HashMap<[u8; 32], FeedMeta>>,
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
+    active_feeds_tx: &watch::Sender<HashSet<Pubkey>>,
 ) -> Result<()> {
     let mut req = endpoint.into_client_request().context("parse lazer endpoint")?;
     let auth_value: http::HeaderValue = format!("Bearer {token}")
@@ -223,10 +240,17 @@ async fn connect_and_run(
             "lazer_watcher: subscribed"
         );
     } else {
-        debug!(endpoint, "lazer_watcher: no TokenPrice triggers yet; idle");
+        debug!(endpoint, "lazer_watcher: no AssetPrice triggers yet; idle");
     }
+    publish_active_feeds(active_feeds_tx, &subscribed_lazer, lazer_to_hermes);
 
     let mut set_rx_local = set_rx.clone();
+    // Track consecutive failed text-frame parses. A persistent stream of
+    // unparseable messages used to silently drop every feed tick while the
+    // connection stayed open. After this many consecutive failures, return
+    // an error so the outer loop reconnects fresh (H4).
+    const PARSE_ERROR_LIMIT: u32 = 5;
+    let mut consecutive_parse_errors: u32 = 0;
     loop {
         tokio::select! {
             res = set_rx_local.changed() => {
@@ -243,6 +267,7 @@ async fn connect_and_run(
                     debug!(removed = removed.len(), "lazer_watcher: unsubscribed from removed feeds");
                 }
                 subscribed_lazer = new_ids;
+                publish_active_feeds(active_feeds_tx, &subscribed_lazer, lazer_to_hermes);
             }
 
             msg = ws.next() => {
@@ -253,7 +278,23 @@ async fn connect_and_run(
                 };
                 match msg {
                     Message::Text(text) => {
-                        handle_text(&text, set_rx, trigger_tx, lazer_to_hermes).await;
+                        match handle_text(&text, set_rx, trigger_tx, hermes_to_meta, lazer_to_hermes).await {
+                            Ok(()) => consecutive_parse_errors = 0,
+                            Err(e) => {
+                                consecutive_parse_errors = consecutive_parse_errors.saturating_add(1);
+                                warn!(
+                                    error = %e,
+                                    snippet = %text.chars().take(120).collect::<String>(),
+                                    consecutive = consecutive_parse_errors,
+                                    "lazer_watcher: failed to parse server message",
+                                );
+                                if consecutive_parse_errors >= PARSE_ERROR_LIMIT {
+                                    return Err(anyhow!(
+                                        "lazer_watcher: {consecutive_parse_errors} consecutive parse errors; reconnecting",
+                                    ));
+                                }
+                            }
+                        }
                     }
                     Message::Ping(p) => {
                         ws.send(Message::Pong(p)).await.context("ws pong")?;
@@ -270,11 +311,33 @@ async fn connect_and_run(
     Ok(())
 }
 
+/// Translate the currently-subscribed Lazer feed ids back to Hermes
+/// pubkeys and publish them on the shared "Lazer is covering these"
+/// channel. price_watcher reads this and skips polling those feeds —
+/// the two paths must not both fire on the same crossing.
+fn publish_active_feeds(
+    tx: &watch::Sender<HashSet<Pubkey>>,
+    lazer_ids: &[u32],
+    lazer_to_hermes: &HashMap<u32, [u8; 32]>,
+) {
+    let mut set = HashSet::with_capacity(lazer_ids.len());
+    for id in lazer_ids {
+        if let Some(bytes) = lazer_to_hermes.get(id) {
+            set.insert(Pubkey::new_from_array(*bytes));
+        }
+    }
+    let _ = tx.send(set);
+}
+
 fn current_lazer_ids(
     set_rx: &watch::Receiver<WatchedSet>,
     hermes_to_meta: &HashMap<[u8; 32], FeedMeta>,
 ) -> Vec<u32> {
-    let feeds = set_rx.borrow().price_feeds();
+    // Lazer is a Pyth wire format — only PYTH-sourced triggers are
+    // candidates. Jupiter-sourced triggers are watched by jupiter_watcher.
+    let feeds = set_rx
+        .borrow()
+        .price_feeds_for_source(crate::state::oracle_source::PYTH);
     let mut out = Vec::with_capacity(feeds.len());
     for f in feeds {
         if let Some(meta) = hermes_to_meta.get(&f.to_bytes()) {
@@ -334,19 +397,18 @@ async fn send_unsubscribe(
     Ok(())
 }
 
+/// Returns `Err` when parsing the server message fails. The caller
+/// tracks consecutive parse failures and forces a reconnect after a
+/// threshold so a stuck/corrupted stream can't silently mute every
+/// AssetPrice trigger (H4).
 async fn handle_text(
     text: &str,
     set_rx: &watch::Receiver<WatchedSet>,
     trigger_tx: &mpsc::Sender<TriggerEvent>,
+    hermes_to_meta: &Arc<HashMap<[u8; 32], FeedMeta>>,
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
-) {
-    let parsed: WsResponse = match serde_json::from_str(text) {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(error = %e, snippet = %text.chars().take(120).collect::<String>(), "lazer_watcher: failed to parse server message");
-            return;
-        }
-    };
+) -> std::result::Result<(), serde_json::Error> {
+    let parsed: WsResponse = serde_json::from_str(text)?;
     match parsed {
         WsResponse::Subscribed(s) => {
             debug!(subscription_id = s.subscription_id.0, "lazer_watcher: subscription ack");
@@ -368,16 +430,19 @@ async fn handle_text(
         WsResponse::StreamUpdated(update) => {
             if let Some(parsed) = update.payload.parsed {
                 for feed in parsed.price_feeds {
-                    process_feed_update(set_rx, trigger_tx, lazer_to_hermes, &feed).await;
+                    process_feed_update(set_rx, trigger_tx, hermes_to_meta, lazer_to_hermes, &feed)
+                        .await;
                 }
             }
         }
     }
+    Ok(())
 }
 
 async fn process_feed_update(
     set_rx: &watch::Receiver<WatchedSet>,
     trigger_tx: &mpsc::Sender<TriggerEvent>,
+    hermes_to_meta: &Arc<HashMap<[u8; 32], FeedMeta>>,
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
     feed: &ParsedFeedPayload,
 ) {
@@ -387,19 +452,48 @@ async fn process_feed_update(
     };
     let feed_pk = Pubkey::new_from_array(*hermes_bytes);
 
-    let matches = set_rx.borrow().price_matches(&feed_pk).to_vec();
+    // Only PYTH-sourced triggers route through Lazer; JUPITER triggers
+    // are handled by jupiter_watcher.
+    let matches = set_rx
+        .borrow()
+        .price_matches_for_source(&feed_pk, crate::state::oracle_source::PYTH);
     if matches.is_empty() {
         return;
     }
 
     let Some(price) = feed.price else { return };
     let raw: i64 = price.mantissa_i64();
-    // Lazer per-update payload includes exponent only when we requested
-    // PriceFeedProperty::Exponent. We did, so it'll be in
-    // `feed.exponent`. Fall back to 0 if the server omits it (shouldn't
-    // happen but defensive — caller's threshold check would just be
-    // a no-op rather than a crash).
-    let expo: i32 = feed.exponent.map(|e| e as i32).unwrap_or(0);
+
+    // Trust the cached exponent loaded from /v1/symbols at startup —
+    // that is the canonical scale Lazer publishes for this feed. The
+    // per-update `feed.exponent` is informational; if it disagrees with
+    // the cached value, drop the tick rather than fire on a misscaled
+    // comparison (C1). This used to default to 0 on missing exponent,
+    // which silently inflated non-USDC-scale comparisons by 10^N.
+    let cached_expo: i32 = match hermes_to_meta.get(hermes_bytes) {
+        Some(m) => m.exponent,
+        None => {
+            warn!(
+                lazer_id,
+                feed = %feed_pk,
+                "lazer_watcher: feed update for symbol not in cached catalog; dropping",
+            );
+            return;
+        }
+    };
+    if let Some(server_expo) = feed.exponent {
+        if i32::from(server_expo) != cached_expo {
+            warn!(
+                lazer_id,
+                feed = %feed_pk,
+                cached_expo,
+                server_expo = i32::from(server_expo),
+                "lazer_watcher: per-update exponent disagrees with cached catalog; skipping tick",
+            );
+            return;
+        }
+    }
+    let expo = cached_expo;
     let publish_time: i64 = parsed_timestamp_to_unix_seconds(&feed);
 
     let latest = LatestPrice {
@@ -410,7 +504,7 @@ async fn process_feed_update(
 
     let mut to_fire: Vec<AutomationCtx> = Vec::new();
     for ctx in matches {
-        if let TriggerSpec::TokenPrice {
+        if let TriggerSpec::AssetPrice {
             quote_mint: None,
             comparator,
             threshold,

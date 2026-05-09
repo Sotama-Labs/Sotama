@@ -14,17 +14,26 @@ use crate::jupiter::JupiterClient;
 use crate::state::TriggerSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
-/// Polls Pyth Hermes for the live price of every TokenPrice-trigger feed
+/// Polls Pyth Hermes for the live price of every AssetPrice-trigger feed
 /// and emits TriggerEvents when the threshold is crossed. Stateless
 /// across runs — does not persist "already crossed" markers, so a price
 /// hovering near the threshold could fire repeatedly. The on-chain
 /// `executed: bool` guard prevents double-execution per automation, and
 /// the executor's `recent_triggers` cache prevents duplicate ix sends
 /// within a single keeper session.
+///
+/// **Pyth-Pro-primary semantics.** When Lazer is connected, the
+/// `lazer_active_feeds_rx` channel reports the feeds it's actively
+/// streaming and Hermes skips them — Lazer is sub-second, Hermes is the
+/// 12s fallback, and running both for the same feed produces duplicate
+/// fires (the executor's dedupe drops the loser, but the wasted work
+/// looks like double-counting in the UI). When Lazer disconnects, the
+/// set goes empty here and Hermes resumes covering everything.
 pub async fn run(
     cfg: Arc<KeeperConfig>,
     set_rx: watch::Receiver<WatchedSet>,
     trigger_tx: mpsc::Sender<TriggerEvent>,
+    lazer_active_feeds_rx: watch::Receiver<HashSet<Pubkey>>,
 ) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -37,16 +46,25 @@ pub async fn run(
     loop {
         tick.tick().await;
         let set = set_rx.borrow().clone();
-        if set.price_triggers.is_empty() {
+        let lazer_active: HashSet<Pubkey> = lazer_active_feeds_rx.borrow().clone();
+        // Hermes is a Pyth wire format. Filter to PYTH-sourced triggers
+        // only — JUPITER triggers are watched by jupiter_watcher.
+        // Within those, drop feeds Lazer is currently streaming so
+        // there's only one active source per feed.
+        let feeds: Vec<Pubkey> = set
+            .price_feeds_for_source(crate::state::oracle_source::PYTH)
+            .into_iter()
+            .filter(|f| !lazer_active.contains(f))
+            .collect();
+        if feeds.is_empty() {
             continue;
         }
 
-        let feeds: Vec<Pubkey> = set.price_feeds();
         // Pyth Hermes expects the 32-byte feed ID as hex (lowercase, no
         // 0x), but on-chain we stored it as a Pubkey's raw bytes (base58
         // when Display'd). Convert here for the HTTP query.
         let feed_hex: Vec<String> = feeds.iter().map(pubkey_to_hex).collect();
-        let quote_mints = set.token_price_quote_mints();
+        let quote_mints = set.asset_price_quote_mints();
         debug!(
             feeds = feed_hex.len(),
             quote_mints = quote_mints.len(),
@@ -62,7 +80,7 @@ pub async fn run(
         };
 
         // Per-tick cache of Jupiter `/quote` probes for the quote mints
-        // appearing in any TokenPrice trigger. Cached so a mint shared
+        // appearing in any AssetPrice trigger. Cached so a mint shared
         // across many triggers (USDC most likely) isn't probed twice.
         let mut mint_quotes: HashMap<Pubkey, MintQuote> = HashMap::new();
         for mint in quote_mints {
@@ -79,17 +97,21 @@ pub async fn run(
         let mut to_fire: HashMap<String, Vec<AutomationCtx>> = HashMap::new();
         let mut already: HashSet<Pubkey> = HashSet::new();
 
-        for (feed, ctxs) in &set.price_triggers {
+        for feed in &feeds {
             let feed_hex_id = pubkey_to_hex(feed);
             let Some(price) = prices.get(&feed_hex_id) else {
                 continue;
             };
             let feed_str = feed_hex_id.clone();
-            for ctx in ctxs {
+            // Re-resolve the per-source matches list rather than iterating
+            // over the unfiltered map — this is what restricts Hermes to
+            // PYTH-sourced triggers.
+            let ctxs = set.price_matches_for_source(feed, crate::state::oracle_source::PYTH);
+            for ctx in &ctxs {
                 if !already.insert(ctx.pubkey) {
                     continue;
                 }
-                let TriggerSpec::TokenPrice {
+                let TriggerSpec::AssetPrice {
                     quote_mint,
                     comparator,
                     threshold,
@@ -152,7 +174,7 @@ pub async fn run(
 }
 
 /// Snapshot of a Jupiter `/quote` for one mint paired against USDC.
-/// Used as the quote leg of a TokenPrice trigger configured with a
+/// Used as the quote leg of an AssetPrice trigger configured with a
 /// non-USD quote mint. Public so `revalidate.rs` can reuse the probe.
 #[derive(Debug, Clone)]
 pub(crate) struct MintQuote {
