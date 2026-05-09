@@ -202,7 +202,7 @@ export function AssetPicker({
                     zIndex: 10,
                   }}
                 >
-                  Coming soon
+                  {ASSET_CLASS_LABELS[cls]} coming soon
                 </div>
               )}
             </div>

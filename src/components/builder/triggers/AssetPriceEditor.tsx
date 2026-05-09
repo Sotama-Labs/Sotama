@@ -187,13 +187,16 @@ export function AssetPriceEditor({
   // The live price itself is rendered once below the threshold input
   // ("Current: $X.XX"), so showing it here too produced duplicate
   // numbers in the UI.
+  // Status text only shows for non-live states. Once a live price is
+  // available, the "(Live)" marker rendered next to the price is the
+  // only signal we need.
   const statusText = (() => {
     if (!draft.asset) return "Pick an asset to continue";
     if (resolving) return "Looking up live price…";
     if (!draft.oracle) return "Looking up live price…";
     if (draft.oracle.kind === "switchboard_pending")
       return "No live price available — pick a different asset to continue";
-    return "Live price";
+    return null;
   })();
 
   // Pair price caption shown below threshold input
@@ -289,11 +292,35 @@ export function AssetPriceEditor({
             if (pairPrice == null || pairPrice <= 0 || draft.threshold == null || draft.threshold <= 0)
               return null;
             const pct = ((draft.threshold - pairPrice) / pairPrice) * 100;
-            if (Math.abs(pct) < 0.05) return null;
+            // Within 0.01% of the live price → render a neutral 0%
+            // rather than a noisy ±0.0% / ±0.1% that flickers as the
+            // feed ticks. The annotation is meant to give scale, not
+            // round-trip the user's typing.
+            if (Math.abs(pct) < 0.01) {
+              return (
+                <span
+                  className="hig-footnote"
+                  style={{
+                    color: "var(--label-tertiary)",
+                    fontWeight: 600,
+                    fontFeatureSettings: '"tnum"',
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  (0%)
+                </span>
+              );
+            }
             const positive = pct > 0;
             const sign = positive ? "+" : "−";
             const magnitude = Math.abs(pct);
-            const formatted = magnitude >= 100 ? magnitude.toFixed(0) : magnitude.toFixed(1);
+            // Up to 2 decimal places, trailing zeros trimmed:
+            //   0.5    → "0.5"
+            //   0.55   → "0.55"
+            //   0.555  → "0.56"
+            //   12     → "12"
+            //   1234.5 → "1234.5"
+            const formatted = parseFloat(magnitude.toFixed(2)).toString();
             return (
               <span
                 className="hig-footnote"
@@ -334,23 +361,52 @@ export function AssetPriceEditor({
               color: "var(--label-tertiary)",
               fontFeatureSettings: '"tnum"',
               padding: "0.125rem 0.125rem 0",
+              display: "flex",
+              alignItems: "baseline",
+              gap: "0.375rem",
             }}
           >
-            Current: {pairCaption}
+            <button
+              type="button"
+              onClick={() => {
+                if (pairPrice == null || pairPrice <= 0) return;
+                // Snap to the price's natural precision so we don't end
+                // up storing a noisy 0.752183... when the user expected
+                // 0.7522.
+                const decimals =
+                  pairPrice >= 100 ? 2 : pairPrice >= 1 ? 4 : pairPrice >= 0.01 ? 6 : 8;
+                const factor = Math.pow(10, decimals);
+                const rounded = Math.round(pairPrice * factor) / factor;
+                onChange({ ...draft, threshold: rounded });
+              }}
+              title="Use current price"
+              style={{
+                background: "transparent",
+                color: "inherit",
+                font: "inherit",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              Current: {pairCaption}
+            </button>
+            <span style={{ color: "var(--label-quaternary)" }}>(Live)</span>
           </div>
         )}
       </FieldRow>
 
-      <div
-        className="hig-caption-1"
-        style={{
-          color: "var(--label-tertiary)",
-          fontFeatureSettings: '"tnum"',
-          padding: "0 0.125rem",
-        }}
-      >
-        {statusText}
-      </div>
+      {statusText && (
+        <div
+          className="hig-caption-1"
+          style={{
+            color: "var(--label-tertiary)",
+            fontFeatureSettings: '"tnum"',
+            padding: "0 0.125rem",
+          }}
+        >
+          {statusText}
+        </div>
+      )}
 
       {draft.asset && (
         <button
