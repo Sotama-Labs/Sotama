@@ -146,6 +146,12 @@ export type SwapAction = {
    *  detection. The on-chain handler doesn't enforce anything special
    *  about it — destination routing is the actual fund-flow primitive. */
   linkedDownstream?: string;
+  /** When true, the keeper resolves `amount_in` at fire time from the
+   *  PDA's input-ATA balance instead of using the static `amount`
+   *  field above. Only meaningful for the downstream of an
+   *  `inverted_pair` chain link. The on-chain program treats `amount`
+   *  as informational regardless (see execute_swap.rs:210). */
+  consumeUpstreamOutput?: boolean;
 };
 
 export type Action = TransferAction | SwapAction;
@@ -226,6 +232,10 @@ export type DraftSwap = {
    *  field is purely informational for the UI/chain visualizer and
    *  for cycle detection. */
   linkedDownstream?: string;
+  /** Mirror of `SwapAction.consumeUpstreamOutput` for the in-flight
+   *  draft state. UI only renders the toggle when the parent chain
+   *  link classifies as `inverted_pair`. */
+  consumeUpstreamOutput?: boolean;
 };
 
 export type DraftAction =
