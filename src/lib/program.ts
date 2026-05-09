@@ -133,6 +133,7 @@ export type OnChainActionSpec =
         minAmountOut: BN;
         linkedDownstream: PublicKey | null;
         linkFeeDeposit: BN;
+        consumeUpstreamOutput: boolean;
       };
     };
 
@@ -291,6 +292,7 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
   minIntervalSecs: number;
   enableFeeTopup: boolean;
   seedAmount: BN;
+  bridgeEnabled: boolean;
   nextNonce: bigint;
 }): Promise<{
   ix: TransactionInstruction;
@@ -307,6 +309,7 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
     minIntervalSecs,
     enableFeeTopup,
     seedAmount,
+    bridgeEnabled,
     nextNonce,
   } = params;
   const inputMint = action.swap.inputMint;
@@ -326,6 +329,7 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
       minIntervalSecs: number,
       enableFeeTopup: boolean,
       seedAmount: BN,
+      bridgeEnabled: boolean,
     ) => {
       accountsStrict: (a: Record<string, PublicKey>) => {
         instruction: () => Promise<TransactionInstruction>;
@@ -340,6 +344,7 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
       minIntervalSecs,
       enableFeeTopup,
       seedAmount,
+      bridgeEnabled,
     )
     .accountsStrict({
       owner,
