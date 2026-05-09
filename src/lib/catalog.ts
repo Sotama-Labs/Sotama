@@ -155,6 +155,7 @@ const ACCOUNT_SWAP: TriggerKindMeta = {
     account: null,
     token: { mode: "any" },
     amount: { mode: "any" },
+    amountDirection: "at_least",
   }),
 };
 

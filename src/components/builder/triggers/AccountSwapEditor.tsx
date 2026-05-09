@@ -96,13 +96,47 @@ export function AccountSwapEditor({
         />
       </FieldRow>
       {draft.amount.mode === "specific" && (
-        <AmountInput
-          value={draft.amount.value ?? null}
-          token={draft.token.mode === "specific" ? draft.token.value : null}
-          unit={draft.token.mode === "specific" ? draft.token.value?.symbol : "tokens"}
-          onChange={(v) => onChange({ ...draft, amount: { mode: "specific", value: v } })}
-          onCommit={ready ? onConfirm : undefined}
-        />
+        <>
+          <div
+            style={{
+              display: "inline-flex",
+              padding: "0.125rem",
+              background: "var(--fill-3)",
+              borderRadius: "0.5rem",
+              gap: "0.125rem",
+              width: "fit-content",
+            }}
+          >
+            {(["at_least", "at_most"] as const).map((d) => {
+              const sel = draft.amountDirection === d;
+              return (
+                <button
+                  key={d}
+                  onClick={() => onChange({ ...draft, amountDirection: d })}
+                  className="hig-footnote"
+                  style={{
+                    padding: "0.25rem 0.625rem",
+                    borderRadius: "0.375rem",
+                    background: sel ? "var(--bg-system)" : "transparent",
+                    color: sel ? "var(--label-primary)" : "var(--label-secondary)",
+                    fontWeight: 500,
+                    boxShadow: sel ? "var(--shadow-1)" : "none",
+                    transition: "background 120ms",
+                  }}
+                >
+                  {d === "at_least" ? "At least" : "At most"}
+                </button>
+              );
+            })}
+          </div>
+          <AmountInput
+            value={draft.amount.value ?? null}
+            token={draft.token.mode === "specific" ? draft.token.value : null}
+            unit={draft.token.mode === "specific" ? draft.token.value?.symbol : "tokens"}
+            onChange={(v) => onChange({ ...draft, amount: { mode: "specific", value: v } })}
+            onCommit={ready ? onConfirm : undefined}
+          />
+        </>
       )}
     </EditorShell>
   );

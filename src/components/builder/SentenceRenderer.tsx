@@ -81,17 +81,37 @@ export function renderTriggerContent(t: DraftTrigger): ReactNode {
           {renderTokenSpec(t.token)}
         </>
       );
-    case "account_swap":
+    case "account_swap": {
+      const tokenForAmount =
+        t.token.mode === "specific" ? t.token.value : null;
+      // Three shapes:
+      //   token any + amount any: "<addr> swaps any token"
+      //   token specific + amount any: "<addr> swaps <token>"
+      //   amount specific: "<addr> swaps at least|at most X <token>"
+      if (t.amount.mode === "any") {
+        return (
+          <>
+            {renderAccount(t.account)} {muted("swaps")}{" "}
+            {renderTokenSpec(t.token)}
+          </>
+        );
+      }
+      const directionLabel =
+        t.amountDirection === "at_most" ? "at most" : "at least";
       return (
         <>
           {renderAccount(t.account)} {muted("swaps")}{" "}
-          {renderTokenSpec(t.token)} {muted("for")}{" "}
-          {renderAmountSpec(
-            t.amount,
-            t.token.mode === "specific" ? t.token.value : null,
-          )}
+          {muted(directionLabel)}{" "}
+          {renderAmountSpec(t.amount, tokenForAmount)}
+          {t.token.mode === "any" ? (
+            <>
+              {" "}
+              {muted("of any token")}
+            </>
+          ) : null}
         </>
       );
+    }
     case "staking_reward_amount":
       return (
         <>

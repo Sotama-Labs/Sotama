@@ -51,6 +51,15 @@ function migrateAssetPriceTrigger(t: any): any {
   }
   return out;
 }
+/** Backfill `amountDirection` for account_swap triggers saved before
+ *  the field shipped. Old rules implicitly meant "at least X" so we
+ *  default to that. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function migrateAccountSwapTrigger(t: any): any {
+  if (t?.kind !== "account_swap") return t;
+  if (t.amountDirection === "at_least" || t.amountDirection === "at_most") return t;
+  return { ...t, amountDirection: "at_least" };
+}
 const DEFAULT_ACTION_OP: ActionOperator = "then";
 
 function fillOperators<T extends string>(
@@ -83,7 +92,9 @@ export function loadAutomations(): Automation[] {
       .filter((a) => a.schemaVersion === 3)
       .map((a) => ({
         ...a,
-        triggers: a.triggers.map(migrateAssetPriceTrigger),
+        triggers: a.triggers
+          .map(migrateAssetPriceTrigger)
+          .map(migrateAccountSwapTrigger),
         triggerOperators: fillOperators(
           a.triggerOperators,
           Math.max(0, a.triggers.length - 1),

@@ -73,11 +73,17 @@ export type AccountTransferTrigger = {
   token: SpecificOrAny<TokenRef>;
 };
 
+export type AmountDirection = "at_least" | "at_most";
+
 export type AccountSwapTrigger = {
   kind: "account_swap";
   account: string;
   token: SpecificOrAny<TokenRef>;
   amount: SpecificOrAny<number>;
+  /** Comparator on the swap size. Only meaningful when `amount.mode`
+   *  is `"specific"`; ignored when amount is `"any"`. Defaults to
+   *  `"at_least"` for triggers saved before this field shipped. */
+  amountDirection: AmountDirection;
 };
 
 export type StakingRewardAmountTrigger = {
@@ -183,6 +189,7 @@ export type DraftAccountSwap = {
   account: string | null;
   token: SpecificOrAny<TokenRef | null>;
   amount: SpecificOrAny<number | null>;
+  amountDirection: AmountDirection;
 };
 
 export type DraftStakingRewardAmount = {
