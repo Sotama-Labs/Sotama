@@ -133,6 +133,7 @@ pub fn handler(
     // its zero-init default of false). A leaked keeper key thus can't
     // route an SPL-only PDA's holdings through Jupiter.
     automation.fee_topup_enabled = enable_fee_topup;
+    automation.bridge_enabled = false;
 
     // Pull `total_deposit = amount_in × total_fires` from owner's ATA
     // into the PDA's input ATA. Each fire then spends `amount_in` of it.

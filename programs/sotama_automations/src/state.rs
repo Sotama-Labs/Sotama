@@ -308,14 +308,22 @@ pub struct Automation {
     /// so a leaked keeper signing key cannot route arbitrary token
     /// holdings through Jupiter. Only set true at create time on Swap
     /// rules where the user explicitly enables auto-fee-management.
-    /// Carved out of the original 32-byte `_reserved` budget: 1 byte
-    /// here, 31 bytes still reserved below.
+    /// Carved out of the original 32-byte `_reserved` budget: 2 bytes
+    /// (one for fee_topup_enabled, one for bridge_enabled below). Update
+    /// this comment if more bytes get carved.
     pub fee_topup_enabled: bool,
+    /// Per-PDA opt-in for `execute_bridge`. Authorizes the keeper to
+    /// route any non-input-mint token holdings of this PDA through
+    /// Jupiter into the input mint, with `min_amount_out` slippage
+    /// guard enforced on-chain. Set at create time by the chain
+    /// classifier when the upstream link is `bridge_required`.
+    pub bridge_enabled: bool,
     /// Reserved bytes for forward-compatible field additions. Lets a
     /// future v5 add small fields via `realloc` without forcing a
     /// fresh program ID (which v3→v4 already required). Was [u8; 32];
-    /// shrunk to 31 to make room for `fee_topup_enabled` above.
-    pub _reserved: [u8; 31],
+    /// shrunk to 30 to make room for `fee_topup_enabled` and
+    /// `bridge_enabled` above.
+    pub _reserved: [u8; 30],
 }
 
 impl Automation {
