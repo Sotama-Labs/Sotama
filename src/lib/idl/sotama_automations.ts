@@ -16,9 +16,9 @@ export type SotamaAutomations = {
     {
       "name": "adminCloseAutomation",
       "docs": [
-        "Admin-driven kill-switch close for SOL-action and stake-action",
-        "automations. Requires `Config.shutdown == true`. Owner gets the",
-        "SOL deposit (above-rent excess); treasury gets the rent_min."
+        "Admin-driven kill-switch close for SOL-action automations.",
+        "Requires `Config.shutdown == true`. Owner gets the SOL deposit",
+        "(above-rent excess); treasury gets the rent_min."
       ],
       "discriminator": [
         189,
@@ -419,7 +419,7 @@ export type SotamaAutomations = {
         "Close an SPL-action automation. Drains the PDA-owned ATA back",
         "to the owner's ATA, closes the ATA, then closes the PDA. Use",
         "this for `TransferSpl` actions; use `close_automation` for",
-        "SOL/stake and `close_automation_swap` for `Swap` actions."
+        "SOL actions and `close_automation_swap` for `Swap` actions."
       ],
       "discriminator": [
         222,
@@ -811,111 +811,6 @@ export type SotamaAutomations = {
         {
           "name": "tokenProgram",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "trigger",
-          "type": {
-            "defined": {
-              "name": "triggerSpec"
-            }
-          }
-        },
-        {
-          "name": "action",
-          "type": {
-            "defined": {
-              "name": "actionSpec"
-            }
-          }
-        },
-        {
-          "name": "cadence",
-          "type": {
-            "defined": {
-              "name": "cadence"
-            }
-          }
-        },
-        {
-          "name": "minIntervalSecs",
-          "type": "u32"
-        }
-      ]
-    },
-    {
-      "name": "createAutomationStake",
-      "discriminator": [
-        218,
-        192,
-        68,
-        169,
-        160,
-        20,
-        30,
-        108
-      ],
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "automation",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  117,
-                  116,
-                  111,
-                  109,
-                  97,
-                  116,
-                  105,
-                  111,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "owner"
-              },
-              {
-                "kind": "account",
-                "path": "config.automation_count",
-                "account": "config"
-              }
-            ]
-          }
         },
         {
           "name": "systemProgram",
@@ -1442,100 +1337,6 @@ export type SotamaAutomations = {
       ]
     },
     {
-      "name": "executeRestake",
-      "discriminator": [
-        44,
-        47,
-        178,
-        120,
-        58,
-        15,
-        210,
-        101
-      ],
-      "accounts": [
-        {
-          "name": "keeper",
-          "signer": true
-        },
-        {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "automation",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  117,
-                  116,
-                  111,
-                  109,
-                  97,
-                  116,
-                  105,
-                  111,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "automation.owner",
-                "account": "automation"
-              },
-              {
-                "kind": "account",
-                "path": "automation.nonce",
-                "account": "automation"
-              }
-            ]
-          }
-        },
-        {
-          "name": "stakeAccount",
-          "writable": true
-        },
-        {
-          "name": "voteAccount"
-        },
-        {
-          "name": "clockSysvar",
-          "address": "SysvarC1ock11111111111111111111111111111111"
-        },
-        {
-          "name": "stakeHistorySysvar",
-          "address": "SysvarStakeHistory1111111111111111111111111"
-        },
-        {
-          "name": "stakeConfig",
-          "address": "StakeConfig11111111111111111111111111111111"
-        },
-        {
-          "name": "stakeProgram",
-          "address": "Stake11111111111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "executeSwap",
       "discriminator": [
         56,
@@ -1630,102 +1431,6 @@ export type SotamaAutomations = {
         {
           "name": "outputAtaIndex",
           "type": "u8"
-        }
-      ]
-    },
-    {
-      "name": "executeWithdrawReward",
-      "discriminator": [
-        177,
-        123,
-        100,
-        94,
-        160,
-        211,
-        109,
-        7
-      ],
-      "accounts": [
-        {
-          "name": "keeper",
-          "signer": true
-        },
-        {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "automation",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  97,
-                  117,
-                  116,
-                  111,
-                  109,
-                  97,
-                  116,
-                  105,
-                  111,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "automation.owner",
-                "account": "automation"
-              },
-              {
-                "kind": "account",
-                "path": "automation.nonce",
-                "account": "automation"
-              }
-            ]
-          }
-        },
-        {
-          "name": "stakeAccount",
-          "writable": true
-        },
-        {
-          "name": "destination",
-          "writable": true
-        },
-        {
-          "name": "clockSysvar",
-          "address": "SysvarC1ock11111111111111111111111111111111"
-        },
-        {
-          "name": "stakeHistorySysvar",
-          "address": "SysvarStakeHistory1111111111111111111111111"
-        },
-        {
-          "name": "stakeProgram",
-          "address": "Stake11111111111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
         }
       ]
     },
@@ -2239,166 +1944,146 @@ export type SotamaAutomations = {
     },
     {
       "code": 6007,
-      "name": "wrongStakeAccount",
-      "msg": "Stake account does not match automation"
-    },
-    {
-      "code": 6008,
-      "name": "wrongVoteAccount",
-      "msg": "Vote account does not match automation"
-    },
-    {
-      "code": 6009,
       "name": "badComparator",
       "msg": "Token-price comparator is not 0 (below) or 1 (above)"
     },
     {
-      "code": 6010,
+      "code": 6008,
       "name": "badAccountKind",
       "msg": "Account-activity kind is not 0 (transfer) or 1 (swap)"
     },
     {
-      "code": 6011,
-      "name": "badStakingMode",
-      "msg": "Staking-reward mode is not 0 (amount) or 1 (time)"
-    },
-    {
-      "code": 6012,
+      "code": 6009,
       "name": "badPythExpo",
       "msg": "Pyth feed expo cannot be positive"
     },
     {
-      "code": 6013,
+      "code": 6010,
       "name": "badOracleSource",
       "msg": "AssetPrice oracle source byte is not a recognized provider"
     },
     {
-      "code": 6014,
+      "code": 6011,
       "name": "timeIntervalNotElapsed",
       "msg": "Time-based trigger fired before the configured interval elapsed"
     },
     {
-      "code": 6015,
+      "code": 6012,
       "name": "badCadence",
       "msg": "Cadence configuration is invalid (e.g. Repeat total = 0 or Until deadline not in the future)"
     },
     {
-      "code": 6016,
+      "code": 6013,
       "name": "minIntervalNotElapsed",
       "msg": "Minimum interval between fires has not elapsed yet"
     },
     {
-      "code": 6017,
+      "code": 6014,
       "name": "deadlineExpired",
       "msg": "Until-cadence deadline has passed; automation is now terminal"
     },
     {
-      "code": 6018,
+      "code": 6015,
       "name": "wrongInputMint",
       "msg": "Swap input mint does not match automation"
     },
     {
-      "code": 6019,
+      "code": 6016,
       "name": "wrongOutputMint",
       "msg": "Swap output mint does not match automation"
     },
     {
-      "code": 6020,
+      "code": 6017,
       "name": "badSwapAccounts",
       "msg": "Account count or layout does not match for swap action"
     },
     {
-      "code": 6021,
+      "code": 6018,
       "name": "wrongSwapProgram",
       "msg": "Inner swap instruction must target the Jupiter v6 program"
     },
     {
-      "code": 6022,
+      "code": 6019,
       "name": "slippageExceeded",
       "msg": "Output ATA balance did not increase by at least min_amount_out — slippage exceeded"
     },
     {
-      "code": 6023,
+      "code": 6020,
       "name": "swapUntilNotSupported",
       "msg": "Swap actions cannot use the Until cadence — total runs must be bounded so the deposit can cover all fires"
     },
     {
-      "code": 6024,
+      "code": 6021,
       "name": "depositOverflow",
       "msg": "Deposit amount overflowed during cadence multiplication"
     },
     {
-      "code": 6025,
+      "code": 6022,
       "name": "badSplAccounts",
       "msg": "Account count or layout does not match for SPL transfer"
     },
     {
-      "code": 6026,
-      "name": "badStakeAccounts",
-      "msg": "Account count or layout does not match for stake action"
-    },
-    {
-      "code": 6027,
+      "code": 6023,
       "name": "linkedFeePoolBelowRent",
       "msg": "Linked-rule fee deposit would push the PDA below rent-exempt minimum"
     },
     {
-      "code": 6028,
+      "code": 6024,
       "name": "linkFeeCapExceeded",
       "msg": "Fee debit exceeds MAX_LINK_FEE_LAMPORTS"
     },
     {
-      "code": 6029,
+      "code": 6025,
       "name": "missingDownstreamAccount",
       "msg": "Linked downstream automation account is missing or wrong"
     },
     {
-      "code": 6030,
+      "code": 6026,
       "name": "downstreamMismatch",
       "msg": "Linked downstream pubkey does not match the action's linked_downstream"
     },
     {
-      "code": 6031,
+      "code": 6027,
       "name": "badFeeTopupOutput",
       "msg": "Fee topup output mint must be wrapped SOL"
     },
     {
-      "code": 6032,
+      "code": 6028,
       "name": "badFeeTopupOwner",
       "msg": "Fee topup output ATA must be owned by the automation PDA"
     },
     {
-      "code": 6033,
+      "code": 6029,
       "name": "feeTopupNotEnabled",
       "msg": "Fee topup is not enabled for this automation"
     },
     {
-      "code": 6034,
+      "code": 6030,
       "name": "feeTooLarge",
       "msg": "Close fee exceeds protocol cap (0.1 SOL)"
     },
     {
-      "code": 6035,
+      "code": 6031,
       "name": "wrongTreasury",
       "msg": "Provided treasury account does not match Config.treasury"
     },
     {
-      "code": 6036,
+      "code": 6032,
       "name": "shutdown",
       "msg": "Program is in terminal shutdown — operation rejected"
     },
     {
-      "code": 6037,
+      "code": 6033,
       "name": "notShutdown",
       "msg": "Operation requires Config.shutdown = true (kill-switch only)"
     },
     {
-      "code": 6038,
+      "code": 6034,
       "name": "shutdownAlreadySet",
       "msg": "Shutdown is one-way; cannot be cleared once set"
     },
     {
-      "code": 6039,
+      "code": 6035,
       "name": "unauthorizedCloser",
       "msg": "Caller is neither the automation owner nor the program admin"
     }
@@ -2436,32 +2121,6 @@ export type SotamaAutomations = {
               {
                 "name": "amount",
                 "type": "u64"
-              }
-            ]
-          },
-          {
-            "name": "stakeRestake",
-            "fields": [
-              {
-                "name": "stakeAccount",
-                "type": "pubkey"
-              },
-              {
-                "name": "voteAccount",
-                "type": "pubkey"
-              }
-            ]
-          },
-          {
-            "name": "stakeWithdrawReward",
-            "fields": [
-              {
-                "name": "stakeAccount",
-                "type": "pubkey"
-              },
-              {
-                "name": "destination",
-                "type": "pubkey"
               }
             ]
           },
@@ -2670,24 +2329,23 @@ export type SotamaAutomations = {
           {
             "name": "triggerKind",
             "docs": [
-              "`0` = AccountActivity, `1` = AssetPrice, `2` = StakingReward — keeps",
-              "the event slim while still letting indexers route to the right",
-              "subscriber without re-fetching the account."
+              "`0` = AccountActivity, `1` = AssetPrice — keeps the event slim",
+              "while still letting indexers route to the right subscriber",
+              "without re-fetching the account."
             ],
             "type": "u8"
           },
           {
             "name": "actionKind",
             "docs": [
-              "`0` = TransferSol, `1` = TransferSpl, `2` = StakeRestake,",
-              "`3` = StakeWithdrawReward."
+              "`0` = TransferSol, `1` = TransferSpl, `4` = Swap."
             ],
             "type": "u8"
           },
           {
             "name": "triggerPubkey",
             "docs": [
-              "Watched / feed / stake account, depending on trigger_kind."
+              "Watched / feed account, depending on trigger_kind."
             ],
             "type": "pubkey"
           },
@@ -2719,9 +2377,7 @@ export type SotamaAutomations = {
           {
             "name": "amount",
             "docs": [
-              "Lamports moved (or token base units for SPL). Keeper-provided when",
-              "the amount is dynamic (stake reward), otherwise the static action",
-              "amount."
+              "Lamports moved (or token base units for SPL)."
             ],
             "type": "u64"
           },
@@ -2958,29 +2614,6 @@ export type SotamaAutomations = {
                   "dispatches to the matching adapter; on-chain is oracle-agnostic."
                 ],
                 "type": "u8"
-              }
-            ]
-          },
-          {
-            "name": "stakingReward",
-            "fields": [
-              {
-                "name": "stakeAccount",
-                "type": "pubkey"
-              },
-              {
-                "name": "mode",
-                "docs": [
-                  "`staking_mode::AMOUNT` or `staking_mode::TIME`."
-                ],
-                "type": "u8"
-              },
-              {
-                "name": "value",
-                "docs": [
-                  "AMOUNT mode: lamports threshold. TIME mode: interval in seconds."
-                ],
-                "type": "u64"
               }
             ]
           }

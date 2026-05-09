@@ -15,7 +15,6 @@ mod program;
 mod revalidate;
 mod shard;
 mod signer;
-mod stake_watcher;
 mod state;
 mod subscriber;
 mod types;
@@ -90,17 +89,6 @@ async fn main() -> Result<()> {
         })
     };
 
-    let stake_handle = {
-        let cfg = cfg.clone();
-        let set_rx = set_rx.clone();
-        let trigger_tx = trigger_tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = stake_watcher::run(cfg, set_rx, trigger_tx).await {
-                error!(error = %e, "stake_watcher task exited");
-            }
-        })
-    };
-
     // Optional Pyth Lazer watcher. Runs alongside price_watcher when
     // LAZER_ACCESS_TOKEN is set: Lazer fires sub-second, Hermes polls at
     // 12s as backup, executor's dedupe drops the slower duplicate. Returns
@@ -150,7 +138,6 @@ async fn main() -> Result<()> {
         _ = indexer_handle => error!("indexer task ended unexpectedly"),
         _ = subscriber_handle => error!("subscriber task ended unexpectedly"),
         _ = price_handle => error!("price_watcher task ended unexpectedly"),
-        _ = stake_handle => error!("stake_watcher task ended unexpectedly"),
         _ = lazer_handle => error!("lazer_watcher task ended unexpectedly"),
         _ = jupiter_price_handle => error!("jupiter_watcher task ended unexpectedly"),
         _ = executor_handle => error!("executor task ended unexpectedly"),

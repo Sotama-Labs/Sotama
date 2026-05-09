@@ -112,27 +112,6 @@ export function renderTriggerContent(t: DraftTrigger): ReactNode {
         </>
       );
     }
-    case "staking_reward_amount":
-      return (
-        <>
-          {muted("staking reward exceeds")}{" "}
-          <span style={{ fontFeatureSettings: '"tnum"' }}>
-            {t.threshold != null ? `${t.threshold} SOL` : "…"}
-          </span>
-        </>
-      );
-    case "staking_reward_time":
-      return (
-        <>
-          {muted("every")}{" "}
-          <span style={{ fontFeatureSettings: '"tnum"' }}>
-            {t.intervalDays != null
-              ? `${t.intervalDays} ${t.intervalDays === 1 ? "day" : "days"}`
-              : "…"}
-          </span>{" "}
-          {muted("of staking")}
-        </>
-      );
   }
 }
 
@@ -164,24 +143,6 @@ export function renderActionContent(a: DraftAction): ReactNode {
           {a.inputToken ? <TokenPill token={a.inputToken} /> : muted("input")}{" "}
           {muted("for")}{" "}
           {a.outputToken ? <TokenPill token={a.outputToken} /> : muted("output")}
-        </>
-      );
-    case "restake":
-      return <>{muted("restake the reward")}</>;
-    case "sell_for":
-      return (
-        <>
-          {muted("sell reward for")}{" "}
-          {a.outputToken ? <TokenPill token={a.outputToken} /> : muted("token")}
-        </>
-      );
-    case "transfer_reward":
-      return (
-        <>
-          {muted("transfer reward to")}{" "}
-          <span style={{ fontFamily: "var(--hig-mono)" }}>
-            {a.destination ? shortAddress(a.destination, 4) : "…"}
-          </span>
         </>
       );
   }

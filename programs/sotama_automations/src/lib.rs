@@ -92,22 +92,6 @@ pub mod sotama_automations {
         )
     }
 
-    pub fn create_automation_stake(
-        ctx: Context<CreateAutomationStake>,
-        trigger: TriggerSpec,
-        action: ActionSpec,
-        cadence: Cadence,
-        min_interval_secs: u32,
-    ) -> Result<()> {
-        instructions::create_automation_stake::handler(
-            ctx,
-            trigger,
-            action,
-            cadence,
-            min_interval_secs,
-        )
-    }
-
     pub fn create_automation_swap(
         ctx: Context<CreateAutomationSwap>,
         trigger: TriggerSpec,
@@ -134,10 +118,6 @@ pub mod sotama_automations {
         instructions::execute_automation_spl::handler(ctx)
     }
 
-    pub fn execute_restake(ctx: Context<ExecuteRestake>) -> Result<()> {
-        instructions::execute_restake::handler(ctx)
-    }
-
     pub fn execute_swap<'info>(
         ctx: Context<'_, '_, '_, 'info, ExecuteSwap<'info>>,
         inner_ix_data: Vec<u8>,
@@ -152,13 +132,6 @@ pub mod sotama_automations {
             input_ata_index,
             output_ata_index,
         )
-    }
-
-    pub fn execute_withdraw_reward(
-        ctx: Context<ExecuteWithdrawReward>,
-        amount: u64,
-    ) -> Result<()> {
-        instructions::execute_withdraw_reward::handler(ctx, amount)
     }
 
     /// Linked-rule fee debit. Bundled by the keeper before any
@@ -198,7 +171,7 @@ pub mod sotama_automations {
     /// Close an SPL-action automation. Drains the PDA-owned ATA back
     /// to the owner's ATA, closes the ATA, then closes the PDA. Use
     /// this for `TransferSpl` actions; use `close_automation` for
-    /// SOL/stake and `close_automation_swap` for `Swap` actions.
+    /// SOL actions and `close_automation_swap` for `Swap` actions.
     pub fn close_automation_spl(ctx: Context<CloseAutomationSpl>) -> Result<()> {
         instructions::close_automation_spl::handler(ctx)
     }
@@ -209,9 +182,9 @@ pub mod sotama_automations {
         instructions::close_automation_swap::handler(ctx)
     }
 
-    /// Admin-driven kill-switch close for SOL-action and stake-action
-    /// automations. Requires `Config.shutdown == true`. Owner gets the
-    /// SOL deposit (above-rent excess); treasury gets the rent_min.
+    /// Admin-driven kill-switch close for SOL-action automations.
+    /// Requires `Config.shutdown == true`. Owner gets the SOL deposit
+    /// (above-rent excess); treasury gets the rent_min.
     pub fn admin_close_automation(ctx: Context<AdminCloseAutomation>) -> Result<()> {
         instructions::admin_close_automation::handler(ctx)
     }

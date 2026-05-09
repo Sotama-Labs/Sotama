@@ -13,9 +13,6 @@
 //!     quotes) and re-evaluate the comparator. This is the trigger
 //!     where revalidation matters most: tens of seconds between fires
 //!     can see meaningful price moves.
-//!   * `StakingReward`  — re-fetch the stake account and re-check the
-//!     reward threshold. Each user's stake is independent so the more
-//!     common case is "still holds." Cheap re-check anyway.
 //!   * `AccountActivity` — always returns true. The trigger is
 //!     event-based: a watched-account tx already happened, there's no
 //!     condition to re-evaluate.
@@ -27,8 +24,6 @@
 use anyhow::Result;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::rent::Rent;
-use solana_stake_interface::state::StakeStateV2;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -79,11 +74,6 @@ pub async fn revalidate(rev: &RevalidateCtx, ctx: &AutomationCtx) -> Result<bool
             *source,
         )
         .await,
-        TriggerSpec::StakingReward {
-            stake_account,
-            mode,
-            value,
-        } => revalidate_staking_reward(rev, stake_account, *mode, *value).await,
     }
 }
 
@@ -112,7 +102,7 @@ async fn revalidate_asset_price(
             // `feed` is an SPL mint when source = JUPITER. The watcher
             // path is authoritative here; revalidate trusts the watcher's
             // green light and lets the fire proceed without a second
-            // probe (Jupiter rate-limits reward conservative usage).
+            // probe (Jupiter rate-limits favor conservative usage).
             return Ok(true);
         }
         unknown => {
@@ -147,38 +137,4 @@ async fn revalidate_asset_price(
         }
     };
     Ok(still)
-}
-
-async fn revalidate_staking_reward(
-    rev: &RevalidateCtx,
-    stake_account: &Pubkey,
-    mode: u8,
-    value: u64,
-) -> Result<bool> {
-    // TIME-mode triggers are gated by the on-chain `min_interval_secs`;
-    // we don't double-check off-chain. AMOUNT-mode requires the reward
-    // to still meet the threshold.
-    if mode == 1 {
-        return Ok(true);
-    }
-
-    let info = match rev.rpc.get_account(stake_account).await {
-        Ok(i) => i,
-        Err(e) => {
-            debug!(stake = %stake_account, error = %e, "revalidate: rpc fetch failed; passing through");
-            return Ok(true);
-        }
-    };
-    let lamports = info.lamports;
-    let rent_exempt = Rent::default().minimum_balance(info.data.len());
-    let stake_state: StakeStateV2 = match bincode::deserialize(&info.data) {
-        Ok(s) => s,
-        Err(_) => return Ok(true),
-    };
-    let delegation = match stake_state {
-        StakeStateV2::Stake(_, stake, _) => stake.delegation.stake,
-        _ => 0,
-    };
-    let reward = lamports.saturating_sub(delegation).saturating_sub(rent_exempt);
-    Ok(reward >= value)
 }

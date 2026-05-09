@@ -8,9 +8,7 @@ use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::rent::Rent;
 use solana_sdk::transaction::Transaction;
-use solana_stake_interface::state::StakeStateV2;
 use std::collections::{HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -22,8 +20,7 @@ use crate::config::KeeperConfig;
 use crate::jupiter::{self, JupiterClient};
 use crate::program::{
     associated_token_address, build_execute_automation_ix, build_execute_automation_spl_ix,
-    build_execute_restake_ix, build_execute_swap_ix, build_execute_withdraw_reward_ix,
-    config_pda, jupiter_program_id,
+    build_execute_swap_ix, config_pda, jupiter_program_id,
 };
 use crate::revalidate::{self, RevalidateCtx};
 use crate::signer::KeeperSigner;
@@ -31,7 +28,7 @@ use crate::state::ActionSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
 const PRIORITY_FEE_DEFAULT_MICROLAMPORTS: u64 = 50_000;
-/// Default compute-unit limit for SOL/SPL transfers and stake CPIs.
+/// Default compute-unit limit for SOL/SPL transfers.
 const COMPUTE_UNIT_LIMIT_DEFAULT: u32 = 200_000;
 /// Compute-unit limit for Jupiter swap relays. Routes through 3-4 AMMs
 /// can consume 600k-1.2M CU; we allocate the upper bound so a deeper
@@ -367,35 +364,6 @@ async fn build_action_ix(
                 &destination_ata,
             ))
         }
-        ActionSpec::StakeRestake {
-            stake_account,
-            vote_account,
-        } => Ok(build_execute_restake_ix(
-            program_id,
-            keeper,
-            config,
-            &ctx.pubkey,
-            stake_account,
-            vote_account,
-        )),
-        ActionSpec::StakeWithdrawReward {
-            stake_account,
-            destination,
-        } => {
-            let amount = compute_reward_lamports(rpc, stake_account).await?;
-            if amount == 0 {
-                return Err(anyhow!("withdraw_reward: stake account has no withdrawable reward"));
-            }
-            Ok(build_execute_withdraw_reward_ix(
-                program_id,
-                keeper,
-                config,
-                &ctx.pubkey,
-                stake_account,
-                destination,
-                amount,
-            ))
-        }
         ActionSpec::Swap {
             input_mint,
             output_mint,
@@ -483,24 +451,6 @@ async fn build_action_ix(
             ))
         }
     }
-}
-
-async fn compute_reward_lamports(rpc: &RpcClient, stake_account: &Pubkey) -> Result<u64> {
-    let info = rpc
-        .get_account(stake_account)
-        .await
-        .map_err(|e| anyhow!("fetch stake account: {e}"))?;
-    let lamports = info.lamports;
-    let rent_exempt = Rent::default().minimum_balance(info.data.len());
-    let stake_state: StakeStateV2 = bincode::deserialize(&info.data)
-        .map_err(|e| anyhow!("parse stake state: {e}"))?;
-    let delegation = match stake_state {
-        StakeStateV2::Stake(_, stake, _) => stake.delegation.stake,
-        _ => 0,
-    };
-    Ok(lamports
-        .saturating_sub(delegation)
-        .saturating_sub(rent_exempt))
 }
 
 async fn estimate_priority_fee(

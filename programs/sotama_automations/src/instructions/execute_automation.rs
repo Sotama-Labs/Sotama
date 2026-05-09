@@ -2,9 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::errors::SotamaError;
 use crate::events::AutomationExecuted;
-use crate::state::{
-    staking_mode, ActionSpec, Automation, Config, TriggerSpec,
-};
+use crate::state::{ActionSpec, Automation, Config};
 
 /// Execute a `TransferSol` automation. The keeper signer is verified
 /// against `Config.keeper`; the destination is verified against the
@@ -61,8 +59,6 @@ pub fn handler(ctx: Context<ExecuteAutomation>) -> Result<()> {
         SotamaError::WrongDestination
     );
 
-    enforce_time_window(&automation.trigger, automation.executed_at)?;
-
     let from_info = automation.to_account_info();
     let dest_info = ctx.accounts.destination.to_account_info();
 
@@ -88,22 +84,3 @@ pub fn handler(ctx: Context<ExecuteAutomation>) -> Result<()> {
     Ok(())
 }
 
-/// Time-based triggers (StakingReward mode = TIME) require at least
-/// `interval_seconds` to have elapsed since the last execution. This is
-/// the only on-chain trigger condition the program enforces — the keeper
-/// is trusted for everything else.
-pub fn enforce_time_window(trigger: &TriggerSpec, last_executed_at: i64) -> Result<()> {
-    if let TriggerSpec::StakingReward { mode, value, .. } = trigger {
-        if *mode == staking_mode::TIME {
-            let now = Clock::get()?.unix_timestamp;
-            // First execution: gate on automation creation time would be
-            // ideal, but `created_at` is the same field at creation, so we
-            // accept any first fire if `last_executed_at == 0`.
-            if last_executed_at > 0 {
-                let earliest = last_executed_at.saturating_add(*value as i64);
-                require!(now >= earliest, SotamaError::TimeIntervalNotElapsed);
-            }
-        }
-    }
-    Ok(())
-}

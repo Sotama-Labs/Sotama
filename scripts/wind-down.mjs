@@ -162,19 +162,18 @@ async function main() {
   }
 
   // ── Group by action kind ──────────────────────────────────────────
-  const buckets = { sol: [], spl: [], swap: [], stake: [] };
+  const buckets = { sol: [], spl: [], swap: [] };
   for (const a of targets) {
     const action = a.account.action;
     if (action.transferSol) buckets.sol.push(a);
     else if (action.transferSpl) buckets.spl.push(a);
     else if (action.swap) buckets.swap.push(a);
-    else if (action.stakeRestake || action.stakeWithdrawReward) buckets.stake.push(a);
     else {
       console.warn(`⚠  ${a.publicKey.toBase58()} has unrecognized action shape; skipping.`);
     }
   }
   console.log(
-    `  SOL action  : ${buckets.sol.length}\n  Stake action: ${buckets.stake.length}\n  SPL action  : ${buckets.spl.length}\n  Swap action : ${buckets.swap.length}`,
+    `  SOL action  : ${buckets.sol.length}\n  SPL action  : ${buckets.spl.length}\n  Swap action : ${buckets.swap.length}`,
   );
 
   if (DRY) {
@@ -192,9 +191,8 @@ async function main() {
   let closed = 0;
   let failed = 0;
 
-  // SOL + stake share the same admin_close_automation ix.
-  for (const a of [...buckets.sol, ...buckets.stake]) {
-    const sig = await closeOne(connection, program, provider, admin, configPda, config.treasury, a, "sol_or_stake");
+  for (const a of buckets.sol) {
+    const sig = await closeOne(connection, program, provider, admin, configPda, config.treasury, a, "sol");
     if (sig) closed++;
     else {
       failed++;

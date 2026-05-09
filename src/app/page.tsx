@@ -158,6 +158,7 @@ export default function Page() {
           : "Saved · pending on-chain support",
       );
     }
+
     setPendingDeposit(null);
     setComposeKey((n) => n + 1);
   };

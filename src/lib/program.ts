@@ -33,7 +33,7 @@ export const SOTAMA_PROGRAM_ID: PublicKey | null = SOTAMA_PROGRAM_ID_STR
 
 export const PROGRAM_CLUSTER: Cluster = CLUSTER;
 
-/* SPL/stake/sysvar program addresses used by the v2 ix builders. */
+/* SPL/sysvar program addresses used by the v2 ix builders. */
 export const SPL_TOKEN_PROGRAM_ID = new PublicKey(
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 );
@@ -107,13 +107,6 @@ export type OnChainTriggerSpec =
          *  the matching adapter based on this byte. */
         source: number;
       };
-    }
-  | {
-      stakingReward: {
-        stakeAccount: PublicKey;
-        mode: number;
-        value: BN;
-      };
     };
 
 export type OnChainActionSpec =
@@ -123,18 +116,6 @@ export type OnChainActionSpec =
         destination: PublicKey;
         mint: PublicKey;
         amount: BN;
-      };
-    }
-  | {
-      stakeRestake: {
-        stakeAccount: PublicKey;
-        voteAccount: PublicKey;
-      };
-    }
-  | {
-      stakeWithdrawReward: {
-        stakeAccount: PublicKey;
-        destination: PublicKey;
       };
     }
   | {
@@ -279,29 +260,6 @@ export async function buildCreateAutomationSwapIx(params: {
     })
     .instruction();
   return { ix, automation, ownerInputAta, automationInputAta };
-}
-
-export async function buildCreateAutomationStakeIx(params: {
-  program: Program<SotamaAutomations>;
-  owner: PublicKey;
-  trigger: OnChainTriggerSpec;
-  action: OnChainActionSpec;
-  cadence: OnChainCadence;
-  minIntervalSecs: number;
-  nextNonce: bigint;
-}): Promise<{ ix: TransactionInstruction; automation: PublicKey }> {
-  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
-  const automation = automationPda(owner, nextNonce, program.programId);
-  const ix = await program.methods
-    .createAutomationStake(trigger as never, action as never, cadence as never, minIntervalSecs)
-    .accountsStrict({
-      owner,
-      config: configPda(program.programId),
-      automation,
-      systemProgram: new PublicKey("11111111111111111111111111111111"),
-    })
-    .instruction();
-  return { ix, automation };
 }
 
 export async function buildCloseAutomationIx(params: {

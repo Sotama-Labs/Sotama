@@ -69,32 +69,6 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
     lastCheck: "12s ago",
     createdAt: new Date().toISOString(),
   },
-  {
-    id: "demo_3",
-    schemaVersion: 3,
-    triggers: [
-      {
-        kind: "staking_reward_amount",
-        stakeAccount: "DemoStakeAccount111111111111111111111111111",
-        threshold: 1,
-      },
-    ],
-    triggerOperators: [],
-    actions: [
-      {
-        kind: "restake",
-        stakeAccount: "DemoStakeAccount111111111111111111111111111",
-        voteAccount: "DemoVoteAccount11111111111111111111111111111",
-      },
-    ],
-    actionOperators: [],
-    cadence: { kind: "repeat", total: 12 },
-    minIntervalSecs: 60 * 60 * 24,
-    running: false,
-    runs: 1,
-    lastCheck: "2m ago",
-    createdAt: new Date().toISOString(),
-  },
 ];
 
 const SAMPLE_EXECUTIONS: Execution[] = [

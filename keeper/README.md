@@ -33,12 +33,6 @@ price_watcher.rs  Polls Pyth Hermes every PRICE_POLL_INTERVAL_SECS. For
                   cross-multiplication so there is no float drift at the
                   threshold.
 
-stake_watcher.rs  Polls stake accounts every STAKE_POLL_INTERVAL_SECS,
-                  parses StakeStateV2, computes withdrawable reward
-                  (lamports minus delegation minus rent), and fires
-                  Amount-mode or Time-mode triggers when the threshold or
-                  interval is reached.
-
 signer.rs         Two implementations behind one trait. TurnkeySigner is
                   the prod path: every signature is a P-256-stamped POST
                   to Turnkey's sign_raw_payload endpoint. LocalKeypairSigner
@@ -54,11 +48,10 @@ executor.rs       Drains the trigger channel. Per event, sorts matches by
 
 revalidate.rs     Mid-queue trigger re-evaluation. Between fires within the
                   same event, the executor calls revalidate() to confirm
-                  the condition still holds. TokenPrice re-polls Pyth (and
-                  Jupiter for non-USD quotes); StakingReward re-fetches the
-                  stake account; AccountActivity always passes since the
-                  watched event already happened. A false return skips the
-                  rest of the batch.
+                  the condition still holds. AssetPrice re-polls Pyth (and
+                  Jupiter for non-USD quotes); AccountActivity always
+                  passes since the watched event already happened. A
+                  false return skips the rest of the batch.
 
 program.rs        Anchor instruction builders for the execute_* family,
                   plus PDA derivation helpers.
@@ -72,9 +65,9 @@ types.rs          AutomationCtx (the executor's snapshot of an active
                   rule) and TriggerEvent (the message shipped over the
                   trigger channel).
 
-main.rs           Loads config, seeds the indexer, spawns five tasks
-                  (indexer, subscriber, price_watcher, stake_watcher,
-                  executor), awaits ctrl-c.
+main.rs           Loads config, seeds the indexer, spawns the watcher
+                  tasks (indexer, subscriber, price_watcher, lazer
+                  optional, jupiter, executor), awaits ctrl-c.
 ```
 
 ## Cross-user queue ordering
@@ -141,7 +134,6 @@ Optional tuning (defaults are sensible):
 |---|---|---|
 | `RECONCILE_INTERVAL_SECS` | `60` | indexer tick. |
 | `PRICE_POLL_INTERVAL_SECS` | `12` | price_watcher tick. |
-| `STAKE_POLL_INTERVAL_SECS` | `60` | stake_watcher tick. |
 | `SHARD_SIZE` | `40` | accounts per transactionSubscribe shard. |
 | `SWAP_SLIPPAGE_BPS` | `50` | Jupiter slippage for action swaps and price-ratio quote probes. |
 | `KEEPER_FEE_LAMPORTS` | `5000` | per-fire link fee for downstream-of-link automations. |

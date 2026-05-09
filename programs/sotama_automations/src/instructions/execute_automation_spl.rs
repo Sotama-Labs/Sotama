@@ -3,7 +3,6 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer
 
 use crate::errors::SotamaError;
 use crate::events::AutomationExecuted;
-use crate::instructions::execute_automation::enforce_time_window;
 use crate::state::{ActionSpec, Automation, Config};
 
 #[derive(Accounts)]
@@ -79,8 +78,6 @@ pub fn handler(ctx: Context<ExecuteAutomationSpl>) -> Result<()> {
         destination_wallet,
         SotamaError::WrongDestination
     );
-
-    enforce_time_window(&automation.trigger, automation.executed_at)?;
 
     // Sign as the automation PDA.
     let owner_key = automation.owner;

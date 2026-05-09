@@ -86,7 +86,7 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
     // Validate: action must be TransferSpl with this mint, OR the
     // mint passed is consistent with whatever SPL-side action was
     // configured. Reject if the action isn't SPL — those should go
-    // through close_automation (SOL/stake) or close_automation_swap.
+    // through close_automation (SOL) or close_automation_swap.
     let expected_mint = match &automation.action {
         ActionSpec::TransferSpl { mint, .. } => *mint,
         _ => return err!(SotamaError::ActionMismatch),

@@ -16,7 +16,6 @@ import {
   associatedTokenAddress,
   buildCreateAutomationIx,
   buildCreateAutomationSplIx,
-  buildCreateAutomationStakeIx,
   buildCreateAutomationSwapIx,
   cadenceToOnChain,
   getProgram,
@@ -46,9 +45,8 @@ export type OnChainResult = {
 };
 
 /** Sum the upfront-deposit amount per token across all actions. */
-function depositByToken(actions: Action[]): { totals: Record<string, number>; staking: boolean } {
+function depositByToken(actions: Action[]): { totals: Record<string, number> } {
   const totals: Record<string, number> = {};
-  let staking = false;
   for (const a of actions) {
     switch (a.kind) {
       case "transfer":
@@ -57,14 +55,9 @@ function depositByToken(actions: Action[]): { totals: Record<string, number>; st
       case "swap":
         totals[a.inputToken.symbol] = (totals[a.inputToken.symbol] || 0) + a.amount;
         break;
-      case "restake":
-      case "sell_for":
-      case "transfer_reward":
-        staking = true;
-        break;
     }
   }
-  return { totals, staking };
+  return { totals };
 }
 
 /** Convert a Pyth feed ID (32-byte hex) to a PublicKey-shaped wrapper.
@@ -101,11 +94,6 @@ type SplSpec = {
   ownerAta: PublicKey;
   destinationAta: PublicKey;
 };
-type StakeSpec = {
-  kind: "stake";
-  trigger: OnChainTriggerSpec;
-  action: OnChainActionSpec;
-};
 type SwapSpec = {
   kind: "swap";
   trigger: OnChainTriggerSpec;
@@ -126,7 +114,7 @@ type SwapSpec = {
   ownerInputAta: PublicKey;
   destinationOutputAta: PublicKey;
 };
-type OnChainSpec = SolSpec | SplSpec | StakeSpec | SwapSpec;
+type OnChainSpec = SolSpec | SplSpec | SwapSpec;
 
 /** Map UI Trigger → on-chain TriggerSpec. Returns null if shape isn't yet
  *  supported on-chain (or has invalid fields). */
@@ -247,27 +235,14 @@ function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
         assetPrice: { feed, quoteMint, comparator, threshold, expo, source },
       };
     }
-    case "staking_reward_amount": {
-      const stake = tryPubkey(t.stakeAccount);
-      if (!stake) return null;
-      const value = new BN(Math.round(t.threshold * LAMPORTS_PER_SOL));
-      return { stakingReward: { stakeAccount: stake, mode: 0, value } };
-    }
-    case "staking_reward_time": {
-      const stake = tryPubkey(t.stakeAccount);
-      if (!stake) return null;
-      const value = new BN(t.intervalDays * 86_400);
-      return { stakingReward: { stakeAccount: stake, mode: 1, value } };
-    }
   }
 }
 
-/** Map UI Action → on-chain ActionSpec + ix routing kind. Returns null
- *  for unsupported (sell_for is one-shot only and not yet wired). */
+/** Map UI Action → on-chain ActionSpec + ix routing kind. */
 function buildActionSpec(
   owner: PublicKey,
   a: Action
-): { kind: "sol" | "spl" | "stake" | "swap"; spec: OnChainActionSpec } | null {
+): { kind: "sol" | "spl" | "swap"; spec: OnChainActionSpec } | null {
   switch (a.kind) {
     case "transfer": {
       const destination = tryPubkey(a.destination);
@@ -335,29 +310,7 @@ function buildActionSpec(
         },
       };
     }
-    case "sell_for":
-      return null;
-    case "restake": {
-      const stake = tryPubkey(a.stakeAccount);
-      const vote = tryPubkey(a.voteAccount);
-      if (!stake || !vote) return null;
-      return {
-        kind: "stake",
-        spec: { stakeRestake: { stakeAccount: stake, voteAccount: vote } },
-      };
-    }
-    case "transfer_reward": {
-      const stake = tryPubkey(a.stakeAccount);
-      const destination = tryPubkey(a.destination);
-      if (!stake || !destination) return null;
-      return {
-        kind: "stake",
-        spec: { stakeWithdrawReward: { stakeAccount: stake, destination } },
-      };
-    }
   }
-  // exhaustiveness
-  return null;
 }
 
 /** Compose the first-trigger × first-action shape into an OnChainSpec. */
@@ -423,7 +376,7 @@ function getOnChainSpec(
       ),
     };
   }
-  return { kind: "stake", trigger, action: action.spec };
+  return null;
 }
 
 function FeeRow({ label, sub, value }: { label: string; sub: string; value: string }) {
@@ -500,10 +453,10 @@ export function DepositSheet({
   if (!open || !automation) return null;
 
   const actionsList = automation.actions;
-  const { totals, staking } = depositByToken(actionsList);
+  const { totals } = depositByToken(actionsList);
   const tokens = Object.keys(totals);
 
-  const primaryToken = tokens.sort((a, b) => totals[b] - totals[a])[0] || (staking ? "SOL" : "—");
+  const primaryToken = tokens.sort((a, b) => totals[b] - totals[a])[0] || "—";
   const primaryAmount = totals[primaryToken] || 0;
 
   const networkFeeSol = SOLANA_NETWORK_FEE_SOL * actionsList.length;
@@ -563,12 +516,9 @@ export function DepositSheet({
     }
   };
 
-  const summary =
-    tokens.length === 0
-      ? "Funded by staking rewards. No upfront deposit needed."
-      : onChainSpec
-      ? "Funds release when the trigger fires."
-      : "Saved locally — keeper coverage for this rule shape lands in the next release.";
+  const summary = onChainSpec
+    ? "Funds release when the trigger fires."
+    : "Saved locally — keeper coverage for this rule shape lands in the next release.";
 
   return (
     <div
@@ -945,17 +895,9 @@ async function sendCreateAutomation(
     tx.add(builtBefore.ix);
     automation = builtBefore.automation;
   } else {
-    const built = await buildCreateAutomationStakeIx({
-      program,
-      owner,
-      trigger: spec.trigger,
-      action: spec.action,
-      cadence: onChainCadence,
-      minIntervalSecs,
-      nextNonce: nonce,
-    });
-    tx.add(built.ix);
-    automation = built.automation;
+    // Exhaustiveness — `spec.kind` is narrowed to `never` here. Throwing
+    // keeps `automation` provably-assigned for the type checker.
+    throw new Error(`unsupported on-chain spec kind`);
   }
 
   tx.feePayer = owner;

@@ -15,7 +15,6 @@ solana-sdk = "2.2"
 solana-client = "2.2"
 solana-account-decoder = "2.2"
 solana-transaction-status = "2.2"
-solana-stake-interface = "1.2"
 
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "signal", "fs"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }

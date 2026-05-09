@@ -30,10 +30,6 @@ import {
  *     ATA → owner's ATA, closes ATA, closes PDA.
  *   - `swap`: `close_automation_swap` — drains automation's input
  *     ATA → owner's input ATA, closes input ATA, closes PDA.
- *   - `restake`, `transfer_reward`, `sell_for`: stake-side actions
- *     don't escrow tokens in the PDA's ATA; plain `close_automation`
- *     suffices. The destination ATA owned by the user wallet is not
- *     touched.
  *
  * For SPL/swap closes the owner's destination ATA is idempotent-created
  * in the same tx so the close-handler's `Account<TokenAccount>` decode
@@ -108,8 +104,7 @@ export async function closeAutomationOnChain(
     tx.add(prependOwnerAtaCreate(owner, built.ownerInputAta, inputMint));
     tx.add(built.ix);
   } else {
-    // SOL transfer, restake, transfer_reward, sell_for — no ATA
-    // refund needed; plain close.
+    // SOL transfer — no ATA refund needed; plain close.
     const ix = await buildCloseAutomationIx({ program, owner, automation, treasury });
     tx.add(ix);
   }

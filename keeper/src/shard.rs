@@ -9,8 +9,8 @@ pub struct Shard {
 }
 
 /// Account-trigger shards (used by `subscriber.rs` for transactionSubscribe).
-/// Price and stake monitors poll directly without the 40-account-cap, so
-/// they don't need sharding.
+/// Price monitors poll directly without the 40-account-cap, so they
+/// don't need sharding.
 pub fn shards(set: &WatchedSet, shard_size: usize) -> Vec<Shard> {
     let mut keys = set.account_watch_keys();
     keys.sort();

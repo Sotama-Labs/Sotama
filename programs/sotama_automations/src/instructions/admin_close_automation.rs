@@ -4,14 +4,12 @@ use crate::errors::SotamaError;
 use crate::events::AutomationClosed;
 use crate::state::{Automation, Config};
 
-/// Admin-driven close for `TransferSol` and stake-action automations.
-/// Only callable when `Config.shutdown == true` — i.e. the kill switch
-/// has been pulled and the wind-down is in progress.
+/// Admin-driven close for `TransferSol` automations. Only callable
+/// when `Config.shutdown == true` — i.e. the kill switch has been
+/// pulled and the wind-down is in progress.
 ///
 /// Lamport split:
 ///   * Owner receives `pda_lamports - rent_min` (the user's SOL deposit).
-///     For stake actions whose PDA never held more than rent, the owner
-///     receives 0 — those rules carried no SOL custody.
 ///   * Treasury receives the PDA's rent-exempt minimum.
 ///
 /// **Auth:** the `admin` signer must equal `Config.admin`. Owners are

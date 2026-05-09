@@ -131,7 +131,7 @@ pub fn handler(
     // Opt-in for `execute_fee_topup`. Default false — only swap rules
     // can opt in (the other create_automation_* handlers leave this at
     // its zero-init default of false). A leaked keeper key thus can't
-    // route an SPL-only or stake-only PDA's holdings through Jupiter.
+    // route an SPL-only PDA's holdings through Jupiter.
     automation.fee_topup_enabled = enable_fee_topup;
 
     // Pull `total_deposit = amount_in × total_fires` from owner's ATA

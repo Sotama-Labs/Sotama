@@ -18,15 +18,13 @@ use crate::types::AutomationCtx;
 
 /// Sub-classification of active automations by trigger kind. Each map's
 /// key is the off-chain monitor's "primary watch target" — the watched
-/// account for AccountActivity, the Pyth feed for AssetPrice, the stake
-/// account for StakingReward. Values are lists because multiple
-/// automations can share the same target.
+/// account for AccountActivity, the Pyth feed for AssetPrice. Values
+/// are lists because multiple automations can share the same target.
 #[derive(Debug, Clone, Default)]
 pub struct WatchedSet {
     pub by_pubkey: HashMap<Pubkey, AutomationCtx>,
     pub account_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
     pub price_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
-    pub stake_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
 }
 
 impl WatchedSet {
@@ -40,9 +38,6 @@ impl WatchedSet {
                 }
                 crate::state::TriggerSpec::AssetPrice { feed, .. } => {
                     s.price_triggers.entry(*feed).or_default().push(ctx);
-                }
-                crate::state::TriggerSpec::StakingReward { stake_account, .. } => {
-                    s.stake_triggers.entry(*stake_account).or_default().push(ctx);
                 }
             }
         }
@@ -77,10 +72,6 @@ impl WatchedSet {
         out
     }
 
-    pub fn stake_accounts(&self) -> Vec<Pubkey> {
-        self.stake_triggers.keys().copied().collect()
-    }
-
     pub fn account_matches(&self, watched: &Pubkey) -> &[AutomationCtx] {
         self.account_triggers
             .get(watched)
@@ -111,13 +102,6 @@ impl WatchedSet {
                 .collect(),
             None => Vec::new(),
         }
-    }
-
-    pub fn stake_matches(&self, stake_account: &Pubkey) -> &[AutomationCtx] {
-        self.stake_triggers
-            .get(stake_account)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
     }
 
     /// Distinct quote mints across all `AssetPrice` triggers — the
@@ -161,11 +145,6 @@ impl WatchedSet {
                     crate::state::TriggerSpec::AssetPrice { feed, source, .. } => {
                         (1u8, *feed, *source)
                     }
-                    crate::state::TriggerSpec::StakingReward {
-                        stake_account,
-                        mode,
-                        ..
-                    } => (2u8, *stake_account, *mode),
                 };
                 (*pk, kind, target, source)
             })
@@ -211,7 +190,6 @@ pub async fn run(cfg: Arc<KeeperConfig>, set_tx: watch::Sender<WatchedSet>) -> R
                             total = next_keys.len(),
                             account_targets = new_set.account_triggers.len(),
                             price_targets = new_set.price_triggers.len(),
-                            stake_targets = new_set.stake_triggers.len(),
                             "indexer: watched-set changed"
                         );
                         for p in &added {

@@ -73,8 +73,6 @@ const outPath = resolve(root, "keeper/turnkey-policy.json");
 const EXPECTED_IXS = [
   "execute_automation",
   "execute_automation_spl",
-  "execute_restake",
-  "execute_withdraw_reward",
   "execute_swap",
   "execute_link_fee_debit",
   "execute_fee_topup",

@@ -31,7 +31,6 @@ primary_region = 'iad'
   RECONCILE_INTERVAL_SECS = '60'
   RUST_LOG = 'info,sotama_keeper=debug'
   SHARD_SIZE = '40'
-  STAKE_POLL_INTERVAL_SECS = '60'
   SWAP_SLIPPAGE_BPS = '50'
 
 [[vm]]

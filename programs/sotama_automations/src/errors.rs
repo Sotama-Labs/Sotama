@@ -16,16 +16,10 @@ pub enum SotamaError {
     ActionMismatch,
     #[msg("SPL mint mismatch")]
     WrongMint,
-    #[msg("Stake account does not match automation")]
-    WrongStakeAccount,
-    #[msg("Vote account does not match automation")]
-    WrongVoteAccount,
     #[msg("Token-price comparator is not 0 (below) or 1 (above)")]
     BadComparator,
     #[msg("Account-activity kind is not 0 (transfer) or 1 (swap)")]
     BadAccountKind,
-    #[msg("Staking-reward mode is not 0 (amount) or 1 (time)")]
-    BadStakingMode,
     #[msg("Pyth feed expo cannot be positive")]
     BadPythExpo,
     #[msg("AssetPrice oracle source byte is not a recognized provider")]
@@ -54,8 +48,6 @@ pub enum SotamaError {
     DepositOverflow,
     #[msg("Account count or layout does not match for SPL transfer")]
     BadSplAccounts,
-    #[msg("Account count or layout does not match for stake action")]
-    BadStakeAccounts,
     #[msg("Linked-rule fee deposit would push the PDA below rent-exempt minimum")]
     LinkedFeePoolBelowRent,
     #[msg("Fee debit exceeds MAX_LINK_FEE_LAMPORTS")]

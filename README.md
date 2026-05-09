@@ -8,8 +8,8 @@ The trust model is keeper-as-signer with on-chain invariants. The keeper signs t
 
 ## What you can build
 
-- **Triggers**: watched-account activity, Pyth price thresholds (USD or ratio against another mint), staking reward thresholds.
-- **Actions**: SOL transfer, SPL transfer, Jupiter swap, stake re-delegation, withdraw stake reward.
+- **Triggers**: watched-account activity, Pyth price thresholds (USD or ratio against another mint).
+- **Actions**: SOL transfer, SPL transfer, Jupiter swap.
 - **Control flow**: fire once, fire N times, fire repeatedly until a deadline. Loops respect a configurable minimum interval between fires.
 
 ## Architecture
@@ -27,7 +27,7 @@ The trust model is keeper-as-signer with on-chain invariants. The keeper signs t
 
 **Onchain (`programs/sotama_automations/`)** is an Anchor program. Each automation lives in its own PDA that owns the user's deposit. Every keeper-callable instruction checks the configured keeper signer, the cadence gate, and the action invariants (ATA mints, destination owner, slippage floor, Jupiter program id) before doing anything. There is a one-way kill switch on the Config that, once flipped, blocks all new fires and lets the admin run a wind-down that refunds deposits to users and routes the rent to a configured treasury.
 
-**Keeper (`keeper/`)** is a long-running Rust binary. It indexes program accounts via Helius `getProgramAccounts`, subscribes to transaction events over WebSocket, polls Pyth Hermes for price feeds, and reads stake account state on a tick. When a trigger fires it builds the right execute instruction, calls Jupiter's `/build` for swap routing if needed, and submits the transaction through Helius Sender. The signing key never sits on disk: every signature is a round trip to a Turnkey HSM.
+**Keeper (`keeper/`)** is a long-running Rust binary. It indexes program accounts via Helius `getProgramAccounts`, subscribes to transaction events over WebSocket, and polls Pyth Hermes for price feeds. When a trigger fires it builds the right execute instruction, calls Jupiter's `/build` for swap routing if needed, and submits the transaction through Helius Sender. The signing key never sits on disk: every signature is a round trip to a Turnkey HSM.
 
 **Frontend (`src/`)** is a Next.js app. The rule builder maps cleanly to the on-chain `TriggerSpec`, `ActionSpec`, and `Cadence` enums, so what you click is what gets stored.
 

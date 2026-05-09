@@ -63,13 +63,8 @@ const MAX_CHAIN_LENGTH = 5;
 import { AssetPriceEditor } from "./triggers/AssetPriceEditor";
 import { AccountTransferEditor } from "./triggers/AccountTransferEditor";
 import { AccountSwapEditor } from "./triggers/AccountSwapEditor";
-import { StakingRewardAmountEditor } from "./triggers/StakingRewardAmountEditor";
-import { StakingRewardTimeEditor } from "./triggers/StakingRewardTimeEditor";
 import { TransferEditor } from "./actions/TransferEditor";
 import { SwapEditor } from "./actions/SwapEditor";
-import { RestakeEditor } from "./actions/RestakeEditor";
-import { SellForEditor } from "./actions/SellForEditor";
-import { TransferRewardEditor } from "./actions/TransferRewardEditor";
 import { ControlFlowChip } from "./ControlFlowChip";
 
 type Side = "if" | "then";
@@ -127,10 +122,6 @@ function triggerReady(t: DraftTrigger): boolean {
         (t.amount.mode === "any" ||
           (t.amount.value != null && t.amount.value > 0))
       );
-    case "staking_reward_amount":
-      return t.threshold != null && t.threshold > 0;
-    case "staking_reward_time":
-      return t.intervalDays != null && t.intervalDays > 0;
   }
 }
 
@@ -149,12 +140,6 @@ function actionReady(a: DraftAction): boolean {
         a.amount != null &&
         a.amount > 0
       );
-    case "restake":
-      return true;
-    case "sell_for":
-      return a.outputToken != null;
-    case "transfer_reward":
-      return !!a.destination;
   }
 }
 
@@ -417,24 +402,6 @@ export function ConditionalBuilder({
               onConfirm={onConfirm}
             />
           );
-        case "staking_reward_amount":
-          return (
-            <StakingRewardAmountEditor
-              draft={t}
-              onChange={(next) => updateTriggerAt(open.index, next)}
-              onBack={onBack}
-              onConfirm={onConfirm}
-            />
-          );
-        case "staking_reward_time":
-          return (
-            <StakingRewardTimeEditor
-              draft={t}
-              onChange={(next) => updateTriggerAt(open.index, next)}
-              onBack={onBack}
-              onConfirm={onConfirm}
-            />
-          );
         case null:
           return null;
       }
@@ -455,33 +422,6 @@ export function ConditionalBuilder({
         case "swap":
           return (
             <SwapEditor
-              draft={a}
-              onChange={(next) => updateActionAt(open.index, next)}
-              onBack={onBack}
-              onConfirm={onConfirm}
-            />
-          );
-        case "restake":
-          return (
-            <RestakeEditor
-              draft={a}
-              onChange={(next) => updateActionAt(open.index, next)}
-              onBack={onBack}
-              onConfirm={onConfirm}
-            />
-          );
-        case "sell_for":
-          return (
-            <SellForEditor
-              draft={a}
-              onChange={(next) => updateActionAt(open.index, next)}
-              onBack={onBack}
-              onConfirm={onConfirm}
-            />
-          );
-        case "transfer_reward":
-          return (
-            <TransferRewardEditor
               draft={a}
               onChange={(next) => updateActionAt(open.index, next)}
               onBack={onBack}

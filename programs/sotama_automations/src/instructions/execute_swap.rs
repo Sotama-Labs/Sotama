@@ -7,7 +7,6 @@ use anchor_spl::token::TokenAccount;
 
 use crate::errors::SotamaError;
 use crate::events::AutomationExecuted;
-use crate::instructions::execute_automation::enforce_time_window;
 use crate::jupiter::{self, SwapAccountMeta};
 use crate::state::{ActionSpec, Automation, Config};
 
@@ -106,8 +105,6 @@ pub fn handler<'info>(
         ),
         _ => return err!(SotamaError::ActionMismatch),
     };
-
-    enforce_time_window(&automation.trigger, automation.executed_at)?;
 
     // Sanity-check the relay payload. The remaining_accounts layout is:
     //   [0..inner_ix_account_metas.len()) — the Jupiter inner ix accounts

@@ -86,27 +86,10 @@ export type AccountSwapTrigger = {
   amountDirection: AmountDirection;
 };
 
-export type StakingRewardAmountTrigger = {
-  kind: "staking_reward_amount";
-  /** Stake account being monitored. The owner must have authorized the
-   *  automation PDA as the stake account's withdraw and/or staker
-   *  authority before the action can fire on-chain. */
-  stakeAccount: string;
-  threshold: number;
-};
-
-export type StakingRewardTimeTrigger = {
-  kind: "staking_reward_time";
-  stakeAccount: string;
-  intervalDays: number;
-};
-
 export type Trigger =
   | AssetPriceTrigger
   | AccountTransferTrigger
-  | AccountSwapTrigger
-  | StakingRewardAmountTrigger
-  | StakingRewardTimeTrigger;
+  | AccountSwapTrigger;
 
 export type TriggerKind = Trigger["kind"];
 
@@ -132,38 +115,7 @@ export type SwapAction = {
   linkedDownstream?: string;
 };
 
-export type RestakeAction = {
-  kind: "restake";
-  /** Stake account whose balance gets re-delegated. The PDA must be the
-   *  staker authority (set by the owner before activating). */
-  stakeAccount: string;
-  /** Vote account to delegate to. Re-delegating to the same vote account
-   *  the stake is already delegated to is the standard "compound rewards"
-   *  flow on Solana — `DelegateStake` re-stakes the full balance,
-   *  including accrued rewards. */
-  voteAccount: string;
-};
-
-export type SellForAction = {
-  kind: "sell_for";
-  outputToken: TokenRef;
-};
-
-/** Staking-only: route the reward to an external destination. Token + amount
- *  are implicit (the staking reward in SOL); the user picks the stake account
- *  to monitor and the destination wallet to receive the reward. */
-export type TransferRewardAction = {
-  kind: "transfer_reward";
-  stakeAccount: string;
-  destination: string;
-};
-
-export type Action =
-  | TransferAction
-  | SwapAction
-  | RestakeAction
-  | SellForAction
-  | TransferRewardAction;
+export type Action = TransferAction | SwapAction;
 
 export type ActionKind = Action["kind"];
 
@@ -192,25 +144,11 @@ export type DraftAccountSwap = {
   amountDirection: AmountDirection;
 };
 
-export type DraftStakingRewardAmount = {
-  kind: "staking_reward_amount";
-  stakeAccount: string | null;
-  threshold: number | null;
-};
-
-export type DraftStakingRewardTime = {
-  kind: "staking_reward_time";
-  stakeAccount: string | null;
-  intervalDays: number | null;
-};
-
 export type DraftTrigger =
   | { kind: null }
   | DraftAssetPrice
   | DraftAccountTransfer
-  | DraftAccountSwap
-  | DraftStakingRewardAmount
-  | DraftStakingRewardTime;
+  | DraftAccountSwap;
 
 export type DraftTransfer = {
   kind: "transfer";
@@ -226,30 +164,10 @@ export type DraftSwap = {
   amount: number | null;
 };
 
-export type DraftRestake = {
-  kind: "restake";
-  stakeAccount: string | null;
-  voteAccount: string | null;
-};
-
-export type DraftSellFor = {
-  kind: "sell_for";
-  outputToken: TokenRef | null;
-};
-
-export type DraftTransferReward = {
-  kind: "transfer_reward";
-  stakeAccount: string | null;
-  destination: string | null;
-};
-
 export type DraftAction =
   | { kind: null }
   | DraftTransfer
-  | DraftSwap
-  | DraftRestake
-  | DraftSellFor
-  | DraftTransferReward;
+  | DraftSwap;
 
 /* ── Cadence (control-flow) ────────────────────────────────────────── */
 
@@ -389,18 +307,6 @@ export function isTriggerComplete(draft: DraftTrigger): draft is Trigger {
         (draft.amount.mode === "any" ||
           (draft.amount.value != null && draft.amount.value > 0))
       );
-    case "staking_reward_amount":
-      return (
-        !!draft.stakeAccount &&
-        draft.threshold != null &&
-        draft.threshold > 0
-      );
-    case "staking_reward_time":
-      return (
-        !!draft.stakeAccount &&
-        draft.intervalDays != null &&
-        draft.intervalDays > 0
-      );
   }
 }
 
@@ -422,12 +328,6 @@ export function isActionComplete(draft: DraftAction): draft is Action {
         draft.amount != null &&
         draft.amount > 0
       );
-    case "restake":
-      return !!draft.stakeAccount && !!draft.voteAccount;
-    case "sell_for":
-      return draft.outputToken != null;
-    case "transfer_reward":
-      return !!draft.stakeAccount && !!draft.destination;
   }
 }
 

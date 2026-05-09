@@ -62,12 +62,6 @@ const trigger = {
   ) => ({
     assetPrice: { feed, quoteMint, comparator: 1, threshold, expo, source },
   }),
-  stakingAmount: (stake: PublicKey, lamports: BN) => ({
-    stakingReward: { stakeAccount: stake, mode: 0, value: lamports },
-  }),
-  stakingTime: (stake: PublicKey, intervalSeconds: BN) => ({
-    stakingReward: { stakeAccount: stake, mode: 1, value: intervalSeconds },
-  }),
 };
 
 const action = {
@@ -76,12 +70,6 @@ const action = {
   }),
   transferSpl: (destination: PublicKey, mint: PublicKey, amount: BN) => ({
     transferSpl: { destination, mint, amount },
-  }),
-  stakeRestake: (stake: PublicKey, vote: PublicKey) => ({
-    stakeRestake: { stakeAccount: stake, voteAccount: vote },
-  }),
-  stakeWithdrawReward: (stake: PublicKey, destination: PublicKey) => ({
-    stakeWithdrawReward: { stakeAccount: stake, destination },
   }),
   swap: (
     inputMint: PublicKey,
@@ -457,48 +445,6 @@ describe("sotama_automations v2", () => {
     expect(threw).to.eq(true);
   });
 
-  it("enforces time-window on staking-time triggers", async () => {
-    const cfg = await program.account.config.fetch(configPda);
-    const nonce = BigInt(cfg.automationCount.toString());
-    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
-    const stakeAccount = Keypair.generate().publicKey;
-
-    // First execute always allowed (last_executed_at == 0). Then we set
-    // a 1-hour interval and confirm a second execute would fail —
-    // single-shot semantics already reject double-execute, so the
-    // interval check here is functionally redundant on v2 but covered
-    // anyway in case a v3 reintroduces N-shot.
-    await program.methods
-      .createAutomation(
-        trigger.stakingTime(stakeAccount, new BN(3600)),
-        action.transferSol(destination.publicKey, new BN(0.01 * LAMPORTS_PER_SOL)),
-        cadence.once(),
-        NO_INTERVAL
-      )
-      .accountsStrict({
-        owner: owner.publicKey,
-        config: configPda,
-        automation: auto,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([owner])
-      .rpc();
-
-    await program.methods
-      .executeAutomation()
-      .accountsStrict({
-        keeper: keeper.publicKey,
-        config: configPda,
-        automation: auto,
-        destination: destination.publicKey,
-      })
-      .signers([keeper])
-      .rpc();
-
-    const after = await program.account.automation.fetch(auto);
-    expect(after.finished).to.eq(true);
-  });
-
   it("rejects execute when paused, allows again after unpause", async () => {
     const cfg = await program.account.config.fetch(configPda);
     const nonce = BigInt(cfg.automationCount.toString());
@@ -752,65 +698,6 @@ describe("sotama_automations v2", () => {
       .updateKeeper(keeper.publicKey)
       .accountsStrict({ admin: admin.publicKey, config: configPda })
       .rpc();
-  });
-
-  it("creates a stake-restake automation (no execute — local validator lacks vote setup)", async () => {
-    const cfg = await program.account.config.fetch(configPda);
-    const nonce = BigInt(cfg.automationCount.toString());
-    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
-    const stakeAccount = Keypair.generate().publicKey;
-    const voteAccount = Keypair.generate().publicKey;
-
-    await program.methods
-      .createAutomationStake(
-        trigger.stakingAmount(stakeAccount, new BN(1_000_000)),
-        action.stakeRestake(stakeAccount, voteAccount),
-        cadence.once(),
-        NO_INTERVAL
-      )
-      .accountsStrict({
-        owner: owner.publicKey,
-        config: configPda,
-        automation: auto,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([owner])
-      .rpc();
-
-    const a = await program.account.automation.fetch(auto);
-    expect((a.action as any).stakeRestake.stakeAccount.toBase58()).to.eq(stakeAccount.toBase58());
-    expect((a.action as any).stakeRestake.voteAccount.toBase58()).to.eq(voteAccount.toBase58());
-    expect((a.trigger as any).stakingReward.mode).to.eq(0);
-  });
-
-  it("creates a stake-withdraw-reward automation (no execute — needs real stake authority)", async () => {
-    const cfg = await program.account.config.fetch(configPda);
-    const nonce = BigInt(cfg.automationCount.toString());
-    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
-    const stakeAccount = Keypair.generate().publicKey;
-
-    await program.methods
-      .createAutomationStake(
-        trigger.stakingTime(stakeAccount, new BN(86_400)),
-        action.stakeWithdrawReward(stakeAccount, destination.publicKey),
-        cadence.once(),
-        NO_INTERVAL
-      )
-      .accountsStrict({
-        owner: owner.publicKey,
-        config: configPda,
-        automation: auto,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([owner])
-      .rpc();
-
-    const a = await program.account.automation.fetch(auto);
-    expect((a.action as any).stakeWithdrawReward.destination.toBase58()).to.eq(
-      destination.publicKey.toBase58()
-    );
-    expect((a.trigger as any).stakingReward.mode).to.eq(1);
-    expect((a.trigger as any).stakingReward.value.toString()).to.eq("86400");
   });
 
   /* ── Cadence: For (Repeat) ────────────────────────────────────────── */

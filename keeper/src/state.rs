@@ -33,11 +33,6 @@ pub enum TriggerSpec {
         /// Oracle adapter to dispatch to. See `oracle_source` mod.
         source: u8,
     },
-    StakingReward {
-        stake_account: Pubkey,
-        mode: u8,
-        value: u64,
-    },
 }
 
 /// Borsh-mirror of the on-chain `ActionSpec` enum.
@@ -51,14 +46,6 @@ pub enum ActionSpec {
         destination: Pubkey,
         mint: Pubkey,
         amount: u64,
-    },
-    StakeRestake {
-        stake_account: Pubkey,
-        vote_account: Pubkey,
-    },
-    StakeWithdrawReward {
-        stake_account: Pubkey,
-        destination: Pubkey,
     },
     Swap {
         input_mint: Pubkey,
@@ -142,15 +129,6 @@ impl Automation {
                 expo: *expo,
                 source: *source,
             },
-            TriggerSpec::StakingReward {
-                stake_account,
-                mode,
-                value,
-            } => Monitor::Stake {
-                stake_account: *stake_account,
-                amount_mode: *mode == 0,
-                value: *value,
-            },
         }
     }
 }
@@ -175,10 +153,5 @@ pub enum Monitor {
         /// `oracle_source` byte. Picks which adapter the dispatcher
         /// routes this trigger to (Pyth Hermes/Lazer, Jupiter, …).
         source: u8,
-    },
-    Stake {
-        stake_account: Pubkey,
-        amount_mode: bool,
-        value: u64,
     },
 }

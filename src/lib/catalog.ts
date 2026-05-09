@@ -19,7 +19,7 @@ import type {
      needs hardcoded checks against specific kinds.
    ───────────────────────────────────────────────────────────────────── */
 
-export type TriggerCategoryId = "asset_price" | "track_account" | "staking";
+export type TriggerCategoryId = "asset_price" | "track_account";
 
 export type TriggerKindMeta = {
   kind: TriggerKind;
@@ -44,8 +44,7 @@ export type ActionKindMeta = {
   description?: string;
   empty: () => DraftAction;
   /** When no trigger is completed yet, only actions with this flag show up
-   *  in the picker. Actions whose semantics rely on trigger context (e.g.
-   *  "restake the staking reward") set this to false. */
+   *  in the picker. */
   availableWithoutTrigger: boolean;
 };
 
@@ -77,46 +76,11 @@ const SWAP_ACTION: ActionKindMeta = {
   }),
 };
 
-const RESTAKE_ACTION: ActionKindMeta = {
-  kind: "restake",
-  label: "Restake",
-  description: "Compound the reward back into the stake account.",
-  availableWithoutTrigger: false,
-  empty: () => ({ kind: "restake", stakeAccount: null, voteAccount: null }),
-};
-
-const SELL_FOR_ACTION: ActionKindMeta = {
-  kind: "sell_for",
-  label: "Sell for token",
-  description: "Swap the reward for another token.",
-  availableWithoutTrigger: false,
-  empty: () => ({ kind: "sell_for", outputToken: null }),
-};
-
-const TRANSFER_REWARD_ACTION: ActionKindMeta = {
-  kind: "transfer_reward",
-  label: "Transfer",
-  description: "Send the reward to another wallet.",
-  availableWithoutTrigger: false,
-  empty: () => ({
-    kind: "transfer_reward",
-    stakeAccount: null,
-    destination: null,
-  }),
-};
-
-export const ACTION_KINDS: ActionKindMeta[] = [
-  TRANSFER_ACTION,
-  SWAP_ACTION,
-  RESTAKE_ACTION,
-  SELL_FOR_ACTION,
-  TRANSFER_REWARD_ACTION,
-];
+export const ACTION_KINDS: ActionKindMeta[] = [TRANSFER_ACTION, SWAP_ACTION];
 
 /* ── Trigger catalog ───────────────────────────────────────────────── */
 
 const GENERAL_ACTIONS: ActionKind[] = ["transfer", "swap"];
-const STAKING_ACTIONS: ActionKind[] = ["restake", "sell_for", "transfer_reward"];
 
 const ASSET_PRICE: TriggerKindMeta = {
   kind: "asset_price",
@@ -159,30 +123,6 @@ const ACCOUNT_SWAP: TriggerKindMeta = {
   }),
 };
 
-const STAKING_AMOUNT: TriggerKindMeta = {
-  kind: "staking_reward_amount",
-  label: "By amount",
-  description: "Fires when accumulated rewards exceed a threshold.",
-  compatibleActions: STAKING_ACTIONS,
-  empty: () => ({
-    kind: "staking_reward_amount",
-    stakeAccount: null,
-    threshold: null,
-  }),
-};
-
-const STAKING_TIME: TriggerKindMeta = {
-  kind: "staking_reward_time",
-  label: "On a schedule",
-  description: "Fires on a recurring time interval.",
-  compatibleActions: STAKING_ACTIONS,
-  empty: () => ({
-    kind: "staking_reward_time",
-    stakeAccount: null,
-    intervalDays: null,
-  }),
-};
-
 export const TRIGGER_CATEGORIES: TriggerCategoryMeta[] = [
   {
     id: "asset_price",
@@ -195,12 +135,6 @@ export const TRIGGER_CATEGORIES: TriggerCategoryMeta[] = [
     label: "Account Activity",
     description: "Track a wallet's activity",
     kinds: [ACCOUNT_TRANSFER, ACCOUNT_SWAP],
-  },
-  {
-    id: "staking",
-    label: "Staking",
-    description: "Track staking metrics or rewards",
-    kinds: [STAKING_AMOUNT, STAKING_TIME],
   },
 ];
 
@@ -261,57 +195,29 @@ export function actionsAreCompatible(
 /* ── Cadence-aware menu filtering ─────────────────────────────────────
    The trigger/action menus shown in the builder depend on the current
    cadence (If / While / For), because not every shape reads naturally in
-   English under every cadence. Events fit "If <event>, …" but not
-   "While <event>"; one-shot actions like sell-for don't fit "For <N>
-   times". The maps below are the single source of truth — bend them, not
-   the picker logic, when adjusting what's offered per cadence.
+   English under every cadence.
    ───────────────────────────────────────────────────────────────────── */
 
 const TRIGGERS_BY_CADENCE: Record<CadenceKind, ReadonlySet<TriggerKind>> = {
-  // If reads as event-driven: any trigger fits.
-  once: new Set<TriggerKind>([
-    "asset_price",
-    "account_transfer",
-    "account_swap",
-    "staking_reward_amount",
-    "staking_reward_time",
-  ]),
+  once: new Set<TriggerKind>(["asset_price", "account_transfer", "account_swap"]),
   // While reads as a standing predicate. Only asset_price fits naturally —
-  // "While SOL price < $180" is a true predicate. The others are events
-  // (account_*) or self-resetting amount thresholds whose semantics under
-  // a recurring loop are confusing.
+  // "While SOL price < $180" is a true predicate.
   until: new Set<TriggerKind>(["asset_price"]),
-  // For reads as "the next N times that …". Event triggers and the time
-  // schedule both fit; amount-thresholds are awkward because they fire
-  // once and then sit at the threshold.
+  // For reads as "the next N times that …". Event triggers fit.
   repeat: new Set<TriggerKind>([
     "asset_price",
     "account_transfer",
     "account_swap",
-    "staking_reward_time",
   ]),
 };
 
 const ACTIONS_BY_CADENCE: Record<CadenceKind, ReadonlySet<ActionKind>> = {
-  // If accepts every action kind, including the one-shot sell_for.
-  once: new Set<ActionKind>([
-    "transfer",
-    "swap",
-    "restake",
-    "sell_for",
-    "transfer_reward",
-  ]),
-  // While/For exclude sell_for: "sell the entire reward for X" is
-  // intrinsically one-shot. Swap also drops from `until` because the
-  // deposit must cover all fires up front (see SwapUntilNotSupported
-  // on-chain) and `until` has no bounded run count.
-  until: new Set<ActionKind>(["transfer", "restake", "transfer_reward"]),
-  repeat: new Set<ActionKind>([
-    "transfer",
-    "swap",
-    "restake",
-    "transfer_reward",
-  ]),
+  once: new Set<ActionKind>(["transfer", "swap"]),
+  // Swap drops from `until` because the deposit must cover all fires up
+  // front (see SwapUntilNotSupported on-chain) and `until` has no bounded
+  // run count.
+  until: new Set<ActionKind>(["transfer"]),
+  repeat: new Set<ActionKind>(["transfer", "swap"]),
 };
 
 /** Categories visible in the trigger picker for the given cadence. A

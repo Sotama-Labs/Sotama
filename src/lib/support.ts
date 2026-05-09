@@ -22,16 +22,11 @@ export const SUPPORTED_TRIGGER_KINDS: Record<TriggerKind, boolean> = {
   account_transfer: true,             // wired ✓ — Helius transactionSubscribe + execute_automation
   account_swap: true,                 // wired ✓ — Helius txSubscribe + DEX program filter
   asset_price: true,                  // wired ✓ — Pyth Hermes/Lazer poll in keeper
-  staking_reward_amount: true,        // wired ✓ — keeper polls stake account, on-chain time-window for TIME mode
-  staking_reward_time: true,          // wired ✓ — same path as amount mode
 };
 
 export const SUPPORTED_ACTION_KINDS: Record<ActionKind, boolean> = {
   transfer: true,                     // wired ✓ — SOL via execute_automation, SPL via execute_automation_spl
   swap: true,                         // wired ✓ — execute_swap (Orca Whirlpool CPI). MVP: hardcoded pool registry, no quote/slippage UI yet
-  restake: true,                      // wired ✓ — execute_restake (DelegateStake CPI)
-  sell_for: false,                    // future — Jupiter mainnet only
-  transfer_reward: true,              // wired ✓ — execute_withdraw_reward (Stake Withdraw CPI)
 };
 
 export function isTriggerSupported(kind: TriggerKind): boolean {

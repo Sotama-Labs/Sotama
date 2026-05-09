@@ -28,16 +28,6 @@ pub fn execute_automation_spl_discriminator() -> &'static [u8; 8] {
     CELL.get_or_init(|| anchor_discriminator("global", "execute_automation_spl"))
 }
 
-pub fn execute_restake_discriminator() -> &'static [u8; 8] {
-    static CELL: OnceLock<[u8; 8]> = OnceLock::new();
-    CELL.get_or_init(|| anchor_discriminator("global", "execute_restake"))
-}
-
-pub fn execute_withdraw_reward_discriminator() -> &'static [u8; 8] {
-    static CELL: OnceLock<[u8; 8]> = OnceLock::new();
-    CELL.get_or_init(|| anchor_discriminator("global", "execute_withdraw_reward"))
-}
-
 pub fn execute_swap_discriminator() -> &'static [u8; 8] {
     static CELL: OnceLock<[u8; 8]> = OnceLock::new();
     CELL.get_or_init(|| anchor_discriminator("global", "execute_swap"))
@@ -87,24 +77,9 @@ pub fn associated_token_program_id() -> &'static Pubkey {
     CELL.get_or_init(|| Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap())
 }
 
-pub fn stake_program_id() -> &'static Pubkey {
-    static CELL: OnceLock<Pubkey> = OnceLock::new();
-    CELL.get_or_init(|| Pubkey::from_str("Stake11111111111111111111111111111111111111").unwrap())
-}
-
-pub fn stake_config_id() -> &'static Pubkey {
-    static CELL: OnceLock<Pubkey> = OnceLock::new();
-    CELL.get_or_init(|| Pubkey::from_str("StakeConfig11111111111111111111111111111111").unwrap())
-}
-
 pub fn sysvar_clock_id() -> &'static Pubkey {
     static CELL: OnceLock<Pubkey> = OnceLock::new();
     CELL.get_or_init(|| Pubkey::from_str("SysvarC1ock11111111111111111111111111111111").unwrap())
-}
-
-pub fn sysvar_stake_history_id() -> &'static Pubkey {
-    static CELL: OnceLock<Pubkey> = OnceLock::new();
-    CELL.get_or_init(|| Pubkey::from_str("SysvarStakeHistory1111111111111111111111111").unwrap())
 }
 
 /// Off-curve PDA derivation for a SPL associated token account.
@@ -164,33 +139,6 @@ pub fn build_execute_automation_spl_ix(
             AccountMeta::new(*automation_ata, false),
             AccountMeta::new(*destination_ata, false),
             AccountMeta::new_readonly(*spl_token_program_id(), false),
-        ],
-        data,
-    }
-}
-
-pub fn build_execute_restake_ix(
-    program_id: &Pubkey,
-    keeper: &Pubkey,
-    config: &Pubkey,
-    automation: &Pubkey,
-    stake_account: &Pubkey,
-    vote_account: &Pubkey,
-) -> Instruction {
-    let mut data = Vec::with_capacity(8);
-    data.extend_from_slice(execute_restake_discriminator());
-    Instruction {
-        program_id: *program_id,
-        accounts: vec![
-            AccountMeta::new_readonly(*keeper, true),
-            AccountMeta::new_readonly(*config, false),
-            AccountMeta::new(*automation, false),
-            AccountMeta::new(*stake_account, false),
-            AccountMeta::new_readonly(*vote_account, false),
-            AccountMeta::new_readonly(*sysvar_clock_id(), false),
-            AccountMeta::new_readonly(*sysvar_stake_history_id(), false),
-            AccountMeta::new_readonly(*stake_config_id(), false),
-            AccountMeta::new_readonly(*stake_program_id(), false),
         ],
         data,
     }
@@ -348,34 +296,6 @@ pub fn build_execute_fee_topup_ix(
     }
 }
 
-pub fn build_execute_withdraw_reward_ix(
-    program_id: &Pubkey,
-    keeper: &Pubkey,
-    config: &Pubkey,
-    automation: &Pubkey,
-    stake_account: &Pubkey,
-    destination: &Pubkey,
-    amount: u64,
-) -> Instruction {
-    let mut data = Vec::with_capacity(16);
-    data.extend_from_slice(execute_withdraw_reward_discriminator());
-    data.extend_from_slice(&amount.to_le_bytes());
-    Instruction {
-        program_id: *program_id,
-        accounts: vec![
-            AccountMeta::new_readonly(*keeper, true),
-            AccountMeta::new_readonly(*config, false),
-            AccountMeta::new(*automation, false),
-            AccountMeta::new(*stake_account, false),
-            AccountMeta::new(*destination, false),
-            AccountMeta::new_readonly(*sysvar_clock_id(), false),
-            AccountMeta::new_readonly(*sysvar_stake_history_id(), false),
-            AccountMeta::new_readonly(*stake_program_id(), false),
-        ],
-        data,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,17 +305,14 @@ mod tests {
         let a = automation_discriminator();
         let e = execute_automation_discriminator();
         let es = execute_automation_spl_discriminator();
-        let er = execute_restake_discriminator();
-        let ew = execute_withdraw_reward_discriminator();
         assert_eq!(a.len(), 8);
-        for d in [e, es, er, ew] {
+        for d in [e, es] {
             assert_ne!(a, d);
         }
-        // All four execute discriminators are unique.
-        let mut sorted = vec![*e, *es, *er, *ew];
+        let mut sorted = vec![*e, *es];
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), 4);
+        assert_eq!(sorted.len(), 2);
     }
 
     #[test]

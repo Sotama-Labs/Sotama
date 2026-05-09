@@ -45,7 +45,6 @@ pub struct KeeperConfig {
     pub program_id: Pubkey,
     pub reconcile_interval: Duration,
     pub price_poll_interval: Duration,
-    pub stake_poll_interval: Duration,
     pub fee_topup_scan_interval: Duration,
     pub shard_size: usize,
     pub swap_slippage_bps: u16,
@@ -115,7 +114,6 @@ impl KeeperConfig {
 
         let reconcile_interval = Duration::from_secs(parse_or("RECONCILE_INTERVAL_SECS", 60)?);
         let price_poll_interval = Duration::from_secs(parse_or("PRICE_POLL_INTERVAL_SECS", 12)?);
-        let stake_poll_interval = Duration::from_secs(parse_or("STAKE_POLL_INTERVAL_SECS", 60)?);
         let fee_topup_scan_interval =
             Duration::from_secs(parse_or("FEE_TOPUP_SCAN_INTERVAL_SECS", 300)?);
         let shard_size = parse_or::<usize>("SHARD_SIZE", 40)?.max(1);
@@ -152,7 +150,6 @@ impl KeeperConfig {
             program_id,
             reconcile_interval,
             price_poll_interval,
-            stake_poll_interval,
             fee_topup_scan_interval,
             shard_size,
             swap_slippage_bps,
