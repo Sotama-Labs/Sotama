@@ -232,6 +232,7 @@ async fn process_event(
                     || msg.contains("timeIntervalNotElapsed")
                     || msg.contains("MinIntervalNotElapsed")
                     || msg.contains("minIntervalNotElapsed");
+                let skip_empty_ata = msg.contains("SkipEmptyUpstreamATA");
                 dedupe
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -245,6 +246,11 @@ async fn process_event(
                     debug!(
                         automation = %pubkey,
                         "executor: interval not elapsed yet — will retry next tick"
+                    );
+                } else if skip_empty_ata {
+                    debug!(
+                        automation = %pubkey,
+                        "executor: upstream ATA empty, skipping fire until bridge lands"
                     );
                 } else {
                     warn!(
@@ -372,7 +378,7 @@ async fn build_action_ix(
             min_amount_out,
             linked_downstream,
             link_fee_deposit: _link_fee_deposit,
-            consume_upstream_output: _consume_upstream_output,
+            consume_upstream_output,
         } => {
             // Build the swap ix off-chain via Jupiter's /build API,
             // then wrap it through Sotama's execute_swap relay so the
@@ -387,12 +393,41 @@ async fn build_action_ix(
             let automation_input_ata = associated_token_address(&ctx.pubkey, input_mint);
             let destination_output_ata = associated_token_address(destination, output_mint);
 
+            // When consume_upstream_output is set, the intended amount_in is
+            // whatever the upstream rule deposited into this automation's
+            // input ATA at fire time.  Query the live balance and use that
+            // as the real swap amount.  If the ATA is empty the upstream
+            // rule hasn't landed yet; skip silently rather than reverting.
+            let effective_amount_in = if *consume_upstream_output {
+                let balance = rpc
+                    .get_token_account_balance(&automation_input_ata)
+                    .await
+                    .map_err(|e| anyhow!("get_token_account_balance failed: {e}"))?;
+                let resolved: u64 = balance
+                    .amount
+                    .parse()
+                    .map_err(|_| anyhow!("ATA balance not a u64"))?;
+                if resolved == 0 {
+                    // Nothing to fire on yet — upstream rule hasn't produced
+                    // output or the bridge dispatcher hasn't landed.  Skip
+                    // without spamming a revert.
+                    tracing::debug!(
+                        automation = %ctx.pubkey,
+                        "skip fire: input ATA empty (consume_upstream_output=true)"
+                    );
+                    return Err(anyhow!("SkipEmptyUpstreamATA"));
+                }
+                resolved
+            } else {
+                *amount_in
+            };
+
             let jup = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
             let build = jup
                 .build_swap_cpi_safe(
                     input_mint,
                     output_mint,
-                    *amount_in,
+                    effective_amount_in,
                     cfg.swap_slippage_bps,
                     &ctx.pubkey,
                 )
