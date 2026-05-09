@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { DraftSwap } from "@/lib/types";
+import type { ChainLinkClass, DraftSwap } from "@/lib/types";
 import { TokenPicker } from "../TokenPicker";
 import { TokenPill } from "../TokenPill";
 import { AmountInput } from "../AmountInput";
@@ -14,11 +14,13 @@ export function SwapEditor({
   onChange,
   onBack,
   onConfirm,
+  linkClassUpstream,
 }: {
   draft: DraftSwap;
   onChange: (next: DraftSwap) => void;
   onBack: () => void;
   onConfirm: () => void;
+  linkClassUpstream?: ChainLinkClass;
 }) {
   const [picking, setPicking] = useState<Picking>(null);
 
@@ -27,8 +29,8 @@ export function SwapEditor({
   const ready =
     draft.inputToken != null &&
     draft.outputToken != null &&
-    draft.amount != null &&
-    draft.amount > 0;
+    (draft.consumeUpstreamOutput === true ||
+      (draft.amount != null && draft.amount > 0));
 
   if (picking === "input") {
     return (
@@ -97,14 +99,68 @@ export function SwapEditor({
         </button>
       </FieldRow>
 
+      {linkClassUpstream === "inverted_pair" && (
+        <button
+          type="button"
+          onClick={() =>
+            onChange({
+              ...draft,
+              consumeUpstreamOutput: !draft.consumeUpstreamOutput,
+            })
+          }
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.375rem",
+            padding: "0.25rem 0.625rem",
+            borderRadius: "999px",
+            background: draft.consumeUpstreamOutput ? "var(--accent-fill)" : "var(--fill-3)",
+            color: draft.consumeUpstreamOutput ? "var(--accent)" : "var(--label-secondary)",
+            fontSize: "0.875rem",
+            fontWeight: 500,
+            border: "0.5px solid var(--separator)",
+            cursor: "pointer",
+            alignSelf: "flex-start",
+          }}
+          title={
+            draft.consumeUpstreamOutput
+              ? "Will swap whatever the upstream rule produced"
+              : "Use a fixed input amount per fire"
+          }
+        >
+          {draft.consumeUpstreamOutput ? "✓ Use upstream output" : "Use upstream output"}
+        </button>
+      )}
+
       <FieldRow label={`Amount (${draft.inputToken?.symbol ?? "input"})`}>
-        <AmountInput
-          value={draft.amount}
-          token={draft.inputToken}
-          unit={draft.inputToken?.symbol}
-          onChange={(v) => onChange({ ...draft, amount: v })}
-          onCommit={ready ? onConfirm : undefined}
-        />
+        {draft.consumeUpstreamOutput ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              padding: "0.5rem 0.75rem",
+              background: "var(--fill-4)",
+              border: "0.5px solid var(--separator)",
+              borderRadius: "0.5rem",
+              opacity: 0.6,
+            }}
+          >
+            <span
+              className="hig-body"
+              style={{ color: "var(--label-secondary)", fontWeight: 500 }}
+            >
+              = upstream output
+            </span>
+          </div>
+        ) : (
+          <AmountInput
+            value={draft.amount}
+            token={draft.inputToken}
+            unit={draft.inputToken?.symbol}
+            onChange={(v) => onChange({ ...draft, amount: v })}
+            onCommit={ready ? onConfirm : undefined}
+          />
+        )}
       </FieldRow>
 
       <div

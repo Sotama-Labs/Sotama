@@ -498,6 +498,7 @@ export function LinkedChainBuilder({
               initialState={card.initial}
               onSave={handleSaveSingle}
               cardLabel={cardLabel}
+              linkClassUpstream={i > 0 ? linkClasses[i - 1] : undefined}
               bottomAccessory={
                 <LinkSlot
                   index={i}

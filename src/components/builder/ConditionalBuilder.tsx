@@ -8,6 +8,7 @@ import type {
   ActionKind,
   BuilderResult,
   Cadence,
+  ChainLinkClass,
   DraftAction,
   DraftTrigger,
   Trigger,
@@ -132,8 +133,8 @@ function actionReady(a: DraftAction): boolean {
       return (
         a.inputToken != null &&
         a.outputToken != null &&
-        a.amount != null &&
-        a.amount > 0
+        (a.consumeUpstreamOutput === true ||
+          (a.amount != null && a.amount > 0))
       );
   }
 }
@@ -146,6 +147,7 @@ export function ConditionalBuilder({
   onResultChange,
   hideSaveButton,
   onClose,
+  linkClassUpstream,
 }: {
   initialState?: Automation | null;
   onSave: (data: BuilderResult) => void;
@@ -171,6 +173,11 @@ export function ConditionalBuilder({
   /** When present, renders a small × button in the top-right that
    *  invokes this callback (used by the chain to remove a card). */
   onClose?: () => void;
+  /** The link class of the upstream chain link (i.e. the link connecting
+   *  the previous card to this card). Used by action editors to surface
+   *  upstream-aware options — e.g. the "Use upstream output" chip in
+   *  SwapEditor when the upstream link is an inverted pair. */
+  linkClassUpstream?: ChainLinkClass;
 }) {
   const [triggers, setTriggers] = useState<DraftTrigger[]>(() => seedTriggers(initialState));
   const [actions, setActions] = useState<DraftAction[]>(() => seedActions(initialState));
@@ -458,6 +465,7 @@ export function ConditionalBuilder({
               onChange={(next) => updateActionAt(open.index, next)}
               onBack={onBack}
               onConfirm={onConfirm}
+              linkClassUpstream={linkClassUpstream}
             />
           );
         case null:
