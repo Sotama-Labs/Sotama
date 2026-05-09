@@ -676,6 +676,17 @@ export function DepositSheet({
           </div>
         )}
 
+        <div
+          className="hig-caption-1"
+          style={{
+            padding: "0 1.25rem 0.75rem",
+            color: "var(--label-tertiary)",
+            textAlign: "center",
+          }}
+        >
+          Each rule runs for up to 30 days. Loops keep it going longer as long as the funds keep moving.
+        </div>
+
         <div style={{ display: "flex", borderTop: "0.5px solid var(--separator)" }}>
           <button
             onClick={onCancel}

@@ -238,10 +238,14 @@ const TRIGGERS_BY_CADENCE: Record<CadenceKind, ReadonlySet<TriggerKind>> = {
 
 const ACTIONS_BY_CADENCE: Record<CadenceKind, ReadonlySet<ActionKind>> = {
   once: new Set<ActionKind>(["transfer", "swap"]),
-  // Swap drops from `until` because the deposit must cover all fires up
-  // front (see SwapUntilNotSupported on-chain) and `until` has no bounded
-  // run count.
-  until: new Set<ActionKind>(["transfer"]),
+  // Swap is allowed for `until` when going through the linked ix
+  // (`create_automation_swap_linked`), which decouples deposit from
+  // fire count and accepts any cadence. The legacy
+  // `create_automation_swap` ix still rejects until via
+  // SwapUntilNotSupported, so the deposit dispatcher must route
+  // until-cadence swap rules through the linked path. Allowed in the
+  // catalog so the LoopSlot's "Loop · infinite" option is selectable.
+  until: new Set<ActionKind>(["transfer", "swap"]),
   repeat: new Set<ActionKind>(["transfer", "swap"]),
 };
 

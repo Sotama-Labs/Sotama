@@ -1,6 +1,6 @@
 "use client";
 
-import { createRef, useMemo, useRef, useState, type RefObject } from "react";
+import { createRef, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type {
   Action,
   ActionOperator,
@@ -149,9 +149,36 @@ function actionReady(a: DraftAction): boolean {
 export function ConditionalBuilder({
   initialState,
   onSave,
+  cardLabel,
+  bottomAccessory,
+  onResultChange,
+  hideSaveButton,
+  onClose,
 }: {
   initialState?: Automation | null;
   onSave: (data: BuilderResult) => void;
+  /** When set, renders a small numbered pill ("Rule 1", "Rule 2", …)
+   *  in the top-right of the card so chain users can tell rules apart
+   *  at a glance. Standalone-rule callers leave this undefined. */
+  cardLabel?: string;
+  /** Rendered inside the card below the rule sentence, attached to the
+   *  bottom border. The LinkedChainBuilder uses this to attach a "+"
+   *  slot for adding/looping linked rules without forking the
+   *  ConditionalBuilder layout. */
+  bottomAccessory?: React.ReactNode;
+  /** Fires whenever the rule becomes ready (`result` set) or stops
+   *  being ready (`null`). Lets a parent chain orchestrator track
+   *  whether all cards are valid before enabling the chain Save
+   *  button. Standalone callers don't need this — they react to
+   *  `onSave`. */
+  onResultChange?: (result: BuilderResult | null) => void;
+  /** Suppresses the inner ✓ Save button. The chain orchestrator
+   *  renders its own Save & Run button at the page level so the user
+   *  saves the whole chain in one click. */
+  hideSaveButton?: boolean;
+  /** When present, renders a small × button in the top-right that
+   *  invokes this callback (used by the chain to remove a card). */
+  onClose?: () => void;
 }) {
   const [triggers, setTriggers] = useState<DraftTrigger[]>(() => seedTriggers(initialState));
   const [actions, setActions] = useState<DraftAction[]>(() => seedActions(initialState));
@@ -370,6 +397,38 @@ export function ConditionalBuilder({
       minIntervalSecs,
     });
   };
+
+  // Notify parent (chain orchestrator) whenever the rule's readiness
+  // changes. Done here rather than at every state mutation so we
+  // capture all paths (slot pick, popover close, cadence change).
+  //
+  // The parent typically passes an INLINE arrow for `onResultChange`,
+  // which means its identity changes every render. Including it in
+  // the dep list would cause the effect to re-fire on every parent
+  // render and feed-back through setCardResult → cards reference
+  // change → parent re-render → loop. Stash the latest callback in a
+  // ref and call it imperatively instead, so the effect only re-runs
+  // when the COMPUTED rule shape actually changes.
+  const onResultChangeRef = useRef(onResultChange);
+  onResultChangeRef.current = onResultChange;
+  useEffect(() => {
+    const cb = onResultChangeRef.current;
+    if (!cb) return;
+    const t = freezeTriggers(triggers);
+    const a = freezeActions(actions);
+    if (!t || !a || !ready) {
+      cb(null);
+      return;
+    }
+    cb({
+      triggers: t,
+      triggerOperators: triggerOps,
+      actions: a,
+      actionOperators: actionOps,
+      cadence,
+      minIntervalSecs,
+    });
+  }, [triggers, actions, triggerOps, actionOps, cadence, minIntervalSecs, ready]);
 
   const renderEditor = () => {
     if (!open) return null;
@@ -739,15 +798,69 @@ export function ConditionalBuilder({
         border: "0.5px solid var(--separator)",
         borderRadius: "var(--radius-card)",
         boxShadow: "var(--shadow-2)",
-        padding: "2rem 2.25rem",
+        padding: "2rem 2.25rem 0",
+        position: "relative",
       }}
     >
+      {(cardLabel || onClose) && (
+        <div
+          style={{
+            position: "absolute",
+            top: "0.75rem",
+            right: "0.75rem",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            zIndex: 1,
+          }}
+        >
+          {cardLabel && (
+            <span
+              className="hig-caption-1"
+              style={{
+                padding: "0.1875rem 0.5rem",
+                borderRadius: "999px",
+                background: "var(--fill-4)",
+                color: "var(--label-secondary)",
+                fontWeight: 600,
+                letterSpacing: "0.02em",
+                textTransform: "uppercase",
+              }}
+            >
+              {cardLabel}
+            </span>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              aria-label="Remove rule"
+              title="Remove this rule from the chain"
+              style={{
+                width: "1.5rem",
+                height: "1.5rem",
+                borderRadius: "999px",
+                background: "var(--fill-3)",
+                color: "var(--label-secondary)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                fontSize: "0.875rem",
+                lineHeight: 1,
+              }}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: "1.75rem",
           justifyContent: "space-between",
+          paddingBottom: "2rem",
         }}
       >
         <div
@@ -788,34 +901,36 @@ export function ConditionalBuilder({
             "choose an action",
           )}
         </div>
-        <button
-          disabled={!ready}
-          onClick={handleSave}
-          aria-label="Save automation"
-          title={ready ? "Save & run" : "Complete all slots first"}
-          style={{
-            width: "2.75rem",
-            height: "2.75rem",
-            flexShrink: 0,
-            borderRadius: "999px",
-            background: ready ? "var(--accent)" : "var(--fill-3)",
-            color: ready ? "white" : "var(--label-tertiary)",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            transition: "background 160ms, transform 160ms",
-            cursor: ready ? "pointer" : "not-allowed",
-            boxShadow: ready ? "0 1px 2px rgba(0,0,0,0.10)" : "none",
-          }}
-          onMouseEnter={(e) => {
-            if (ready) (e.currentTarget as HTMLButtonElement).style.transform = "scale(1.06)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
-          }}
-        >
-          <Check size={20} strokeWidth={2} />
-        </button>
+        {!hideSaveButton && (
+          <button
+            disabled={!ready}
+            onClick={handleSave}
+            aria-label="Save automation"
+            title={ready ? "Save & run" : "Complete all slots first"}
+            style={{
+              width: "2.75rem",
+              height: "2.75rem",
+              flexShrink: 0,
+              borderRadius: "999px",
+              background: ready ? "var(--accent)" : "var(--fill-3)",
+              color: ready ? "white" : "var(--label-tertiary)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "background 160ms, transform 160ms",
+              cursor: ready ? "pointer" : "not-allowed",
+              boxShadow: ready ? "0 1px 2px rgba(0,0,0,0.10)" : "none",
+            }}
+            onMouseEnter={(e) => {
+              if (ready) (e.currentTarget as HTMLButtonElement).style.transform = "scale(1.06)";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
+            }}
+          >
+            <Check size={20} strokeWidth={2} />
+          </button>
+        )}
       </div>
 
       {/* Generic hint pill — surfaces the current action menu once any
@@ -837,6 +952,21 @@ export function ConditionalBuilder({
       )}
 
       {popoverContent}
+
+      {bottomAccessory && (
+        <div
+          style={{
+            marginTop: "0.5rem",
+            borderTop: "0.5px solid var(--separator)",
+            padding: "0.875rem 0",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+          }}
+        >
+          {bottomAccessory}
+        </div>
+      )}
     </div>
   );
 }

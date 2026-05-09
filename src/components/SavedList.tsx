@@ -63,9 +63,13 @@ function AutomationRow({
   const completed = isCompleted(a);
   const closed = isClosed(a);
   const terminal = isTerminal(a);
+  const link = a.link;
+  const fundingError = link?.fundingError;
 
   // Status copy + colors
-  const dotColor = completed
+  const dotColor = fundingError
+    ? "var(--red)"
+    : completed
     ? "var(--accent)"
     : closed
     ? "var(--label-quaternary)"
@@ -73,7 +77,9 @@ function AutomationRow({
     ? "var(--green)"
     : "var(--label-quaternary)";
 
-  const statusLine = completed
+  const statusLine = fundingError
+    ? `Auto-fund error · ${fundingError}`
+    : completed
     ? `Completed${a.executedAt ? ` · fired ${formatTimeAgo(a.executedAt)}` : ""}`
     : closed
     ? `Closed${a.closedAt ? ` · refunded ${formatTimeAgo(a.closedAt)}` : ""}`
@@ -138,6 +144,26 @@ function AutomationRow({
             textDecoration: terminal ? "none" : undefined,
           }}
         >
+          {link && (
+            <span
+              className="hig-caption-1"
+              title={`Linked rule ${link.position + 1} of ${link.total}${link.next?.kind === "loopBack" ? " · loops" : ""}`}
+              style={{
+                padding: "0.125rem 0.4375rem",
+                borderRadius: "999px",
+                background: "var(--accent-fill)",
+                color: "var(--accent)",
+                fontWeight: 600,
+                fontSize: "0.6875rem",
+                letterSpacing: "0.02em",
+                marginRight: "0.25rem",
+                textTransform: "uppercase",
+              }}
+            >
+              Chain {link.position + 1}/{link.total}
+              {link.next?.kind === "loopBack" ? " ↻" : ""}
+            </span>
+          )}
           <span style={{ color: "var(--label-secondary)" }}>If </span>
           {renderTriggers(a.triggers)}
           <span style={{ color: "var(--label-secondary)" }}> then </span>

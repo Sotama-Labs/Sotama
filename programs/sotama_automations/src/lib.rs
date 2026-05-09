@@ -110,6 +110,33 @@ pub mod sotama_automations {
         )
     }
 
+    /// Create a chain-linked Swap automation with an explicit seed
+    /// deposit instead of `amount_in × total_fires`. Used by the
+    /// LinkedChainBuilder UI to provision multi-rule chains where the
+    /// head deposits one cycle of seed and downstream rules deposit 0
+    /// (refilled at fire time by the upstream rule's swap output via
+    /// `Swap.destination` routing). Allows `Cadence::Until` and
+    /// high-`total` `Cadence::Repeat` because the chain self-feeds.
+    pub fn create_automation_swap_linked(
+        ctx: Context<CreateAutomationSwapLinked>,
+        trigger: TriggerSpec,
+        action: ActionSpec,
+        cadence: Cadence,
+        min_interval_secs: u32,
+        enable_fee_topup: bool,
+        seed_amount: u64,
+    ) -> Result<()> {
+        instructions::create_automation_swap_linked::handler(
+            ctx,
+            trigger,
+            action,
+            cadence,
+            min_interval_secs,
+            enable_fee_topup,
+            seed_amount,
+        )
+    }
+
     pub fn execute_automation(ctx: Context<ExecuteAutomation>) -> Result<()> {
         instructions::execute_automation::handler(ctx)
     }

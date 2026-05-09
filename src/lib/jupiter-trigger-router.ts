@@ -33,6 +33,7 @@ export type KeeperReason =
   | "action_not_swap"
   | "looped_cadence"
   | "linked_downstream"
+  | "linked_chain"
   | "quote_not_usd"
   | "asset_not_crypto"
   | "trigger_asset_no_mint"
@@ -63,6 +64,14 @@ export type RouteDecision =
   | { route: "keeper"; reason: KeeperReason };
 
 export function routeAutomation(a: Automation): RouteDecision {
+  // Linked-chain rules ALWAYS run on the Sotama keeper. Even when an
+  // individual rule looks like a single USD-threshold swap that could
+  // delegate to Jupiter Trigger v2, the chain's funding pattern
+  // depends on Sotama's PDA-as-destination routing — Jupiter Trigger
+  // v2 vaults its own funds in a Privy wallet, breaking the chain.
+  if (a.link?.chainId) {
+    return { route: "keeper", reason: "linked_chain" };
+  }
   if (a.triggers.length !== 1) {
     return { route: "keeper", reason: "multiple_triggers" };
   }

@@ -979,6 +979,155 @@ export type SotamaAutomations = {
       ]
     },
     {
+      "name": "createAutomationSwapLinked",
+      "docs": [
+        "Create a chain-linked Swap automation with an explicit seed",
+        "deposit instead of `amount_in × total_fires`. Used by the",
+        "LinkedChainBuilder UI to provision multi-rule chains where the",
+        "head deposits one cycle of seed and downstream rules deposit 0",
+        "(refilled at fire time by the upstream rule's swap output via",
+        "`Swap.destination` routing). Allows `Cadence::Until` and",
+        "high-`total` `Cadence::Repeat` because the chain self-feeds."
+      ],
+      "discriminator": [
+        8,
+        58,
+        10,
+        59,
+        54,
+        197,
+        184,
+        60
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "automation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  111,
+                  109,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "config.automation_count",
+                "account": "config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "inputMint"
+        },
+        {
+          "name": "ownerInputAta",
+          "docs": [
+            "Owner's ATA for `input_mint`. Source of the optional seed",
+            "transfer. Must exist even when `seed_amount = 0` because Anchor",
+            "reads it as a typed account; client always idempotent-creates it."
+          ],
+          "writable": true
+        },
+        {
+          "name": "automationInputAta",
+          "docs": [
+            "Automation PDA's ATA for `input_mint`. Pre-created idempotently",
+            "by the client. Receives the optional seed transfer at create",
+            "time and is the destination ATA the upstream rule's",
+            "`Swap.destination` should point to (so its output mint = this",
+            "rule's input mint)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "trigger",
+          "type": {
+            "defined": {
+              "name": "triggerSpec"
+            }
+          }
+        },
+        {
+          "name": "action",
+          "type": {
+            "defined": {
+              "name": "actionSpec"
+            }
+          }
+        },
+        {
+          "name": "cadence",
+          "type": {
+            "defined": {
+              "name": "cadence"
+            }
+          }
+        },
+        {
+          "name": "minIntervalSecs",
+          "type": "u32"
+        },
+        {
+          "name": "enableFeeTopup",
+          "type": "bool"
+        },
+        {
+          "name": "seedAmount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "executeAutomation",
       "discriminator": [
         3,

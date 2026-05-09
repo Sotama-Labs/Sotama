@@ -204,6 +204,14 @@ export type DraftSwap = {
   inputToken: TokenRef | null;
   outputToken: TokenRef | null;
   amount: number | null;
+  /** When this draft is part of a linked chain, points at the
+   *  downstream automation's pubkey (set after PDA derivation in the
+   *  chain-deposit flow) or, during pre-funding, at a sentinel
+   *  describing the link target by chain index. The on-chain
+   *  `Swap.destination` is what does the actual fund routing — this
+   *  field is purely informational for the UI/chain visualizer and
+   *  for cycle detection. */
+  linkedDownstream?: string;
 };
 
 export type DraftAction =
@@ -291,6 +299,85 @@ export type Automation = {
    *  (i.e., owner closed it). Mutually exclusive with `executedAt` in
    *  practice. */
   closedAt?: string;
+  /** Chain membership metadata. Present iff this automation was created
+   *  as part of a LinkedChainBuilder flow. Standalone rules (the only
+   *  shape pre-chain-feature) leave this undefined and behave exactly
+   *  as they did before. */
+  link?: ChainLink;
+};
+
+/** Maximum number of linked rules per chain. Cap is enforced both in
+ *  the LinkedChainBuilder UI and in the chain-creation flow. Larger
+ *  chains start running into transaction-size limits (each rule's
+ *  create_automation_swap_linked ix + ATA creates is ~600 bytes
+ *  serialized; 3 nodes plus ATAs comfortably fit in one v0 tx). */
+export const MAX_CHAIN_LENGTH = 3;
+
+/** Default count for "Loop · cycles" mode. The user can edit this in
+ *  the LoopSlot's cycles input before saving. Picked at 10 because the
+ *  prototypical use case (USDC ↔ token arb) compounds slippage every
+ *  cycle; 10 is enough to feel "looped" without burning the deposit on
+ *  losses. */
+export const DEFAULT_LOOP_CYCLES = 10;
+
+/** "Far future" deadline for `Cadence::Until` infinite loops.
+ *  2099-12-31, well beyond any realistic chain runtime. The on-chain
+ *  validation only checks `unix_deadline > now` — there's no upper
+ *  bound — so this is a soft "infinite" representation. */
+export const INFINITE_LOOP_UNIX_DEADLINE = 4_102_444_800;
+
+/** Default deposit multiplier when the user picks "Loop · infinite" on
+ *  a SINGLE-RULE self-loop (not a chain — chains self-feed). Deposit =
+ *  amount_in × this number. The rule will fire that many times before
+ *  the input ATA depletes. User can adjust via TuningSheet, or close
+ *  and reopen for a bigger deposit. */
+export const SELF_LOOP_INFINITE_FUND_CYCLES = 100;
+
+/** Loop topology applied to a chain at submit time. Set on the
+ *  LinkedChainBuilder and threaded through to `sendChainCreate`, which
+ *  overrides each node's cadence + computes the head's seed amount
+ *  accordingly. `null` = no loop (linear chain, terminal at last
+ *  rule). */
+export type LoopMode =
+  | { kind: "frequency"; cycles: number }
+  | { kind: "infinite" };
+
+/** Where a linked rule routes its output. Persisted on the Automation
+ *  record (and mirrored into the on-chain `Swap.destination` at create
+ *  time). The chain head sets this to the next rule's id; the chain
+ *  tail can either set it to a downstream rule (forming a forward
+ *  chain) or leave it unset (terminal — a finite cascade). For a
+ *  perpetual loop, the tail's `chainNext` points back at the chain
+ *  head — the chain head's input ATA is the destination, so post-swap
+ *  output refills it for the next cycle. */
+export type ChainLinkTarget =
+  | { kind: "rule"; ruleId: string }
+  | { kind: "loopBack" };
+
+/** Per-rule chain metadata. Persisted alongside the Automation record
+ *  so the Active Strategies UI can render the chain badge, the cascade-
+ *  delete warning can enumerate siblings, and the keeper-side error
+ *  surface can attribute "no funds yet" failures to upstream stalls. */
+export type ChainLink = {
+  /** UUID shared by every rule in the same chain. */
+  chainId: string;
+  /** 0-indexed position within the chain. 0 = head (gets the seed
+   *  deposit). */
+  position: number;
+  /** Total nodes in the chain. Repeated on every node so a single
+   *  Automation record carries enough context to render the chain
+   *  badge ("2 of 3"). */
+  total: number;
+  /** Where this rule's output goes. `null` = no downstream (the chain
+   *  terminates here, finite cascade). */
+  next: ChainLinkTarget | null;
+  /** True for the rule that owns the seed deposit (always the head).
+   *  Convenience flag — equivalent to `position === 0`. */
+  isHead: boolean;
+  /** Set on the head when the chain-creation tx failed and downstream
+   *  rules weren't created. Lets the Active Strategies tab surface the
+   *  error and offer a "retry funding" affordance. */
+  fundingError?: string;
 };
 
 /** True iff the automation reached its terminal state on chain. */
@@ -376,6 +463,28 @@ export function isActionComplete(draft: DraftAction): draft is Action {
         draft.amount > 0
       );
   }
+}
+
+/** Quick-check if a chain's mint flow is consistent — every
+ *  upstream rule's outputMint must equal its downstream rule's
+ *  inputMint, otherwise the destination ATA accumulates a token the
+ *  downstream can't spend. Returns null when valid; a node-index
+ *  pair when invalid. */
+export function validateChainMintFlow(
+  swaps: { inputToken: TokenRef; outputToken: TokenRef }[],
+  next: (ChainLinkTarget | null)[],
+): { fromIndex: number; toIndex: number } | null {
+  for (let i = 0; i < swaps.length; i++) {
+    const link = next[i];
+    if (!link) continue;
+    const targetIndex =
+      link.kind === "loopBack" ? 0 : swaps.findIndex((_, idx) => `pos:${idx}` === link.ruleId);
+    if (targetIndex < 0 || targetIndex >= swaps.length) continue;
+    if (swaps[i].outputToken.mint !== swaps[targetIndex].inputToken.mint) {
+      return { fromIndex: i, toIndex: targetIndex };
+    }
+  }
+  return null;
 }
 
 export const EMPTY_TRIGGER: DraftTrigger = { kind: null };

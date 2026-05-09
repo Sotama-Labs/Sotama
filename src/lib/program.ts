@@ -268,6 +268,93 @@ export async function buildCreateAutomationSwapIx(params: {
   return { ix, automation, ownerInputAta, automationInputAta };
 }
 
+/** Build a create-automation ix for a chain-linked Swap. The on-chain
+ *  handler takes an explicit `seedAmount` instead of computing the
+ *  deposit from `amount_in × total_fires`, and accepts any cadence
+ *  (including Until) since the chain self-feeds via `Swap.destination`
+ *  routing. Pass `seedAmount = amountIn` for the chain head and
+ *  `seedAmount = 0` for downstream rules. */
+export async function buildCreateAutomationSwapLinkedIx(params: {
+  program: Program<SotamaAutomations>;
+  owner: PublicKey;
+  trigger: OnChainTriggerSpec;
+  action: OnChainActionSpec & {
+    swap: {
+      inputMint: PublicKey;
+      outputMint: PublicKey;
+      destination: PublicKey;
+      amountIn: BN;
+      minAmountOut: BN;
+    };
+  };
+  cadence: OnChainCadence;
+  minIntervalSecs: number;
+  enableFeeTopup: boolean;
+  seedAmount: BN;
+  nextNonce: bigint;
+}): Promise<{
+  ix: TransactionInstruction;
+  automation: PublicKey;
+  ownerInputAta: PublicKey;
+  automationInputAta: PublicKey;
+}> {
+  const {
+    program,
+    owner,
+    trigger,
+    action,
+    cadence,
+    minIntervalSecs,
+    enableFeeTopup,
+    seedAmount,
+    nextNonce,
+  } = params;
+  const inputMint = action.swap.inputMint;
+  const automation = automationPda(owner, nextNonce, program.programId);
+  const ownerInputAta = associatedTokenAddress(owner, inputMint);
+  const automationInputAta = associatedTokenAddress(automation, inputMint);
+  // Anchor types haven't been regenerated since the new ix shipped; use
+  // the dynamic methods accessor and cast through unknown so tsc accepts
+  // the call. The wire format is the same — name → discriminator lookup
+  // is by the IDL's instructions[].name.
+  const methods = program.methods as unknown as Record<
+    string,
+    (
+      trigger: unknown,
+      action: unknown,
+      cadence: unknown,
+      minIntervalSecs: number,
+      enableFeeTopup: boolean,
+      seedAmount: BN,
+    ) => {
+      accountsStrict: (a: Record<string, PublicKey>) => {
+        instruction: () => Promise<TransactionInstruction>;
+      };
+    }
+  >;
+  const ix = await methods
+    .createAutomationSwapLinked(
+      trigger,
+      action,
+      cadence,
+      minIntervalSecs,
+      enableFeeTopup,
+      seedAmount,
+    )
+    .accountsStrict({
+      owner,
+      config: configPda(program.programId),
+      automation,
+      inputMint,
+      ownerInputAta,
+      automationInputAta,
+      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      systemProgram: new PublicKey("11111111111111111111111111111111"),
+    })
+    .instruction();
+  return { ix, automation, ownerInputAta, automationInputAta };
+}
+
 export async function buildCloseAutomationIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
