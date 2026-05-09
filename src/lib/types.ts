@@ -16,24 +16,51 @@ export type TokenRef = {
   metadataSource: TokenMetadataSource;
 };
 
+export type AssetClass = "Crypto" | "Equity" | "Commodity" | "FX" | "Metal";
+
+export type AssetRef = {
+  /** Provider base symbol, may include region prefix: "SOL", "US.NVDA", "EUR", "XAU" */
+  symbol: string;
+  /** Ticker only, no pair or region prefix: "SOL", "NVDA", "EUR", "XAU" */
+  displaySymbol: string;
+  name: string;
+  assetClass: AssetClass;
+  logo?: string;
+  /** Solana SPL mint — only present for on-chain crypto assets */
+  mint?: string;
+  decimals?: number;
+  metadataSource?: TokenMetadataSource;
+};
+
 export type QuoteRef =
   | { kind: "usd" }
-  | ({ kind: "token" } & TokenRef);
+  | { kind: "asset"; asset: AssetRef };
 
 export type SpecificOrAny<T> =
   | { mode: "specific"; value: T }
   | { mode: "any" };
 
-/** What the keeper should subscribe to for a price-driven trigger. */
+/** What the keeper should subscribe to for a price-driven trigger.
+ *  The keeper's adapter dispatch keys off `kind`; adding a new oracle
+ *  is one variant here + one resolver in `oracles.ts` + one keeper
+ *  watcher. `mapTriggerToIx` translates `kind` → on-chain `source` byte.
+ *
+ *  `inverted` (Pyth only): true when the resolved feed quotes the pair
+ *  in the opposite direction (e.g. Pyth has FX.USD/SGD but the user
+ *  picked SGD with USD quote). Live preview displays `1 / raw_price`,
+ *  and `mapTriggerToIx` flips the comparator and inverts the threshold
+ *  before save so the on-chain trigger fires when the inverted feed
+ *  crosses — keeper never has to know about inversion. */
 export type OracleSource =
-  | { kind: "pyth"; feedId: string; symbol: string }
+  | { kind: "pyth"; feedId: string; symbol: string; inverted?: boolean }
+  | { kind: "jupiter"; mint: string; symbol: string }
   | { kind: "switchboard_pending"; symbol: string };
 
 /* ── Triggers ──────────────────────────────────────────────────────── */
 
-export type TokenPriceTrigger = {
-  kind: "token_price";
-  token: TokenRef;
+export type AssetPriceTrigger = {
+  kind: "asset_price";
+  asset: AssetRef;
   quote: QuoteRef;
   comparator: "above" | "below";
   threshold: number;
@@ -69,7 +96,7 @@ export type StakingRewardTimeTrigger = {
 };
 
 export type Trigger =
-  | TokenPriceTrigger
+  | AssetPriceTrigger
   | AccountTransferTrigger
   | AccountSwapTrigger
   | StakingRewardAmountTrigger
@@ -136,9 +163,9 @@ export type ActionKind = Action["kind"];
 
 /* ── Drafts (in-flight builder state with nullable fields) ─────────── */
 
-export type DraftTokenPrice = {
-  kind: "token_price";
-  token: TokenRef | null;
+export type DraftAssetPrice = {
+  kind: "asset_price";
+  asset: AssetRef | null;
   quote: QuoteRef;
   comparator: "above" | "below";
   threshold: number | null;
@@ -172,7 +199,7 @@ export type DraftStakingRewardTime = {
 
 export type DraftTrigger =
   | { kind: null }
-  | DraftTokenPrice
+  | DraftAssetPrice
   | DraftAccountTransfer
   | DraftAccountSwap
   | DraftStakingRewardAmount
@@ -336,9 +363,9 @@ export function isTriggerComplete(draft: DraftTrigger): draft is Trigger {
   switch (draft.kind) {
     case null:
       return false;
-    case "token_price":
+    case "asset_price":
       return (
-        draft.token != null &&
+        draft.asset != null &&
         draft.threshold != null &&
         draft.threshold > 0 &&
         draft.oracle != null

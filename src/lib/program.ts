@@ -96,12 +96,16 @@ export type OnChainTriggerSpec =
       };
     }
   | {
-      tokenPrice: {
+      assetPrice: {
         feed: PublicKey;
         quoteMint: PublicKey | null;
         comparator: number;
         threshold: BN;
         expo: number;
+        /** `oracle_source::PYTH = 0` | `oracle_source::JUPITER = 1`. The
+         *  on-chain program is oracle-agnostic; the keeper dispatches to
+         *  the matching adapter based on this byte. */
+        source: number;
       };
     }
   | {

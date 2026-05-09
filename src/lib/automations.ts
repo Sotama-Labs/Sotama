@@ -13,6 +13,44 @@ import type {
 import { DEFAULT_CADENCE, DEFAULT_MIN_INTERVAL_SECS, isActionComplete, isTriggerComplete } from "./types";
 
 const DEFAULT_TRIGGER_OP: TriggerOperator = "and";
+
+/** Migrate asset_price triggers saved before the AssetRef refactor.
+ *  Old shape: { token: TokenRef, quote: { kind: "token" } & TokenRef }
+ *  New shape: { asset: AssetRef, quote: { kind: "usd" } | { kind: "asset", asset: AssetRef } } */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function migrateAssetPriceTrigger(t: any): any {
+  if (t.kind !== "asset_price") return t;
+  const out = { ...t };
+  // Migrate token → asset. Old TokenRefs sometimes lack `symbol` (manual
+  // entries pre-symbol gating); fall back to a short mint slice so the
+  // AssetPicker pill renders something rather than `undefined`.
+  if ("token" in out && !("asset" in out)) {
+    const tok = out.token;
+    const display = tok?.symbol || tok?.mint?.slice(0, 4) || "?";
+    out.asset = {
+      ...tok,
+      symbol: tok?.symbol || display,
+      assetClass: "Crypto",
+      displaySymbol: display,
+    };
+    delete out.token;
+  }
+  // Migrate old quote: { kind: "token", mint, symbol, ... } → { kind: "asset", asset: AssetRef }
+  if (out.quote?.kind === "token") {
+    const q = out.quote;
+    const display = q?.symbol || q?.mint?.slice(0, 4) || "?";
+    out.quote = {
+      kind: "asset",
+      asset: {
+        ...q,
+        symbol: q?.symbol || display,
+        assetClass: "Crypto",
+        displaySymbol: display,
+      },
+    };
+  }
+  return out;
+}
 const DEFAULT_ACTION_OP: ActionOperator = "then";
 
 function fillOperators<T extends string>(
@@ -45,6 +83,7 @@ export function loadAutomations(): Automation[] {
       .filter((a) => a.schemaVersion === 3)
       .map((a) => ({
         ...a,
+        triggers: a.triggers.map(migrateAssetPriceTrigger),
         triggerOperators: fillOperators(
           a.triggerOperators,
           Math.max(0, a.triggers.length - 1),

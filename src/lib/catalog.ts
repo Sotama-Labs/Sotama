@@ -19,7 +19,7 @@ import type {
      needs hardcoded checks against specific kinds.
    ───────────────────────────────────────────────────────────────────── */
 
-export type TriggerCategoryId = "token_price" | "track_account" | "staking";
+export type TriggerCategoryId = "asset_price" | "track_account" | "staking";
 
 export type TriggerKindMeta = {
   kind: TriggerKind;
@@ -118,14 +118,14 @@ export const ACTION_KINDS: ActionKindMeta[] = [
 const GENERAL_ACTIONS: ActionKind[] = ["transfer", "swap"];
 const STAKING_ACTIONS: ActionKind[] = ["restake", "sell_for", "transfer_reward"];
 
-const TOKEN_PRICE: TriggerKindMeta = {
-  kind: "token_price",
-  label: "Token price",
-  description: "Fires when an oracle price crosses a threshold.",
+const ASSET_PRICE: TriggerKindMeta = {
+  kind: "asset_price",
+  label: "Asset price",
+  description: "Fires when a price crosses a threshold.",
   compatibleActions: GENERAL_ACTIONS,
   empty: () => ({
-    kind: "token_price",
-    token: null,
+    kind: "asset_price",
+    asset: null,
     quote: { kind: "usd" },
     comparator: "below",
     threshold: null,
@@ -184,10 +184,10 @@ const STAKING_TIME: TriggerKindMeta = {
 
 export const TRIGGER_CATEGORIES: TriggerCategoryMeta[] = [
   {
-    id: "token_price",
-    label: "Token Price",
-    description: "Track token price against USD or any quote token",
-    kinds: [TOKEN_PRICE],
+    id: "asset_price",
+    label: "Asset Price",
+    description: "Track any asset (crypto, equity, FX, commodity, metal) against USD or a quote asset",
+    kinds: [ASSET_PRICE],
   },
   {
     id: "track_account",
@@ -269,22 +269,22 @@ export function actionsAreCompatible(
 const TRIGGERS_BY_CADENCE: Record<CadenceKind, ReadonlySet<TriggerKind>> = {
   // If reads as event-driven: any trigger fits.
   once: new Set<TriggerKind>([
-    "token_price",
+    "asset_price",
     "account_transfer",
     "account_swap",
     "staking_reward_amount",
     "staking_reward_time",
   ]),
-  // While reads as a standing predicate. Only token_price fits naturally —
+  // While reads as a standing predicate. Only asset_price fits naturally —
   // "While SOL price < $180" is a true predicate. The others are events
   // (account_*) or self-resetting amount thresholds whose semantics under
   // a recurring loop are confusing.
-  until: new Set<TriggerKind>(["token_price"]),
+  until: new Set<TriggerKind>(["asset_price"]),
   // For reads as "the next N times that …". Event triggers and the time
   // schedule both fit; amount-thresholds are awkward because they fire
   // once and then sit at the threshold.
   repeat: new Set<TriggerKind>([
-    "token_price",
+    "asset_price",
     "account_transfer",
     "account_swap",
     "staking_reward_time",

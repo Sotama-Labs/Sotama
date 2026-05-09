@@ -1,13 +1,25 @@
 "use client";
 
 /* ─────────────────────────────────────────────────────────────────────
-   Pyth Hermes — keeper-agnostic price oracle.
-   Feed lookup by symbol; latest price + SSE streaming for live previews.
-   Tokens without a Pyth feed save with a `switchboard_pending` marker —
-   the keeper resolves Switchboard On-Demand at runtime.
+   Oracle resolution — front-door for all price sources.
+
+   Architecture: a registry of resolvers tries each source in order and
+   the first hit wins. Each resolver is a self-contained provider that
+   knows how to look up a feed for an (asset, quote) pair. Adding a new
+   provider (Switchboard, Birdeye, …) is one entry in `RESOLVERS` plus a
+   matching keeper-side watcher. The on-chain program is oracle-agnostic
+   (`source: u8` byte tells the keeper which adapter to dispatch to).
+
+   Current resolvers, in priority order:
+     1. Pyth (Hermes catalog) — covers crypto, equity, FX, commodity, metal.
+     2. Jupiter Price v3 — covers any tradable SPL mint that Pyth missed.
+     3. switchboard_pending sentinel — placeholder for future Switchboard
+        On-Demand integration; UI blocks deploy until the resolver lands.
    ───────────────────────────────────────────────────────────────────── */
 
-import type { OracleSource, TokenRef } from "./types";
+import type { AssetClass, AssetRef, OracleSource, QuoteRef } from "./types";
+import { displaySymbolFromBase, parsePythSymbol } from "./assets";
+import { fetchJupiterPriceUSD } from "./jupiter";
 
 const HERMES =
   process.env.NEXT_PUBLIC_PYTH_HERMES_URL || "https://hermes.pyth.network";
@@ -22,6 +34,8 @@ type FeedAttributes = {
   quote_currency?: string;
   symbol?: string;
   display_symbol?: string;
+  description?: string;
+  generic_symbol?: string;
 };
 
 type FeedEntry = {
@@ -39,28 +53,122 @@ export function normalizeFeedId(id: string): string {
   return id.startsWith("0x") ? id.slice(2) : id;
 }
 
-/** Search Pyth's feed registry for a USD-quoted crypto feed matching `symbol`. */
-export async function lookupPythFeed(
-  symbol: string,
+/** Maps AssetClass to the provider's internal query parameter. Update here when switching providers. */
+const ASSET_CLASS_TO_QUERY_TYPE: Record<AssetClass, string> = {
+  Crypto: "crypto",
+  Equity: "equity",
+  Commodity: "commodity",
+  FX: "fx",
+  Metal: "metal",
+};
+
+/** Extract base symbol from a feed entry.
+ *  Hermes only populates `attributes.base` for crypto; for FX/Metal/Equity
+ *  it must be derived by parsing `attributes.symbol` (e.g. "FX.EUR/USD" → "EUR"). */
+function feedBase(f: FeedEntry): string | null {
+  if (f.attributes?.base) return f.attributes.base;
+  const sym = f.attributes?.symbol;
+  if (!sym) return null;
+  return parsePythSymbol(sym)?.base ?? null;
+}
+
+/** Extract quote currency from a feed entry, with the same fallback. */
+function feedQuote(f: FeedEntry): string | null {
+  if (f.attributes?.quote_currency) return f.attributes.quote_currency;
+  const sym = f.attributes?.symbol;
+  if (!sym) return null;
+  return parsePythSymbol(sym)?.quote ?? null;
+}
+
+/** Search the feed registry for assets of a given class matching an optional query string. */
+export async function searchFeedsByClass(
+  assetClass: AssetClass,
+  query: string,
+): Promise<AssetRef[]> {
+  const assetType = ASSET_CLASS_TO_QUERY_TYPE[assetClass];
+  const q = encodeURIComponent(query.trim());
+  const url = `${HERMES}/v2/price_feeds?query=${q}&asset_type=${assetType}`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return [];
+    const feeds = (await res.json()) as FeedEntry[];
+    if (!Array.isArray(feeds)) return [];
+    const seen = new Set<string>();
+    const out: AssetRef[] = [];
+    // Group candidate feeds by ticker. Direct (X/USD) wins over
+    // inverted (USD/X), and main-session wins over PRE/POST/OVERNIGHT
+    // within direct. The picker is showing tickers, not feeds, so a
+    // ticker only available as USD/X (e.g. SGD, JPY) still surfaces —
+    // the inversion is applied later at the resolver/save layer.
+    type Cand = { feed: FeedEntry; ticker: string; inverted: boolean };
+    const byTicker = new Map<string, Cand>();
+    for (const f of feeds) {
+      const base = feedBase(f);
+      const quote = feedQuote(f);
+      if (!base || !quote) continue;
+      const baseUpper = base.toUpperCase();
+      const quoteUpper = quote.toUpperCase();
+      let cand: Cand | null = null;
+      if (quoteUpper === "USD") {
+        cand = { feed: f, ticker: base, inverted: false };
+      } else if (baseUpper === "USD") {
+        cand = { feed: f, ticker: quote, inverted: true };
+      }
+      if (!cand) continue;
+      const existing = byTicker.get(cand.ticker);
+      const better = (() => {
+        if (!existing) return true;
+        // Prefer direct over inverted.
+        if (existing.inverted && !cand.inverted) return true;
+        if (!existing.inverted && cand.inverted) return false;
+        // Same orientation — prefer main-session feed.
+        return !isMainSessionFeed(existing.feed) && isMainSessionFeed(cand.feed);
+      })();
+      if (better) byTicker.set(cand.ticker, cand);
+    }
+    for (const [ticker, cand] of byTicker) {
+      if (seen.has(ticker)) continue;
+      seen.add(ticker);
+      // Hermes serves human-readable names in `attributes.description`
+      // (e.g. "NVIDIA Corp", "Japanese Yen"). Falling back to the empty
+      // string used to render "<TICKER>\n" with no second line in
+      // AssetPicker; H1.
+      const name = cand.feed.attributes?.description || cand.feed.attributes?.generic_symbol || "";
+      out.push({
+        symbol: ticker,
+        displaySymbol: displaySymbolFromBase(ticker),
+        name,
+        assetClass,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Look up a direct feed for any base/quote pair (not necessarily USD-quoted). */
+async function lookupDirectPairFeed(
+  baseSymbol: string,
+  quoteSymbol: string,
 ): Promise<{ feedId: string; symbol: string } | null> {
-  const query = encodeURIComponent(symbol);
-  const url = `${HERMES}/v2/price_feeds?query=${query}&asset_type=crypto`;
+  const upper = baseSymbol.toUpperCase();
+  const quoteUpper = quoteSymbol.toUpperCase();
+  const url = `${HERMES}/v2/price_feeds?query=${encodeURIComponent(upper)}`;
   try {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
     const feeds = (await res.json()) as FeedEntry[];
     if (!Array.isArray(feeds)) return null;
-
-    const upper = symbol.toUpperCase();
-    const exact = feeds.find(
+    const match = feeds.find(
       (f) =>
-        f.attributes?.base?.toUpperCase() === upper &&
-        f.attributes?.quote_currency?.toUpperCase() === "USD",
+        feedBase(f)?.toUpperCase() === upper &&
+        feedQuote(f)?.toUpperCase() === quoteUpper,
     );
-    if (exact) {
+    if (match) {
       return {
-        feedId: normalizeFeedId(exact.id),
-        symbol: exact.attributes?.symbol || `Crypto.${upper}/USD`,
+        feedId: normalizeFeedId(match.id),
+        symbol: match.attributes?.symbol ?? `${upper}/${quoteUpper}`,
       };
     }
     return null;
@@ -69,14 +177,228 @@ export async function lookupPythFeed(
   }
 }
 
-/** Build the OracleSource for a given token, falling back to switchboard_pending. */
-export async function resolveOracleForToken(token: TokenRef): Promise<OracleSource> {
-  const found = await lookupPythFeed(token.symbol);
-  if (found) {
-    return { kind: "pyth", feedId: found.feedId, symbol: found.symbol };
-  }
-  return { kind: "switchboard_pending", symbol: token.symbol };
+/** Lookup a Pyth feed that quotes `base/quote` directly OR `quote/base`
+ *  (which we then flag inverted). The on-chain trigger stores the
+ *  whichever feed Pyth has and the comparator/threshold get flipped at
+ *  save time when inverted, so the keeper sees a normal direct trigger.
+ *  Used when neither side is USD — e.g. AUD/JPY, USD/SGD as base/quote
+ *  pair, or BTC priced in EUR (if such a feed existed). */
+async function lookupPairFeed(
+  base: AssetRef,
+  quote: AssetRef,
+): Promise<{ feedId: string; symbol: string; inverted: boolean } | null> {
+  const direct = await lookupDirectPairFeed(base.displaySymbol, quote.displaySymbol);
+  if (direct) return { feedId: direct.feedId, symbol: direct.symbol, inverted: false };
+  const inverted = await lookupDirectPairFeed(quote.displaySymbol, base.displaySymbol);
+  if (inverted) return { feedId: inverted.feedId, symbol: inverted.symbol, inverted: true };
+  return null;
 }
+
+
+/** Equity feeds come in multiple session variants per ticker:
+ *    Equity.US.NVDA/USD       — regular hours (09:30–16:00 ET)
+ *    Equity.US.NVDA/USD.PRE   — pre-market   (04:00–09:30 ET)
+ *    Equity.US.NVDA/USD.POST  — after-hours  (16:00–20:00 ET)
+ *    Equity.US.NVDA/USD.ON    — overnight    (20:00–04:00 ET)
+ *  The main session feed is the one with no suffix after `/USD`. We
+ *  always prefer it so threshold previews and presets reflect the
+ *  canonical price; off-hours variants are last-resort fallbacks. */
+function isMainSessionFeed(f: FeedEntry): boolean {
+  const sym = f.attributes?.symbol ?? "";
+  return sym.endsWith("/USD");
+}
+
+/** Look up the USD-quoted feed for an asset.
+ *
+ *  Two passes against Hermes:
+ *    1. Direct: `<asset>/USD` — the conventional X/USD pair.
+ *    2. Inverted: `USD/<asset>` — Pyth's preference for many minor
+ *       currencies (USD/SGD, USD/JPY, USD/HKD, …). Returns `inverted=true`
+ *       so callers can flip semantics (live price = 1/raw, comparator
+ *       and threshold also flip at deploy time).
+ *
+ *  Inverted feeds compose end-to-end without any keeper-side change:
+ *  the on-chain trigger ends up with comparator/threshold targeting
+ *  the inverted pair, which is exactly what the keeper sees streaming. */
+async function lookupFeedForAsset(
+  asset: AssetRef,
+): Promise<{ feedId: string; symbol: string; inverted: boolean } | null> {
+  const assetType = ASSET_CLASS_TO_QUERY_TYPE[asset.assetClass];
+  const q = encodeURIComponent(asset.displaySymbol);
+  const url = `${HERMES}/v2/price_feeds?query=${q}&asset_type=${assetType}`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return null;
+    const feeds = (await res.json()) as FeedEntry[];
+    if (!Array.isArray(feeds)) return null;
+    const symbolUpper = asset.symbol.toUpperCase();
+    const displayUpper = asset.displaySymbol.toUpperCase();
+
+    const directCandidates = feeds.filter((f) => {
+      const base = feedBase(f)?.toUpperCase();
+      const quote = feedQuote(f)?.toUpperCase();
+      return (base === symbolUpper || base === displayUpper) && quote === "USD";
+    });
+    // Prefer the main-session feed (e.g. "Equity.US.NVDA/USD") over
+    // PRE/POST/OVERNIGHT variants. Without this, picker-side resolution
+    // could land on a session that publishes nothing during the current
+    // wall-clock time and the live preview stays empty forever.
+    const direct = directCandidates.find(isMainSessionFeed) ?? directCandidates[0];
+    if (direct) {
+      return {
+        feedId: normalizeFeedId(direct.id),
+        symbol: direct.attributes?.symbol ?? `${feedBase(direct) ?? asset.symbol}/USD`,
+        inverted: false,
+      };
+    }
+
+    // Inverted fallback: Pyth quotes some FX as USD/X (e.g. USD/SGD,
+    // USD/JPY, USD/HKD). Find an exact USD/<asset> match and flag it.
+    const invertedCandidates = feeds.filter((f) => {
+      const base = feedBase(f)?.toUpperCase();
+      const quote = feedQuote(f)?.toUpperCase();
+      return base === "USD" && (quote === symbolUpper || quote === displayUpper);
+    });
+    const inverted = invertedCandidates[0];
+    if (inverted) {
+      return {
+        feedId: normalizeFeedId(inverted.id),
+        symbol: inverted.attributes?.symbol ?? `USD/${feedQuote(inverted) ?? asset.symbol}`,
+        inverted: true,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** A single price-oracle provider that can resolve an asset+quote pair.
+ *  Returns `null` to mean "this provider doesn't have it; try the next."
+ *  Adding a new provider (Switchboard, Birdeye, …) is implementing this
+ *  interface and registering an entry in `RESOLVERS` below. */
+type OracleResolver = (
+  asset: AssetRef,
+  quote: QuoteRef,
+) => Promise<OracleSource | null>;
+
+/** Pyth resolver. Three modes:
+ *    1. quote = USD: look up `<base>/USD` (direct) or `USD/<base>`
+ *       (inverted fallback for SGD, JPY, HKD, …).
+ *    2. quote = AssetRef + base is USD: look up `USD/<quote>` (direct)
+ *       or `<quote>/USD` (inverted) — handles "USD strength against X".
+ *    3. quote = AssetRef + base is non-USD: try direct/inverted pair
+ *       feed first (e.g. AUD/JPY, EUR/SGD). If none, fall back to a
+ *       base/USD feed — `mapTriggerToIx` will route it through the
+ *       Jupiter `quote_mint` path when the quote asset has a Solana
+ *       mint, and the editor displays a live inferred ratio
+ *       (base/USD ÷ quote/USD) for preview.
+ *  Self-pairs (BTC/BTC, USD/USD) and USD/USD are rejected — meaningless. */
+const resolvePyth: OracleResolver = async (asset, quote) => {
+  if (quote.kind === "usd") {
+    if (asset.symbol === "USD") return null; // USD/USD: meaningless
+    const found = await lookupFeedForAsset(asset);
+    return found
+      ? {
+          kind: "pyth",
+          feedId: found.feedId,
+          symbol: found.symbol,
+          inverted: found.inverted,
+        }
+      : null;
+  }
+  // Both base and quote are concrete AssetRefs.
+  if (asset.symbol === quote.asset.symbol) return null; // self-pair
+  const pair = await lookupPairFeed(asset, quote.asset);
+  if (pair) {
+    return {
+      kind: "pyth",
+      feedId: pair.feedId,
+      symbol: pair.symbol,
+      inverted: pair.inverted,
+    };
+  }
+  // Inferred fallback: Pyth doesn't carry the pair, so we resolve the
+  // base via its USD feed. The editor shows base/USD ÷ quote/USD as a
+  // live preview, and mapTriggerToIx encodes the quote leg via
+  // `quote_mint` when the quote asset has a Solana mint.
+  const baseUsd = await lookupFeedForAsset(asset);
+  return baseUsd
+    ? {
+        kind: "pyth",
+        feedId: baseUsd.feedId,
+        symbol: baseUsd.symbol,
+        inverted: baseUsd.inverted,
+      }
+    : null;
+};
+
+/** Jupiter resolver: USD-quoted prices for any tradable SPL mint. Only
+ *  fires when the asset has a `mint` (Crypto class) — Equity/FX/Metal
+ *  aren't on-chain assets and have no Solana mint. Non-USD quotes route
+ *  through Pyth's pair feeds (Jupiter doesn't price arbitrary pairs). */
+const resolveJupiter: OracleResolver = async (asset, quote) => {
+  if (quote.kind !== "usd") return null;
+  if (!asset.mint) return null;
+  const price = await fetchJupiterPriceUSD(asset.mint);
+  if (!price) return null;
+  return { kind: "jupiter", mint: asset.mint, symbol: `${asset.displaySymbol}/USD` };
+};
+
+/** Registry of available oracle providers, in priority order. The first
+ *  resolver that returns non-null wins. To add a provider: append a new
+ *  resolver here and a matching keeper watcher in `keeper/src/`. */
+const RESOLVERS: ReadonlyArray<OracleResolver> = [resolvePyth, resolveJupiter];
+
+/** Resolve an OracleSource for an asset/quote pair.
+ *  Tries each provider in `RESOLVERS` in order; first hit wins. Falls
+ *  back to `switchboard_pending` only when nothing matches — UI blocks
+ *  deploy on that sentinel until a Switchboard resolver lands. */
+export async function resolveOracleForPair(
+  asset: AssetRef,
+  quote: QuoteRef,
+): Promise<OracleSource> {
+  for (const resolver of RESOLVERS) {
+    const hit = await resolver(asset, quote);
+    if (hit) return hit;
+  }
+  return { kind: "switchboard_pending", symbol: asset.symbol };
+}
+
+/** Fetch the live pair price for an asset/quote combination.
+ *  Returns the price and whether it came from a direct pair feed.
+ *  For inferred pairs: fetches base/USD and quote/USD and divides. */
+export async function fetchPairPrice(
+  asset: AssetRef,
+  quote: QuoteRef,
+): Promise<{ price: number; direct: boolean } | null> {
+  if (quote.kind === "usd") {
+    const found = await lookupFeedForAsset(asset);
+    if (!found) return null;
+    const p = await fetchPythLatest(found.feedId);
+    if (!p) return null;
+    return { price: p.price, direct: true };
+  }
+  // Try direct pair
+  const direct = await lookupDirectPairFeed(asset.symbol, quote.asset.symbol);
+  if (direct) {
+    const p = await fetchPythLatest(direct.feedId);
+    if (p) return { price: p.price, direct: true };
+  }
+  // Infer via base/USD ÷ quote/USD
+  const [baseFound, quoteFound] = await Promise.all([
+    lookupFeedForAsset(asset),
+    lookupFeedForAsset(quote.asset),
+  ]);
+  if (!baseFound || !quoteFound) return null;
+  const [baseP, quoteP] = await Promise.all([
+    fetchPythLatest(baseFound.feedId),
+    fetchPythLatest(quoteFound.feedId),
+  ]);
+  if (!baseP || !quoteP || quoteP.price === 0) return null;
+  return { price: baseP.price / quoteP.price, direct: false };
+}
+
 
 type ParsedPrice = {
   id: string;
@@ -111,7 +433,11 @@ export async function fetchPythLatest(feedId: string): Promise<PriceUpdate | nul
 
 export type StreamHandle = { close: () => void };
 
-/** SSE subscription with a polling fallback used by usePythPrice. */
+/** SSE subscription with a polling fallback used by usePythPrice.
+ *  Always seeds with one `/latest` fetch first so the consumer sees the
+ *  last known price immediately — necessary for equity feeds outside
+ *  their active session (PRE/POST/main/ON), where the SSE channel can
+ *  stay open silently with no events to deliver. */
 export function subscribePythStream(
   feedId: string,
   onUpdate: (u: PriceUpdate) => void,
@@ -123,6 +449,15 @@ export function subscribePythStream(
   let alive = true;
   let es: EventSource | null = null;
   let poll: number | null = null;
+
+  // Kick off an immediate seed fetch in parallel with the SSE open.
+  // Without this, off-hours equity feeds render with no preview price
+  // until the next market session — and the +/- preset buttons (which
+  // gate on `pairPrice != null`) never appear.
+  void (async () => {
+    const u = await fetchPythLatest(id);
+    if (u && alive) onUpdate(u);
+  })();
 
   const stopPoll = () => {
     if (poll != null) {

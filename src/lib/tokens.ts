@@ -2,11 +2,18 @@
 
 import type { TokenRef, TokenMetadataSource } from "./types";
 import { RPC_URL, MAINNET_METADATA_RPC_URL } from "./rpc";
+import { fetchJupiterTokenMetadata } from "./jupiter";
 
 /* ── Canonical mints that always resolve nicely ───────────────────── */
 /* Mainnet mints; symbols + logos hold across networks. The devnet wallet
  * may not actually hold these tokens — the entries exist so pasting the
- * familiar SOL/USDC/JUP CA resolves immediately to the correct branding. */
+ * familiar SOL/USDC/JUP CA resolves immediately to the correct branding.
+ *
+ * Note: solana-labs/token-list went unmaintained in 2022, so its asset
+ * paths only cover well-known mints. Runtime token resolution prefers
+ * the Jupiter Token API tier (which covers basically every tradable
+ * mint with up-to-date logos); these constants are the offline-safe
+ * fallback for the marquee tokens. */
 
 const STATIC_LOGO = (slug: string) =>
   `https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/${slug}/logo.png`;
@@ -226,6 +233,24 @@ export async function resolveToken(input: string): Promise<ResolveResult> {
   }
   if (CANONICAL_DEVNET_MINTS[mint]) {
     const token = CANONICAL_DEVNET_MINTS[mint];
+    writeCache(token);
+    return { status: "ok", token };
+  }
+
+  // Jupiter Token API — covers basically every tradable Solana token
+  // with current logos. Sits ahead of the DAS RPCs because most pasted
+  // CAs are mainnet tokens, and Jupiter resolves them correctly with a
+  // logo even when the local devnet RPC has no metadata for them.
+  const fromJupiter = await fetchJupiterTokenMetadata(mint);
+  if (fromJupiter) {
+    const token: TokenRef = {
+      mint: fromJupiter.mint,
+      symbol: fromJupiter.symbol,
+      name: fromJupiter.name,
+      logo: fromJupiter.logo,
+      decimals: fromJupiter.decimals,
+      metadataSource: "mainnet",
+    };
     writeCache(token);
     return { status: "ok", token };
   }

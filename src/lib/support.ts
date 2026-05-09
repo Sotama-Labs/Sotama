@@ -21,7 +21,7 @@ import type { TriggerCategoryMeta } from "./catalog";
 export const SUPPORTED_TRIGGER_KINDS: Record<TriggerKind, boolean> = {
   account_transfer: true,             // wired ✓ — Helius transactionSubscribe + execute_automation
   account_swap: true,                 // wired ✓ — Helius txSubscribe + DEX program filter
-  token_price: true,                  // wired ✓ — Pyth Hermes poll in keeper
+  asset_price: true,                  // wired ✓ — Pyth Hermes/Lazer poll in keeper
   staking_reward_amount: true,        // wired ✓ — keeper polls stake account, on-chain time-window for TIME mode
   staking_reward_time: true,          // wired ✓ — same path as amount mode
 };
