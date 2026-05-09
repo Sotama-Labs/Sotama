@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyChainLink } from "../src/lib/linked-chains";
+import { classifyChainLink, validateChainDraft } from "../src/lib/linked-chains";
 
 const SOL = "So11111111111111111111111111111111111111112";
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -49,5 +49,24 @@ describe("classifyChainLink", () => {
       minIntervalSecs: 0,
     };
     assert.equal(classifyChainLink(nonSwap as never, swap(USDC, TKN)), "bridge_required");
+  });
+});
+
+describe("validateChainDraft (post-bridge)", () => {
+  it("accepts a non-matching-mint chain (bridge handles it)", () => {
+    const nodes = [
+      { result: swap(USDC, TKN), next: { kind: "rule" as const, ruleIndex: 1 } },
+      { result: swap(SOL, USDC), next: null },
+    ];
+    assert.equal(validateChainDraft(nodes), null);
+  });
+
+  it("still rejects non-swap actions in chain rules", () => {
+    const nonSwap = {
+      ...swap(USDC, TKN),
+      actions: [{ kind: "transfer" as const, token: tok(USDC), amount: 1, destination: "x" }],
+    };
+    const err = validateChainDraft([{ result: nonSwap, next: null }]);
+    assert.equal(err?.kind, "non_swap_action");
   });
 });

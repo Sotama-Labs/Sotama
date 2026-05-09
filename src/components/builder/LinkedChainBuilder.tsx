@@ -1479,8 +1479,6 @@ function humanizeChainError(err: ChainValidationError): string {
   switch (err.kind) {
     case "non_swap_action":
       return `Rule ${err.nodeIndex + 1}: chain rules must be Swap actions.`;
-    case "mint_flow_mismatch":
-      return `Rule ${err.fromIndex + 1}'s output token must match Rule ${err.toIndex + 1}'s input token. Adjust mints or unlink.`;
     case "loop_with_distinct_input_output":
       return `Rule ${err.nodeIndex + 1}: self-link requires input and output tokens to match.`;
     case "head_must_have_seed_amount":

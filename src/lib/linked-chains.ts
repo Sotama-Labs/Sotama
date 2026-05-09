@@ -148,7 +148,6 @@ export function classifyChainLink(
  *  tokens — so the validator is strict. */
 export type ChainValidationError =
   | { kind: "non_swap_action"; nodeIndex: number }
-  | { kind: "mint_flow_mismatch"; fromIndex: number; toIndex: number }
   | { kind: "loop_with_distinct_input_output"; nodeIndex: number }
   | { kind: "head_must_have_seed_amount"; nodeIndex: number };
 
@@ -168,10 +167,10 @@ export function validateChainDraft(
       return { kind: "non_swap_action", nodeIndex: i };
     }
   }
-  // Mint-flow check: each upstream rule's outputMint must equal the
-  // downstream's inputMint, otherwise the Swap.destination's ATA holds
-  // a token the downstream rule can't trade. Only meaningful when there
-  // are 2+ nodes — single-rule chains have no destination routing.
+  // Self-link guard: a self-link (ruleIndex === i) on a multi-card chain
+  // is rejected because the output cannot bridge back to the same node —
+  // the bridge requires a separate downstream rule to route output into.
+  // Single-card self-loops are valid (cadence-driven, no destination routing).
   for (let i = 0; i < nodes.length; i++) {
     const link = nodes[i].next;
     if (!link) continue;
@@ -188,15 +187,6 @@ export function validateChainDraft(
       if (nodes.length > 1) {
         return { kind: "loop_with_distinct_input_output", nodeIndex: i };
       }
-      continue;
-    }
-    const upstream = nodes[i].result.actions[0] as { kind: "swap"; outputToken: { mint: string } };
-    const downstream = nodes[targetIdx].result.actions[0] as {
-      kind: "swap";
-      inputToken: { mint: string };
-    };
-    if (upstream.outputToken.mint !== downstream.inputToken.mint) {
-      return { kind: "mint_flow_mismatch", fromIndex: i, toIndex: targetIdx };
     }
   }
   return null;
