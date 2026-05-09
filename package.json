@@ -8,6 +8,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
+    "test:unit": "ts-mocha -p ./tsconfig.test.json -t 30000 'tests/*.test.ts'",
     "anchor:build": "anchor build && pnpm anchor:sync-idl",
     "anchor:sync-idl": "mkdir -p src/lib/idl && cp target/idl/sotama_automations.json src/lib/idl/ && cp target/types/sotama_automations.ts src/lib/idl/sotama_automations.ts",
     "anchor:test": "anchor test",
