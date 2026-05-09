@@ -193,6 +193,29 @@ pub mod sotama_automations {
         )
     }
 
+    /// Keeper-driven, per-PDA-authorized Jupiter swap that converts
+    /// any non-input-mint holdings of the PDA into the rule's expected
+    /// `Swap.input_mint`. Used by the chain bridge dispatcher to
+    /// reconcile mint mismatches between adjacent linked rules so the
+    /// downstream rule's next fire has the correct input balance.
+    /// Output ATA must be owned by the PDA and sized in the canonical
+    /// input mint; `min_amount_out` is enforced post-CPI.
+    pub fn execute_bridge<'info>(
+        ctx: Context<'_, '_, '_, 'info, ExecuteBridge<'info>>,
+        inner_ix_data: Vec<u8>,
+        inner_ix_account_metas: Vec<jupiter::SwapAccountMeta>,
+        output_ata_index: u8,
+        min_amount_out: u64,
+    ) -> Result<()> {
+        instructions::execute_bridge::handler(
+            ctx,
+            inner_ix_data,
+            inner_ix_account_metas,
+            output_ata_index,
+            min_amount_out,
+        )
+    }
+
     pub fn close_automation(ctx: Context<CloseAutomation>) -> Result<()> {
         instructions::close_automation::handler(ctx)
     }
