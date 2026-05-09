@@ -35,7 +35,19 @@ describe("classifyChainLink", () => {
     assert.equal(classifyChainLink(swap(USDC, TKN), swap(SOL, USDC)), "bridge_required");
   });
 
-  it("matched_mints wins over inverted_pair when both could apply", () => {
+  it("matched_mints for degenerate same-token swap (USDC→USDC then USDC→USDC)", () => {
     assert.equal(classifyChainLink(swap(USDC, USDC), swap(USDC, USDC)), "matched_mints");
+  });
+
+  it("bridge_required for non-swap action", () => {
+    const nonSwap = {
+      triggers: [],
+      triggerOperators: [],
+      actions: [{ kind: "transfer" as const, amount: 1 }],
+      actionOperators: [],
+      cadence: { kind: "once" as const },
+      minIntervalSecs: 0,
+    };
+    assert.equal(classifyChainLink(nonSwap as never, swap(USDC, TKN)), "bridge_required");
   });
 });

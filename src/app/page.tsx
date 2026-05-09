@@ -12,7 +12,7 @@ import { CompactNav } from "@/components/CompactNav";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { Toast } from "@/components/Toast";
 import { CascadeConfirmModal } from "@/components/CascadeConfirmModal";
-import { type BuilderResult } from "@/components/builder/ConditionalBuilder";
+import { type BuilderResult } from "@/lib/types";
 import { LinkedChainBuilder, type ChainSaveData } from "@/components/builder/LinkedChainBuilder";
 import { ActiveStrategiesPage } from "@/components/ActiveStrategiesPage";
 import { DepositSheet, type OnChainResult } from "@/components/DepositSheet";

@@ -101,11 +101,17 @@ export type ChainNodeDraft = {
  *    ATA depletes over time). */
 export type ChainNodeNextDraft = { kind: "rule"; ruleIndex: number };
 
-/** Pure classifier for an adjacent rule pair. Inverted-pair is checked
- *  first for non-degenerate cases (A→B then B→A); matched_mints wins
- *  only when both tokens are identical (degenerate symmetric swap) or
- *  the mints line up without inversion; everything else is
- *  bridge_required. */
+/** Pure classifier for an adjacent rule pair.
+ *
+ *  Decision tree (in evaluation order):
+ *   1. If either action is missing or not a swap → bridge_required.
+ *   2. Degenerate same-token case: both isInverted AND isMatched AND
+ *      upstream input mint == upstream output mint (e.g. USDC→USDC then
+ *      USDC→USDC) → matched_mints. Without this guard the inverted
+ *      branch below would fire first and mis-classify the pair.
+ *   3. Inverted pair (A→B then B→A, non-degenerate) → inverted_pair.
+ *   4. Forward match (upstream.out == downstream.in) → matched_mints.
+ *   5. Neither → bridge_required. */
 export function classifyChainLink(
   upstream: BuilderResult,
   downstream: BuilderResult,

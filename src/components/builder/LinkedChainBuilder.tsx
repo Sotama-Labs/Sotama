@@ -19,9 +19,9 @@
    ───────────────────────────────────────────────────────────────────── */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Automation, LoopMode } from "@/lib/types";
+import type { Automation, BuilderResult, LoopMode } from "@/lib/types";
 import { DEFAULT_LOOP_CYCLES, MAX_CHAIN_LENGTH } from "@/lib/types";
-import { ConditionalBuilder, type BuilderResult } from "./ConditionalBuilder";
+import { ConditionalBuilder } from "./ConditionalBuilder";
 import {
   type ChainNodeDraft,
   type ChainNodeNextDraft,
