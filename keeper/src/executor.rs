@@ -372,6 +372,7 @@ async fn build_action_ix(
             min_amount_out,
             linked_downstream,
             link_fee_deposit: _link_fee_deposit,
+            consume_upstream_output: _consume_upstream_output,
         } => {
             // Build the swap ix off-chain via Jupiter's /build API,
             // then wrap it through Sotama's execute_swap relay so the

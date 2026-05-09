@@ -43,6 +43,11 @@ pub fn execute_fee_topup_discriminator() -> &'static [u8; 8] {
     CELL.get_or_init(|| anchor_discriminator("global", "execute_fee_topup"))
 }
 
+pub fn execute_bridge_discriminator() -> &'static [u8; 8] {
+    static CELL: OnceLock<[u8; 8]> = OnceLock::new();
+    CELL.get_or_init(|| anchor_discriminator("global", "execute_bridge"))
+}
+
 pub fn native_mint() -> &'static Pubkey {
     static CELL: OnceLock<Pubkey> = OnceLock::new();
     CELL.get_or_init(|| Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap())
@@ -280,6 +285,54 @@ pub fn build_execute_fee_topup_ix(
     }
 
     data.push(keeper_wsol_ata_index);
+
+    let mut accounts = vec![
+        AccountMeta::new_readonly(*keeper, true),
+        AccountMeta::new_readonly(*config, false),
+        AccountMeta::new(*automation, false),
+        AccountMeta::new_readonly(*jupiter_program_id(), false),
+    ];
+    accounts.extend_from_slice(inner_accounts);
+
+    Instruction {
+        program_id: *program_id,
+        accounts,
+        data,
+    }
+}
+
+/// Bridge a downstream swap whose input amount is determined at
+/// runtime by the upstream swap's output. Mirrors `execute_fee_topup`
+/// but appends `output_ata_index` and `min_amount_out` args so the
+/// on-chain handler knows which remaining account holds the output ATA
+/// and can enforce a slippage floor.
+#[allow(clippy::too_many_arguments)]
+pub fn build_execute_bridge_ix(
+    program_id: &Pubkey,
+    keeper: &Pubkey,
+    config: &Pubkey,
+    automation: &Pubkey,
+    inner_accounts: &[AccountMeta],
+    inner_data: Vec<u8>,
+    output_ata_index: u8,
+    min_amount_out: u64,
+) -> Instruction {
+    let mut data = Vec::with_capacity(8 + 4 + inner_data.len() + 4 + inner_accounts.len() * 2 + 1 + 8);
+    data.extend_from_slice(execute_bridge_discriminator());
+
+    let inner_len = inner_data.len() as u32;
+    data.extend_from_slice(&inner_len.to_le_bytes());
+    data.extend_from_slice(&inner_data);
+
+    let metas_len = inner_accounts.len() as u32;
+    data.extend_from_slice(&metas_len.to_le_bytes());
+    for m in inner_accounts {
+        data.push(if m.is_signer { 1 } else { 0 });
+        data.push(if m.is_writable { 1 } else { 0 });
+    }
+
+    data.push(output_ata_index);
+    data.extend_from_slice(&min_amount_out.to_le_bytes());
 
     let mut accounts = vec![
         AccountMeta::new_readonly(*keeper, true),

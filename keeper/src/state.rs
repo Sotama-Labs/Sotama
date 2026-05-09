@@ -59,6 +59,9 @@ pub enum ActionSpec {
         min_amount_out: u64,
         linked_downstream: Option<Pubkey>,
         link_fee_deposit: u64,
+        /// Whether this swap should consume the output of an upstream
+        /// swap (bridge mode) rather than a fixed `amount_in`.
+        consume_upstream_output: bool,
     },
 }
 
@@ -89,9 +92,12 @@ pub struct Automation {
     /// Per-PDA opt-in for `execute_fee_topup`. Mirrors the v4.1 field
     /// carved from the original `_reserved` budget.
     pub fee_topup_enabled: bool,
-    /// 31 bytes of forward-compat padding (was 32 pre-v4.1; 1 byte
-    /// moved into `fee_topup_enabled` above).
-    pub _reserved: [u8; 31],
+    /// Per-PDA opt-in for `execute_bridge`. Populated by deserializing
+    /// the on-chain Automation account.
+    pub bridge_enabled: bool,
+    /// 30 bytes of forward-compat padding (was 32 pre-v4.1; 2 bytes
+    /// moved into `fee_topup_enabled` and `bridge_enabled` above).
+    pub _reserved: [u8; 30],
 }
 
 impl Automation {
