@@ -125,6 +125,7 @@ pub mod sotama_automations {
         min_interval_secs: u32,
         enable_fee_topup: bool,
         seed_amount: u64,
+        bridge_enabled: bool,
     ) -> Result<()> {
         instructions::create_automation_swap_linked::handler(
             ctx,
@@ -134,6 +135,7 @@ pub mod sotama_automations {
             min_interval_secs,
             enable_fee_topup,
             seed_amount,
+            bridge_enabled,
         )
     }
 

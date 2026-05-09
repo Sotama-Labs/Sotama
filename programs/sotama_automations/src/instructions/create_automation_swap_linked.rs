@@ -88,6 +88,7 @@ pub fn handler(
     min_interval_secs: u32,
     enable_fee_topup: bool,
     seed_amount: u64,
+    bridge_enabled: bool,
 ) -> Result<()> {
     require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
 
@@ -142,7 +143,7 @@ pub fn handler(
     // can auto-sell PDA tokens to refill its operating SOL budget when
     // the chain has been firing for a while.
     automation.fee_topup_enabled = enable_fee_topup;
-    automation.bridge_enabled = false; // Task 8 replaces with arg-driven value
+    automation.bridge_enabled = bridge_enabled;
 
     // Optional seed transfer. `seed_amount = 0` is valid and means
     // "downstream rule — wait for upstream output to fill the input
