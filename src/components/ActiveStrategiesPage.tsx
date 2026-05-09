@@ -1,15 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Automation, Execution } from "@/lib/types";
+import type { AssetRef, Automation, Execution } from "@/lib/types";
 import { isCompleted, isTerminal } from "@/lib/types";
+import { POPULAR_ASSETS } from "@/lib/assets";
 import { CANONICAL_MINTS } from "@/lib/tokens";
 import { fmt } from "@/lib/format";
 import { AutomationRow } from "./SavedList";
 import { ArrowRight, InfoCircle } from "./icons";
 
-const SOL = CANONICAL_MINTS["So11111111111111111111111111111111111111112"];
-const USDC = CANONICAL_MINTS["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"];
+const SOL_TOKEN = CANONICAL_MINTS["So11111111111111111111111111111111111111112"];
+const USDC_TOKEN = CANONICAL_MINTS["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"];
+const SOL_ASSET: AssetRef = POPULAR_ASSETS.Crypto.find((a) => a.symbol === "SOL")!;
+const USDC_ASSET: AssetRef = POPULAR_ASSETS.Crypto.find((a) => a.symbol === "USDC")!;
 
 const SAMPLE_AUTOMATIONS: Automation[] = [
   {
@@ -17,8 +20,8 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
     schemaVersion: 3,
     triggers: [
       {
-        kind: "token_price",
-        token: SOL,
+        kind: "asset_price",
+        asset: SOL_ASSET,
         quote: { kind: "usd" },
         comparator: "below",
         threshold: 180,
@@ -30,7 +33,7 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
       },
     ],
     triggerOperators: [],
-    actions: [{ kind: "swap", inputToken: USDC, outputToken: SOL, amount: 250 }],
+    actions: [{ kind: "swap", inputToken: USDC_TOKEN, outputToken: SOL_TOKEN, amount: 250 }],
     actionOperators: [],
     cadence: { kind: "once" },
     minIntervalSecs: 0,
@@ -44,8 +47,8 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
     schemaVersion: 3,
     triggers: [
       {
-        kind: "token_price",
-        token: SOL,
+        kind: "asset_price",
+        asset: SOL_ASSET,
         quote: { kind: "usd" },
         comparator: "above",
         threshold: 240,
@@ -57,7 +60,7 @@ const SAMPLE_AUTOMATIONS: Automation[] = [
       },
     ],
     triggerOperators: [],
-    actions: [{ kind: "swap", inputToken: SOL, outputToken: USDC, amount: 1.5 }],
+    actions: [{ kind: "swap", inputToken: SOL_TOKEN, outputToken: USDC_TOKEN, amount: 1.5 }],
     actionOperators: [],
     cadence: { kind: "once" },
     minIntervalSecs: 0,

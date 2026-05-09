@@ -60,7 +60,7 @@ const DEFAULT_ACTION_OP: ActionOperator = "then";
  *  sentence readable and to bound the keeper's evaluation cost when
  *  multi-trigger rules eventually land. */
 const MAX_CHAIN_LENGTH = 5;
-import { TokenPriceEditor } from "./triggers/TokenPriceEditor";
+import { AssetPriceEditor } from "./triggers/AssetPriceEditor";
 import { AccountTransferEditor } from "./triggers/AccountTransferEditor";
 import { AccountSwapEditor } from "./triggers/AccountSwapEditor";
 import { StakingRewardAmountEditor } from "./triggers/StakingRewardAmountEditor";
@@ -114,9 +114,9 @@ function triggerReady(t: DraftTrigger): boolean {
   switch (t.kind) {
     case null:
       return false;
-    case "token_price":
+    case "asset_price":
       return (
-        t.token != null && t.threshold != null && t.threshold > 0 && t.oracle != null
+        t.asset != null && t.threshold != null && t.threshold > 0 && t.oracle != null
       );
     case "account_transfer":
       return !!t.account && (t.token.mode === "any" || t.token.value != null);
@@ -390,9 +390,9 @@ export function ConditionalBuilder({
       const onBack = () => goBackFromEditor("if", open.index);
       const onConfirm = () => closePopover();
       switch (t.kind) {
-        case "token_price":
+        case "asset_price":
           return (
-            <TokenPriceEditor
+            <AssetPriceEditor
               draft={t}
               onChange={(next) => updateTriggerAt(open.index, next)}
               onBack={onBack}

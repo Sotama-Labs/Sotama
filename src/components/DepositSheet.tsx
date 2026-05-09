@@ -150,36 +150,101 @@ function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
           : null;
       return { accountActivity: { account, mint, kind: 1 } };
     }
-    case "token_price": {
-      if (t.oracle.kind !== "pyth") return null;
-      const feed = (() => {
-        try {
-          return feedIdToPubkey(t.oracle.feedId);
-        } catch {
-          return null;
+    case "asset_price": {
+      // Map OracleSource.kind → on-chain `(feed, source)` pair. The
+      // program is oracle-agnostic; the keeper dispatches on `source`.
+      // Adding a new oracle = new variant in OracleSource + new keeper
+      // watcher + new case here.
+      let feed: PublicKey;
+      let source: number;
+      let defaultExpo: number;
+      let inverted = false;
+      switch (t.oracle.kind) {
+        case "pyth": {
+          try {
+            feed = feedIdToPubkey(t.oracle.feedId);
+          } catch {
+            return null;
+          }
+          source = 0; // oracle_source::PYTH
+          defaultExpo = DEFAULT_PYTH_EXPO;
+          inverted = t.oracle.inverted === true;
+          break;
         }
-      })();
-      if (!feed) return null;
-      const comparator = t.comparator === "below" ? 0 : 1;
-      // USD quote: threshold is denominated in dollars at Pyth's
-      // standard expo (-8). Token quote: threshold is the per-token
-      // ratio at -6 (gives basis-point precision for typical pair
-      // ratios like 0.99 / 1.01) — the keeper resolves the quote
-      // mint's USDC price via Jupiter at fire time.
+        case "jupiter": {
+          const m = tryPubkey(t.oracle.mint);
+          if (!m) return null;
+          feed = m;
+          source = 1; // oracle_source::JUPITER
+          defaultExpo = -6; // Jupiter Price v3 normalizes to USDC scale
+          break;
+        }
+        case "switchboard_pending":
+          // Sentinel for assets with no resolved feed. UI should block
+          // deploy before reaching this branch; bail to avoid creating
+          // a never-firing automation on-chain.
+          return null;
+      }
+      // For inverted Pyth feeds (USD/SGD when the user picked SGD, or
+      // EUR/USD when the user picked "USD priced in EUR"), we can't
+      // tell the keeper "compare 1/price" without changing the schema.
+      // Instead we store an *equivalent* trigger against the actual
+      // feed: flip the comparator (above ↔ below) and use the
+      // reciprocal of the user's threshold.
+      const userIntentComparator = t.comparator === "below" ? 0 : 1;
+      const comparator = inverted
+        ? userIntentComparator === 0
+          ? 1
+          : 0
+        : userIntentComparator;
+      // Decide quote-side wiring based on three orthogonal signals:
+      //   • t.quote.kind: did the user pick USD or another asset?
+      //   • t.oracle.kind/symbol: did the resolver return a pair feed
+      //     (encodes both legs) or just a base/USD feed?
+      //   • t.quote.asset.mint: does the quote asset live on Solana?
+      //
+      // Pair feed (e.g. FX.AUD/JPY, FX.USD/SGD inverted): no quote_mint
+      // needed — the keeper just compares the feed against threshold.
+      // Token-quote (e.g. BTC priced in USDC): use quote_mint and the
+      // keeper resolves the quote via Jupiter probe.
+      // Anything else with a non-USD quote isn't deployable yet.
       let quoteMint: PublicKey | null = null;
       let expo: number;
       if (t.quote.kind === "usd") {
-        expo = DEFAULT_PYTH_EXPO;
+        expo = defaultExpo;
       } else {
-        const m = tryPubkey(t.quote.mint);
-        if (!m) return null;
-        quoteMint = m;
-        expo = -6;
+        // Did the resolver hand us a pair feed? Detect by checking
+        // whether the resolved Pyth symbol references the quote ticker
+        // anywhere — direct (base/quote) or inverted (quote/base).
+        const quoteTicker = t.quote.asset.displaySymbol.toUpperCase();
+        const pairResolved =
+          t.oracle.kind === "pyth" &&
+          (t.oracle.symbol.toUpperCase().includes(`/${quoteTicker}`) ||
+            t.oracle.symbol.toUpperCase().includes(`${quoteTicker}/`));
+        if (pairResolved) {
+          // Feed already encodes the pair; no quote_mint, threshold is
+          // in the pair's natural Pyth scale.
+          expo = defaultExpo;
+        } else {
+          // Fall back to Jupiter quote_mint path — only works for SPL
+          // tokens. FX/Equity/Metal/Commodity quote without a Pyth pair
+          // feed isn't deployable yet (would need keeper-side inferred
+          // ratios, schema-blocked).
+          const m = tryPubkey(t.quote.asset.mint);
+          if (!m) return null;
+          quoteMint = m;
+          expo = -6;
+        }
       }
-      const scaled = Math.round(t.threshold * Math.pow(10, -expo));
+      // Threshold value to encode: user's number, or its reciprocal if
+      // we're targeting an inverted feed. Guard against zero/negative
+      // — UI already rejects those, but defence in depth.
+      if (inverted && t.threshold <= 0) return null;
+      const targetValue = inverted ? 1 / t.threshold : t.threshold;
+      const scaled = Math.round(targetValue * Math.pow(10, -expo));
       const threshold = new BN(scaled);
       return {
-        tokenPrice: { feed, quoteMint, comparator, threshold, expo },
+        assetPrice: { feed, quoteMint, comparator, threshold, expo, source },
       };
     }
     case "staking_reward_amount": {

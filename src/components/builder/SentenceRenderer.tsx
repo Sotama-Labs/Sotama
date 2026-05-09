@@ -57,16 +57,20 @@ export function renderTriggerContent(t: DraftTrigger): ReactNode {
   switch (t.kind) {
     case null:
       return null;
-    case "token_price":
+    case "asset_price":
       return (
         <>
           {muted("price of")}{" "}
-          {t.token ? <TokenPill token={t.token} /> : muted("…")}{" "}
+          {t.asset ? (
+            <span style={{ fontWeight: 600, color: "var(--label-primary)" }}>
+              {t.asset.displaySymbol}
+            </span>
+          ) : muted("…")}{" "}
           {muted(t.comparator === "below" ? "drops below" : "goes above")}{" "}
           <span style={{ fontFeatureSettings: '"tnum"' }}>
             {t.quote.kind === "usd"
               ? `$${t.threshold ?? "…"}`
-              : `${t.threshold ?? "…"} ${t.quote.symbol}`}
+              : `${t.threshold ?? "…"} ${t.quote.asset.displaySymbol}`}
           </span>
         </>
       );
