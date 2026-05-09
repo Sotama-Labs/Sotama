@@ -107,6 +107,7 @@ type SwapSpec = {
       minAmountOut: BN;
       linkedDownstream: PublicKey | null;
       linkFeeDeposit: BN;
+      consumeUpstreamOutput: boolean;
     };
   };
   inputMint: PublicKey;
@@ -312,6 +313,7 @@ function buildActionSpec(
             minAmountOut,
             linkedDownstream,
             linkFeeDeposit,
+            consumeUpstreamOutput: false,
           },
         },
       };
@@ -366,6 +368,7 @@ function getOnChainSpec(
         minAmountOut: BN;
         linkedDownstream: PublicKey | null;
         linkFeeDeposit: BN;
+        consumeUpstreamOutput: boolean;
       };
     };
     return {

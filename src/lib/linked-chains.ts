@@ -373,6 +373,7 @@ function buildSwapAction(
       minAmountOut: new BN(0),
       linkedDownstream,
       linkFeeDeposit: new BN(0),
+      consumeUpstreamOutput: a.consumeUpstreamOutput === true,
     },
   };
 }
@@ -471,6 +472,14 @@ export async function sendChainCreate(params: {
         ? new Set([0])
         : findCycleNodes(nodes)
       : new Set<number>();
+
+  // Per-link classification: a node is bridge-enabled iff the chain
+  // link ENDING at this node (i.e., upstream link from i-1 to i) is
+  // classified as bridge_required. Card 0 has no upstream link, so it
+  // never gets bridge_enabled.
+  const linkClasses: ChainLinkClass[] = nodes
+    .slice(0, -1)
+    .map((node, i) => classifyChainLink(node.result, nodes[i + 1].result));
 
   const ixs: TransactionInstruction[] = [];
   const seedAmounts: BN[] = [];
@@ -602,6 +611,9 @@ export async function sendChainCreate(params: {
         ? loopModeToCadence(loopMode)
         : result.cadence;
 
+    const upstreamLinkClass = i === 0 ? null : linkClasses[i - 1];
+    const bridgeEnabled = upstreamLinkClass === "bridge_required";
+
     const built = await buildCreateAutomationSwapLinkedIx({
       program,
       owner,
@@ -623,6 +635,7 @@ export async function sendChainCreate(params: {
       // for SOL-fee accounting.
       enableFeeTopup: true,
       seedAmount,
+      bridgeEnabled,
       nextNonce: startNonce + BigInt(i),
     });
     ixs.push(built.ix);
