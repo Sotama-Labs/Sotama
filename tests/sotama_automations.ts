@@ -1638,6 +1638,351 @@ describe("sotama_automations v2", () => {
     expect(cfg.closeFeeLamports.toString()).to.eq("0");
   });
 
+  /* ── execute_bridge pre-CPI gate tests ──────────────────────────────── */
+  // These tests never invoke Jupiter. Each test creates real on-chain state
+  // (automation PDA + ATAs) via create_automation_swap_linked, then calls
+  // execute_bridge with deliberate misconfigurations to verify the program
+  // rejects at the early guards before the CPI ever fires.
+
+  it("execute_bridge rejects when bridge_enabled is false (BridgeNotEnabled)", async () => {
+    const cfg0 = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg0.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    const inputMintKp = Keypair.generate();
+    const inputMint = inputMintKp.publicKey;
+    const outputMint = Keypair.generate().publicKey;
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+    const ownerAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const automationAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          automationAta,
+          auto,
+          inputMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(inputMint, ownerAta, owner.publicKey, 500_000n),
+      );
+    await provider.sendAndConfirm(setup, [owner, inputMintKp]);
+
+    // Create a linked swap automation with bridge_enabled = false.
+    await program.methods
+      .createAutomationSwapLinked(
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        action.swap(inputMint, outputMint, owner.publicKey, new BN(100_000), new BN(0)),
+        cadence.once(),
+        NO_INTERVAL,
+        false,        // enable_fee_topup
+        new BN(100_000), // seed_amount
+        false,        // bridge_enabled = false
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        inputMint,
+        ownerInputAta: ownerAta,
+        automationInputAta: automationAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    const a = await program.account.automation.fetch(auto);
+    expect(a.bridgeEnabled).to.eq(false);
+
+    // Attempt execute_bridge — should fail before any CPI at BridgeNotEnabled.
+    // We pass a single dummy remaining account (the automation ATA itself)
+    // with a matching dummy meta so the remaining.len() == metas.len() check
+    // passes; the BridgeNotEnabled gate fires before the length check anyway,
+    // but this makes the account list valid structurally.
+    const dummyMeta = { isSigner: false, isWritable: false };
+    let threw = false;
+    try {
+      await program.methods
+        .executeBridge(
+          Buffer.from([]), // inner_ix_data: empty — Jupiter is never called
+          [dummyMeta],     // inner_ix_account_metas
+          0,               // output_ata_index
+          new BN(0),       // min_amount_out
+        )
+        .accountsStrict({
+          keeper: keeper.publicKey,
+          config: configPda,
+          automation: auto,
+          jupiterProgram: new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"),
+        })
+        .remainingAccounts([
+          { pubkey: automationAta, isSigner: false, isWritable: false },
+        ])
+        .signers([keeper])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /BridgeNotEnabled|bridgeNotEnabled/i,
+      );
+    }
+    expect(threw, "expected BridgeNotEnabled").to.eq(true);
+  });
+
+  it("execute_bridge rejects when output ATA owner is not the automation PDA (BadBridgeOwner)", async () => {
+    const cfg0 = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg0.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    const inputMintKp = Keypair.generate();
+    const inputMint = inputMintKp.publicKey;
+    const outputMint = Keypair.generate().publicKey;
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+    const ownerAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const automationAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          automationAta,
+          auto,
+          inputMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(inputMint, ownerAta, owner.publicKey, 500_000n),
+      );
+    await provider.sendAndConfirm(setup, [owner, inputMintKp]);
+
+    // Create a linked swap automation with bridge_enabled = true.
+    await program.methods
+      .createAutomationSwapLinked(
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        action.swap(inputMint, outputMint, owner.publicKey, new BN(100_000), new BN(0)),
+        cadence.once(),
+        NO_INTERVAL,
+        false,        // enable_fee_topup
+        new BN(100_000), // seed_amount
+        true,         // bridge_enabled = true
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        inputMint,
+        ownerInputAta: ownerAta,
+        automationInputAta: automationAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    const a = await program.account.automation.fetch(auto);
+    expect(a.bridgeEnabled).to.eq(true);
+
+    // Pass ownerAta (owned by owner, not the PDA) as the output ATA.
+    // The handler should reject with BadBridgeOwner before any CPI.
+    const dummyMeta = { isSigner: false, isWritable: false };
+    let threw = false;
+    try {
+      await program.methods
+        .executeBridge(
+          Buffer.from([]),
+          [dummyMeta],
+          0,           // output_ata_index points to ownerAta (wrong owner)
+          new BN(0),
+        )
+        .accountsStrict({
+          keeper: keeper.publicKey,
+          config: configPda,
+          automation: auto,
+          jupiterProgram: new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"),
+        })
+        .remainingAccounts([
+          { pubkey: ownerAta, isSigner: false, isWritable: false },
+        ])
+        .signers([keeper])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /BadBridgeOwner|badBridgeOwner/i,
+      );
+    }
+    expect(threw, "expected BadBridgeOwner").to.eq(true);
+  });
+
+  it("execute_bridge rejects when output ATA mint != automation input_mint (BadBridgeOutput)", async () => {
+    const cfg0 = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg0.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+
+    // inputMint is the automation's canonical input mint.
+    const inputMintKp = Keypair.generate();
+    const inputMint = inputMintKp.publicKey;
+    const outputMint = Keypair.generate().publicKey;
+
+    // wrongMint is a distinct mint we'll use to create an ATA owned by
+    // the PDA — so the owner check passes but the mint check fails.
+    const wrongMintKp = Keypair.generate();
+    const wrongMint = wrongMintKp.publicKey;
+
+    const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
+    const ownerAta = getAssociatedTokenAddressSync(inputMint, owner.publicKey);
+    const automationAta = getAssociatedTokenAddressSync(inputMint, auto, true);
+    // The wrong-mint ATA is owned by the PDA — owner gate passes, mint gate fails.
+    const wrongAutoAta = getAssociatedTokenAddressSync(wrongMint, auto, true);
+
+    const setup = new Transaction()
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: inputMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(inputMint, 6, owner.publicKey, null))
+      .add(
+        SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: wrongMint,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+      )
+      .add(createInitializeMintInstruction(wrongMint, 6, owner.publicKey, null))
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          ownerAta,
+          owner.publicKey,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          automationAta,
+          auto,
+          inputMint,
+        ),
+      )
+      .add(
+        createAssociatedTokenAccountInstruction(
+          owner.publicKey,
+          wrongAutoAta,
+          auto,          // owner = PDA (passes BadBridgeOwner), but mint = wrongMint
+          wrongMint,
+        ),
+      )
+      .add(
+        createMintToInstruction(inputMint, ownerAta, owner.publicKey, 500_000n),
+      );
+    await provider.sendAndConfirm(setup, [owner, inputMintKp, wrongMintKp]);
+
+    // Create a linked swap automation with bridge_enabled = true and input_mint = inputMint.
+    await program.methods
+      .createAutomationSwapLinked(
+        trigger.assetPriceBelow(Keypair.generate().publicKey, new BN(10_000_000_000), -8),
+        action.swap(inputMint, outputMint, owner.publicKey, new BN(100_000), new BN(0)),
+        cadence.once(),
+        NO_INTERVAL,
+        false,        // enable_fee_topup
+        new BN(100_000), // seed_amount
+        true,         // bridge_enabled = true
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        inputMint,
+        ownerInputAta: ownerAta,
+        automationInputAta: automationAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    const a = await program.account.automation.fetch(auto);
+    expect(a.bridgeEnabled).to.eq(true);
+
+    // Pass wrongAutoAta (owned by PDA, but mint = wrongMint ≠ inputMint).
+    // BadBridgeOwner passes; BadBridgeOutput should fire.
+    const dummyMeta = { isSigner: false, isWritable: false };
+    let threw = false;
+    try {
+      await program.methods
+        .executeBridge(
+          Buffer.from([]),
+          [dummyMeta],
+          0,         // output_ata_index points to wrongAutoAta
+          new BN(0),
+        )
+        .accountsStrict({
+          keeper: keeper.publicKey,
+          config: configPda,
+          automation: auto,
+          jupiterProgram: new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"),
+        })
+        .remainingAccounts([
+          { pubkey: wrongAutoAta, isSigner: false, isWritable: false },
+        ])
+        .signers([keeper])
+        .rpc();
+    } catch (e: any) {
+      threw = true;
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
+        /BadBridgeOutput|badBridgeOutput/i,
+      );
+    }
+    expect(threw, "expected BadBridgeOutput").to.eq(true);
+  });
+
   /* ── v4.1: kill switch (shutdown) and admin-driven wind-down close ─── */
 
   // Captured at suite scope so the shutdown block can reference automations
