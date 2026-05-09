@@ -57,6 +57,11 @@ pub struct RevalidateCtx {
 pub async fn revalidate(rev: &RevalidateCtx, ctx: &AutomationCtx) -> Result<bool> {
     match &ctx.trigger {
         TriggerSpec::AccountActivity { .. } => Ok(true),
+        // Once due, the time condition stays true forever — there's
+        // nothing to "un-cross". The on-chain `cadence::Once` flip to
+        // finished is what stops re-fires; revalidate just waves it
+        // through.
+        TriggerSpec::TimeElapsed { .. } => Ok(true),
         TriggerSpec::AssetPrice {
             feed,
             quote_mint,

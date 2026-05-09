@@ -17,6 +17,7 @@ mod shard;
 mod signer;
 mod state;
 mod subscriber;
+mod time_watcher;
 mod types;
 
 use crate::config::KeeperConfig;
@@ -122,6 +123,19 @@ async fn main() -> Result<()> {
         })
     };
 
+    // TimeElapsed watcher. Coarse 60s tick, fires any rule whose
+    // `created_at + duration_secs <= now`. Cheap — no network calls.
+    let time_handle = {
+        let cfg = cfg.clone();
+        let set_rx = set_rx.clone();
+        let trigger_tx = trigger_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = time_watcher::run(cfg, set_rx, trigger_tx).await {
+                error!(error = %e, "time_watcher task exited");
+            }
+        })
+    };
+
     let executor_handle = {
         let cfg = cfg.clone();
         tokio::spawn(async move {
@@ -140,6 +154,7 @@ async fn main() -> Result<()> {
         _ = price_handle => error!("price_watcher task ended unexpectedly"),
         _ = lazer_handle => error!("lazer_watcher task ended unexpectedly"),
         _ = jupiter_price_handle => error!("jupiter_watcher task ended unexpectedly"),
+        _ = time_handle => error!("time_watcher task ended unexpectedly"),
         _ = executor_handle => error!("executor task ended unexpectedly"),
     }
 

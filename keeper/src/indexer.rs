@@ -20,11 +20,14 @@ use crate::types::AutomationCtx;
 /// key is the off-chain monitor's "primary watch target" — the watched
 /// account for AccountActivity, the Pyth feed for AssetPrice. Values
 /// are lists because multiple automations can share the same target.
+/// `time_triggers` is a flat list because TimeElapsed has no watch
+/// target — the watcher iterates and checks each rule's deadline.
 #[derive(Debug, Clone, Default)]
 pub struct WatchedSet {
     pub by_pubkey: HashMap<Pubkey, AutomationCtx>,
     pub account_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
     pub price_triggers: HashMap<Pubkey, Vec<AutomationCtx>>,
+    pub time_triggers: Vec<AutomationCtx>,
 }
 
 impl WatchedSet {
@@ -38,6 +41,9 @@ impl WatchedSet {
                 }
                 crate::state::TriggerSpec::AssetPrice { feed, .. } => {
                     s.price_triggers.entry(*feed).or_default().push(ctx);
+                }
+                crate::state::TriggerSpec::TimeElapsed { .. } => {
+                    s.time_triggers.push(ctx);
                 }
             }
         }
@@ -144,6 +150,12 @@ impl WatchedSet {
                     }
                     crate::state::TriggerSpec::AssetPrice { feed, source, .. } => {
                         (1u8, *feed, *source)
+                    }
+                    crate::state::TriggerSpec::TimeElapsed { .. } => {
+                        // No watched account/feed; trigger spec is
+                        // immutable after create, so the outer
+                        // automation pubkey already disambiguates.
+                        (2u8, Pubkey::default(), 0u8)
                     }
                 };
                 (*pk, kind, target, source)

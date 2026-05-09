@@ -18,7 +18,15 @@ pub mod action_kind {
 pub mod trigger_kind {
     pub const ACCOUNT_ACTIVITY: u8 = 0;
     pub const ASSET_PRICE: u8 = 1;
+    pub const TIME_ELAPSED: u8 = 2;
 }
+
+/// Hard ceiling on `TimeElapsed.duration_secs`. ~366 days — long enough
+/// for any human-scale schedule, short enough to make a misconfigured
+/// year-long timer obvious at create time. Stored as `u32` so the
+/// trigger costs 4 bytes (well under the AssetPrice variant's 79 bytes,
+/// so InitSpace is unaffected).
+pub const MAX_TIME_ELAPSED_SECS: u32 = 366 * 24 * 60 * 60;
 
 /// Comparator codes for `AssetPrice` triggers. Stored as u8 because Anchor
 /// IDL doesn't expose enums-with-data plus simple enums in a single account
@@ -121,6 +129,18 @@ pub enum TriggerSpec {
         /// `oracle_source::PYTH`, `oracle_source::JUPITER`, … The keeper
         /// dispatches to the matching adapter; on-chain is oracle-agnostic.
         source: u8,
+    },
+    /// Wall-clock delay since `Automation.created_at`. The keeper's
+    /// `time_watcher` ticks every minute, scans the active set for
+    /// rules where `now >= created_at + duration_secs`, and fires them.
+    /// No watched feed, no oracle dispatch — purely a clock check.
+    /// Combined with `Cadence::Once` to mean "fire 5 minutes after I
+    /// create this rule"; other cadences are blocked client-side
+    /// because they don't read naturally with a one-shot timer.
+    TimeElapsed {
+        /// Seconds to wait after `Automation.created_at`. Capped at
+        /// `MAX_TIME_ELAPSED_SECS` (~366 days) by `validate()`.
+        duration_secs: u32,
     },
 }
 
@@ -398,6 +418,13 @@ impl TriggerSpec {
                     require!(qm != feed, SotamaError::BadComparator);
                 }
             }
+            TriggerSpec::TimeElapsed { duration_secs } => {
+                require!(*duration_secs > 0, SotamaError::BadCadence);
+                require!(
+                    *duration_secs <= MAX_TIME_ELAPSED_SECS,
+                    SotamaError::BadCadence
+                );
+            }
         }
         Ok(())
     }
@@ -407,14 +434,19 @@ impl TriggerSpec {
         match self {
             TriggerSpec::AccountActivity { .. } => trigger_kind::ACCOUNT_ACTIVITY,
             TriggerSpec::AssetPrice { .. } => trigger_kind::ASSET_PRICE,
+            TriggerSpec::TimeElapsed { .. } => trigger_kind::TIME_ELAPSED,
         }
     }
 
     /// Primary watched/feed pubkey, surfaced in events for indexers.
+    /// `TimeElapsed` triggers have no watched target — return the
+    /// default (32 zero bytes) so indexers can detect "no target"
+    /// without a separate field.
     pub fn primary_pubkey(&self) -> Pubkey {
         match self {
             TriggerSpec::AccountActivity { account, .. } => *account,
             TriggerSpec::AssetPrice { feed, .. } => *feed,
+            TriggerSpec::TimeElapsed { .. } => Pubkey::default(),
         }
     }
 }

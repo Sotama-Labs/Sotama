@@ -22,6 +22,7 @@ export const SUPPORTED_TRIGGER_KINDS: Record<TriggerKind, boolean> = {
   account_transfer: true,             // wired ✓ — Helius transactionSubscribe + execute_automation
   account_swap: true,                 // wired ✓ — Helius txSubscribe + DEX program filter
   asset_price: true,                  // wired ✓ — Pyth Hermes/Lazer poll in keeper
+  time_elapsed: true,                 // wired ✓ — keeper time_watcher (60s tick). Needs program redeploy with TriggerSpec::TimeElapsed before this flag is honored on-chain.
 };
 
 export const SUPPORTED_ACTION_KINDS: Record<ActionKind, boolean> = {

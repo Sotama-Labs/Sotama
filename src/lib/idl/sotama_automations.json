@@ -2610,6 +2610,19 @@
                 "type": "u8"
               }
             ]
+          },
+          {
+            "name": "TimeElapsed",
+            "fields": [
+              {
+                "name": "duration_secs",
+                "docs": [
+                  "Seconds to wait after `Automation.created_at`. Capped at",
+                  "`MAX_TIME_ELAPSED_SECS` (~366 days) by `validate()`."
+                ],
+                "type": "u32"
+              }
+            ]
           }
         ]
       }

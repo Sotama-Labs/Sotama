@@ -19,7 +19,7 @@ import type {
      needs hardcoded checks against specific kinds.
    ───────────────────────────────────────────────────────────────────── */
 
-export type TriggerCategoryId = "asset_price" | "track_account";
+export type TriggerCategoryId = "asset_price" | "track_account" | "time";
 
 export type TriggerKindMeta = {
   kind: TriggerKind;
@@ -123,6 +123,18 @@ const ACCOUNT_SWAP: TriggerKindMeta = {
   }),
 };
 
+const TIME_ELAPSED: TriggerKindMeta = {
+  kind: "time_elapsed",
+  label: "Time elapsed",
+  description: "Fires once after a delay from creation.",
+  compatibleActions: GENERAL_ACTIONS,
+  empty: () => ({
+    kind: "time_elapsed",
+    value: null,
+    unit: "minutes",
+  }),
+};
+
 export const TRIGGER_CATEGORIES: TriggerCategoryMeta[] = [
   {
     id: "asset_price",
@@ -135,6 +147,12 @@ export const TRIGGER_CATEGORIES: TriggerCategoryMeta[] = [
     label: "Account Activity",
     description: "Track a wallet's activity",
     kinds: [ACCOUNT_TRANSFER, ACCOUNT_SWAP],
+  },
+  {
+    id: "time",
+    label: "Time",
+    description: "Fire after a fixed wall-clock delay",
+    kinds: [TIME_ELAPSED],
   },
 ];
 
@@ -199,11 +217,18 @@ export function actionsAreCompatible(
    ───────────────────────────────────────────────────────────────────── */
 
 const TRIGGERS_BY_CADENCE: Record<CadenceKind, ReadonlySet<TriggerKind>> = {
-  once: new Set<TriggerKind>(["asset_price", "account_transfer", "account_swap"]),
+  once: new Set<TriggerKind>([
+    "asset_price",
+    "account_transfer",
+    "account_swap",
+    "time_elapsed",
+  ]),
   // While reads as a standing predicate. Only asset_price fits naturally —
-  // "While SOL price < $180" is a true predicate.
+  // "While SOL price < $180" is a true predicate. TimeElapsed is one-shot
+  // by definition so it doesn't compose with While.
   until: new Set<TriggerKind>(["asset_price"]),
   // For reads as "the next N times that …". Event triggers fit.
+  // TimeElapsed excluded: a single delay can't fire N times.
   repeat: new Set<TriggerKind>([
     "asset_price",
     "account_transfer",

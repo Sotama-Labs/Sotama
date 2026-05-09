@@ -86,10 +86,43 @@ export type AccountSwapTrigger = {
   amountDirection: AmountDirection;
 };
 
+/** Wall-clock unit shown in the editor. Stored alongside the duration
+ *  so the editor round-trips the user's chosen unit; the on-chain wire
+ *  format is always seconds. */
+export type TimeElapsedUnit = "minutes" | "hours" | "days";
+
+/** Hard cap on TimeElapsed durations. Mirrors the on-chain
+ *  `MAX_TIME_ELAPSED_SECS` constant (~366 days). */
+export const MAX_TIME_ELAPSED_SECS = 366 * 24 * 60 * 60;
+
+/** Convert a (value, unit) pair to seconds. Floors to integer because
+ *  the on-chain field is u32. */
+export function timeElapsedToSecs(value: number, unit: TimeElapsedUnit): number {
+  const multiplier =
+    unit === "minutes" ? 60 : unit === "hours" ? 3_600 : 86_400;
+  return Math.floor(value * multiplier);
+}
+
+/** Wall-clock delay since automation creation. Fires once when the
+ *  duration has elapsed. The keeper's `time_watcher` ticks at minute
+ *  resolution, so this is for human-scale schedules ("5 min", "2 hr"),
+ *  not sub-minute triggers.
+ *
+ *  Stored as a (value, unit) pair so the chip can render "5 minutes"
+ *  rather than "300 seconds"; converted to u32 seconds at submission
+ *  time via `timeElapsedToSecs`. */
+export type TimeElapsedTrigger = {
+  kind: "time_elapsed";
+  /** Magnitude in `unit`. Always > 0. */
+  value: number;
+  unit: TimeElapsedUnit;
+};
+
 export type Trigger =
   | AssetPriceTrigger
   | AccountTransferTrigger
-  | AccountSwapTrigger;
+  | AccountSwapTrigger
+  | TimeElapsedTrigger;
 
 export type TriggerKind = Trigger["kind"];
 
@@ -144,11 +177,20 @@ export type DraftAccountSwap = {
   amountDirection: AmountDirection;
 };
 
+export type DraftTimeElapsed = {
+  kind: "time_elapsed";
+  /** Editor-input value; null while empty. Resolves to `value` on the
+   *  frozen `TimeElapsedTrigger` once non-null. */
+  value: number | null;
+  unit: TimeElapsedUnit;
+};
+
 export type DraftTrigger =
   | { kind: null }
   | DraftAssetPrice
   | DraftAccountTransfer
-  | DraftAccountSwap;
+  | DraftAccountSwap
+  | DraftTimeElapsed;
 
 export type DraftTransfer = {
   kind: "transfer";
@@ -307,6 +349,11 @@ export function isTriggerComplete(draft: DraftTrigger): draft is Trigger {
         (draft.amount.mode === "any" ||
           (draft.amount.value != null && draft.amount.value > 0))
       );
+    case "time_elapsed": {
+      if (draft.value == null || draft.value <= 0) return false;
+      const secs = timeElapsedToSecs(draft.value, draft.unit);
+      return secs > 0 && secs <= MAX_TIME_ELAPSED_SECS;
+    }
   }
 }
 

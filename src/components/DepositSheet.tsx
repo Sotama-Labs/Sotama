@@ -10,6 +10,7 @@ import {
 } from "@solana/spl-token";
 import BN from "bn.js";
 import type { Action, Trigger } from "@/lib/types";
+import { MAX_TIME_ELAPSED_SECS, timeElapsedToSecs } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import type { BuilderResult } from "./builder/ConditionalBuilder";
 import {
@@ -234,6 +235,11 @@ function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
       return {
         assetPrice: { feed, quoteMint, comparator, threshold, expo, source },
       };
+    }
+    case "time_elapsed": {
+      const secs = timeElapsedToSecs(t.value, t.unit);
+      if (!(secs > 0) || secs > MAX_TIME_ELAPSED_SECS) return null;
+      return { timeElapsed: { durationSecs: secs } };
     }
   }
 }

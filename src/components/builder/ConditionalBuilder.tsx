@@ -63,6 +63,7 @@ const MAX_CHAIN_LENGTH = 5;
 import { AssetPriceEditor } from "./triggers/AssetPriceEditor";
 import { AccountTransferEditor } from "./triggers/AccountTransferEditor";
 import { AccountSwapEditor } from "./triggers/AccountSwapEditor";
+import { TimeElapsedEditor } from "./triggers/TimeElapsedEditor";
 import { TransferEditor } from "./actions/TransferEditor";
 import { SwapEditor } from "./actions/SwapEditor";
 import { ControlFlowChip } from "./ControlFlowChip";
@@ -122,6 +123,8 @@ function triggerReady(t: DraftTrigger): boolean {
         (t.amount.mode === "any" ||
           (t.amount.value != null && t.amount.value > 0))
       );
+    case "time_elapsed":
+      return t.value != null && t.value > 0;
   }
 }
 
@@ -396,6 +399,15 @@ export function ConditionalBuilder({
         case "account_swap":
           return (
             <AccountSwapEditor
+              draft={t}
+              onChange={(next) => updateTriggerAt(open.index, next)}
+              onBack={onBack}
+              onConfirm={onConfirm}
+            />
+          );
+        case "time_elapsed":
+          return (
+            <TimeElapsedEditor
               draft={t}
               onChange={(next) => updateTriggerAt(open.index, next)}
               onBack={onBack}

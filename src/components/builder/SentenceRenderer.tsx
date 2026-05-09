@@ -112,6 +112,23 @@ export function renderTriggerContent(t: DraftTrigger): ReactNode {
         </>
       );
     }
+    case "time_elapsed": {
+      // "5 minutes have passed" / "0 minutes have passed" while empty.
+      const v = t.value;
+      const display = v == null ? muted("…") : (
+        <span style={{ fontFeatureSettings: '"tnum"' }}>{v}</span>
+      );
+      // Simple plural: "1 minute" / "5 minutes". Singular only for v === 1.
+      const unitLabel =
+        v === 1
+          ? t.unit.slice(0, -1) // "minutes" → "minute"
+          : t.unit;
+      return (
+        <>
+          {display} {muted(`${unitLabel} have passed`)}
+        </>
+      );
+    }
   }
 }
 

@@ -163,6 +163,18 @@ describe("routeAutomation", () => {
       expect(decision).to.deep.equal({ route: "keeper", reason: "multiple_actions" });
     });
 
+    it("non-asset-price trigger (time_elapsed)", () => {
+      const decision = routeAutomation(
+        makeAuto({
+          triggers: [{ kind: "time_elapsed", value: 5, unit: "minutes" }],
+        }),
+      );
+      expect(decision).to.deep.equal({
+        route: "keeper",
+        reason: "trigger_not_asset_price",
+      });
+    });
+
     it("non-asset-price trigger (account_swap)", () => {
       const decision = routeAutomation(
         makeAuto({

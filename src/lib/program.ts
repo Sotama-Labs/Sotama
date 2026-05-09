@@ -107,6 +107,12 @@ export type OnChainTriggerSpec =
          *  the matching adapter based on this byte. */
         source: number;
       };
+    }
+  | {
+      timeElapsed: {
+        /** Seconds (u32 on-chain) since `Automation.created_at`. */
+        durationSecs: number;
+      };
     };
 
 export type OnChainActionSpec =

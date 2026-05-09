@@ -33,6 +33,10 @@ pub enum TriggerSpec {
         /// Oracle adapter to dispatch to. See `oracle_source` mod.
         source: u8,
     },
+    /// Wall-clock delay since `Automation.created_at`. The keeper's
+    /// `time_watcher` ticks every minute and fires any rule whose
+    /// `created_at + duration_secs <= now`.
+    TimeElapsed { duration_secs: u32 },
 }
 
 /// Borsh-mirror of the on-chain `ActionSpec` enum.
@@ -129,6 +133,9 @@ impl Automation {
                 expo: *expo,
                 source: *source,
             },
+            TriggerSpec::TimeElapsed { duration_secs } => Monitor::Time {
+                duration_secs: *duration_secs,
+            },
         }
     }
 }
@@ -153,5 +160,8 @@ pub enum Monitor {
         /// `oracle_source` byte. Picks which adapter the dispatcher
         /// routes this trigger to (Pyth Hermes/Lazer, Jupiter, …).
         source: u8,
+    },
+    Time {
+        duration_secs: u32,
     },
 }

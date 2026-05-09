@@ -2616,6 +2616,19 @@ export type SotamaAutomations = {
                 "type": "u8"
               }
             ]
+          },
+          {
+            "name": "timeElapsed",
+            "fields": [
+              {
+                "name": "durationSecs",
+                "docs": [
+                  "Seconds to wait after `Automation.created_at`. Capped at",
+                  "`MAX_TIME_ELAPSED_SECS` (~366 days) by `validate()`."
+                ],
+                "type": "u32"
+              }
+            ]
           }
         ]
       }

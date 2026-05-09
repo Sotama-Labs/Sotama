@@ -46,6 +46,11 @@ pub struct KeeperConfig {
     pub reconcile_interval: Duration,
     pub price_poll_interval: Duration,
     pub fee_topup_scan_interval: Duration,
+    /// Tick interval for `time_watcher`. Coarser than the price loop
+    /// because TimeElapsed triggers are minute-resolution at finest.
+    /// 60s is plenty for "5 minutes from now" semantics — the user
+    /// won't notice ±30s drift on a 1-hour timer.
+    pub time_watcher_interval: Duration,
     pub shard_size: usize,
     pub swap_slippage_bps: u16,
     pub keeper_fee_lamports: u64,
@@ -116,6 +121,8 @@ impl KeeperConfig {
         let price_poll_interval = Duration::from_secs(parse_or("PRICE_POLL_INTERVAL_SECS", 12)?);
         let fee_topup_scan_interval =
             Duration::from_secs(parse_or("FEE_TOPUP_SCAN_INTERVAL_SECS", 300)?);
+        let time_watcher_interval =
+            Duration::from_secs(parse_or("TIME_WATCHER_INTERVAL_SECS", 60)?);
         let shard_size = parse_or::<usize>("SHARD_SIZE", 40)?.max(1);
         let swap_slippage_bps = parse_or::<u16>("SWAP_SLIPPAGE_BPS", 50)?.max(1);
         let keeper_fee_lamports = parse_or::<u64>("KEEPER_FEE_LAMPORTS", 5_000)?;
@@ -151,6 +158,7 @@ impl KeeperConfig {
             reconcile_interval,
             price_poll_interval,
             fee_topup_scan_interval,
+            time_watcher_interval,
             shard_size,
             swap_slippage_bps,
             keeper_fee_lamports,
