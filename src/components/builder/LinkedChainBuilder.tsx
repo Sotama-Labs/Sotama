@@ -19,12 +19,13 @@
    ───────────────────────────────────────────────────────────────────── */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Automation, BuilderResult, LoopMode } from "@/lib/types";
+import type { Automation, BuilderResult, ChainLinkClass, LoopMode } from "@/lib/types";
 import { DEFAULT_LOOP_CYCLES, MAX_CHAIN_LENGTH } from "@/lib/types";
 import { ConditionalBuilder } from "./ConditionalBuilder";
 import {
   type ChainNodeDraft,
   type ChainNodeNextDraft,
+  classifyChainLink,
   findCycleNodes,
   validateChainDraft,
   type ChainValidationError,
@@ -321,6 +322,22 @@ export function LinkedChainBuilder({
 
   const chainReady = isChain && allReady && chainError == null;
 
+  const linkClasses: ChainLinkClass[] = useMemo(() => {
+    const out: ChainLinkClass[] = [];
+    for (let i = 0; i < cards.length - 1; i++) {
+      const up = cards[i].result;
+      const down = cards[i + 1].result;
+      if (!up || !down) {
+        // Unknown until both cards are ready — neutral default. The
+        // badge will re-render once the user finishes both cards.
+        out.push("matched_mints");
+        continue;
+      }
+      out.push(classifyChainLink(up, down));
+    }
+    return out;
+  }, [cards]);
+
   /* ── Refs for SVG arrow positioning ─────────────────────────── */
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -505,10 +522,13 @@ export function LinkedChainBuilder({
             />
             {isChain && i < cards.length - 1 && (
               <ChainArrow
+                linkClass={linkClasses[i]}
                 hint={
-                  card.link?.ruleIndex === i + 1
-                    ? `Rule ${i + 2}'s input refilled by Rule ${i + 1}'s swap output`
-                    : "Rule output flows into next rule's input"
+                  linkClasses[i] === "matched_mints"
+                    ? "Rule output flows directly into next rule's input"
+                    : linkClasses[i] === "inverted_pair"
+                    ? "Inverted pair — Rule output funds Rule's input directly"
+                    : "Auto-bridge via Jupiter — Rule output is converted into next rule's input mint"
                 }
               />
             )}
@@ -522,6 +542,7 @@ export function LinkedChainBuilder({
           error={chainError}
           cards={cards.length}
           loopMode={loopMode}
+          hasBridgedLink={linkClasses.some((c) => c === "bridge_required")}
           onSave={handleSaveChain}
         />
       )}
@@ -910,7 +931,17 @@ function MenuItem({
 
 /* ── Visual: arrows between cards / loop-back connector ─────────── */
 
-function ChainArrow({ hint }: { hint: string }) {
+function ChainArrow({ hint, linkClass }: { hint: string; linkClass: ChainLinkClass }) {
+  const label =
+    linkClass === "inverted_pair"
+      ? "↻ pair"
+      : linkClass === "bridge_required"
+      ? "⤳ bridge"
+      : "→";
+  const tone =
+    linkClass === "bridge_required"
+      ? { bg: "var(--accent-fill)", fg: "var(--accent)" }
+      : { bg: "var(--bg-system)", fg: "var(--label-secondary)" };
   return (
     <div
       title={hint}
@@ -923,17 +954,19 @@ function ChainArrow({ hint }: { hint: string }) {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        width: "1.625rem",
-        height: "1.625rem",
+        padding: "0.25rem 0.625rem",
         borderRadius: "999px",
-        background: "var(--bg-system)",
+        background: tone.bg,
+        color: tone.fg,
         border: "0.5px solid var(--separator)",
         boxShadow: "var(--shadow-1)",
         zIndex: 2,
-        color: "var(--label-secondary)",
+        fontSize: "0.75rem",
+        fontWeight: 500,
+        whiteSpace: "nowrap",
       }}
     >
-      <span style={{ fontSize: "0.875rem", lineHeight: 1 }}>↓</span>
+      {label}
     </div>
   );
 }
@@ -1367,12 +1400,14 @@ function ChainSaveBar({
   error,
   cards,
   loopMode,
+  hasBridgedLink,
   onSave,
 }: {
   ready: boolean;
   error: ChainValidationError | null;
   cards: number;
   loopMode: LoopMode | null;
+  hasBridgedLink: boolean;
   onSave: () => void;
 }) {
   const errorMsg = error ? humanizeChainError(error) : null;
@@ -1398,6 +1433,9 @@ function ChainSaveBar({
   } else {
     detail =
       "Created in one transaction. Only the first rule is funded upfront; later rules pick up funding from the previous rule's swap.";
+  }
+  if (hasBridgedLink && !errorMsg) {
+    detail += " Bridge step adds ~0.5% slippage per cycle.";
   }
   return (
     <div
