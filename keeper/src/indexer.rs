@@ -215,6 +215,19 @@ impl WatchedSet {
         self.by_pubkey.len()
     }
 
+    /// All vault accounts currently watched by bridge-aware automations.
+    /// Derived from each automation's `vault_accounts()` helper.
+    /// Deduplicated. The vault manager subscribes to each via accountSubscribe.
+    pub fn active_vault_pubkeys(&self) -> Vec<Pubkey> {
+        let mut s: HashSet<Pubkey> = HashSet::new();
+        for ctx in self.by_pubkey.values() {
+            for v in ctx.vault_accounts() {
+                s.insert(v);
+            }
+        }
+        s.into_iter().collect()
+    }
+
     /// All feed_id strings currently watched by price triggers (deduplicated,
     /// hex-encoded). For Pyth feeds the key is the feed_id hex; the Hermes SSE
     /// endpoint expects these as `ids[]` query params. The orchestrator just

@@ -25,6 +25,7 @@ mod streaming;
 mod subscriber;
 mod time_watcher;
 mod types;
+mod vaults;
 
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
@@ -273,6 +274,27 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = bridge_dispatcher::run(cfg, set_rx).await {
                 error!(error = %e, "bridge_dispatcher task exited");
+            }
+        })
+    };
+
+    let vault_cache = vaults::VaultCache::new();
+    let vault_mgr = std::sync::Arc::new(vaults::VaultManager::new(source.clone(), vault_cache.clone()));
+
+    // Vault subscription reconciler: every 2s, derive the active vault pubkey
+    // set from the WatchedSet and reconcile accountSubscribe handles so the
+    // VaultCache stays current without polling getTokenAccountsByOwner.
+    // Same cadence as the feed-ids loop — both are O(N) over active automations.
+    let _vault_reconcile_handle = {
+        let watched_set_for_vaults = set_rx.clone();
+        let vault_mgr_clone = vault_mgr.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(std::time::Duration::from_secs(2));
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                iv.tick().await;
+                let desired = watched_set_for_vaults.borrow().active_vault_pubkeys();
+                vault_mgr_clone.reconcile(&desired).await;
             }
         })
     };

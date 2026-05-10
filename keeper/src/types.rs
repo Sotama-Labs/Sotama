@@ -39,6 +39,18 @@ impl AutomationCtx {
         }
     }
 
+    /// Vault accounts owned by this automation's PDA that the bridge
+    /// dispatcher must scan. Only bridge-enabled Swap automations have a
+    /// meaningful vault — the PDA itself holds token accounts that can
+    /// accumulate stuck non-input-mint balances between chain legs.
+    /// Returns the automation PDA when bridge_enabled, empty otherwise.
+    pub fn vault_accounts(&self) -> Vec<Pubkey> {
+        if self.bridge_enabled {
+            vec![self.pubkey]
+        } else {
+            vec![]
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
