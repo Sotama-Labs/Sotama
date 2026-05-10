@@ -77,3 +77,17 @@ pub struct AutomationFinished {
     /// `0` = fired_terminal, `1` = closed, `2` = error
     pub reason: u8,
 }
+
+/// Emitted at the end of every successful `execute_swap` (after Jupiter CPI completes).
+/// Carries the actual swap input/output amounts so the keeper can compute the effective
+/// fill price for downstream `PriceRelativeToFill` triggers.
+#[event]
+pub struct AutomationFilled {
+    pub automation: Pubkey,
+    /// SPL amount of the input mint that was swapped.
+    pub input_amount: u64,
+    /// SPL amount of the output mint that was received (post-slippage).
+    pub output_amount: u64,
+    /// Slot at which the fill occurred (for staleness checks).
+    pub fill_slot: u64,
+}

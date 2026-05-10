@@ -6,7 +6,7 @@ use anchor_lang::solana_program::{
 use anchor_spl::token::TokenAccount;
 
 use crate::errors::SotamaError;
-use crate::events::{AutomationExecuted, AutomationFinished};
+use crate::events::{AutomationExecuted, AutomationFilled, AutomationFinished};
 use crate::jupiter::{self, SwapAccountMeta};
 use crate::state::{ActionSpec, Automation, Config};
 
@@ -154,10 +154,12 @@ pub fn handler<'info>(
     require_keys_eq!(output_ata.mint, output_mint, SotamaError::WrongOutputMint);
     require_keys_eq!(output_ata.owner, destination, SotamaError::WrongDestination);
 
-    // Snapshot the output balance so we can verify the post-CPI
-    // increase satisfies `min_amount_out`. (Jupiter's inner ix has its
-    // own slippage guard via `otherAmountThreshold`, but we enforce
-    // ours independently — the keeper might pass a lax threshold.)
+    // Snapshot balances so we can verify the post-CPI increase and
+    // compute the actual fill amounts for the AutomationFilled event.
+    // (Jupiter's inner ix has its own slippage guard via
+    // `otherAmountThreshold`, but we enforce ours independently —
+    // the keeper might pass a lax threshold.)
+    let input_before = input_ata.amount;
     let output_before = output_ata.amount;
     // Explicitly release the borrowed data so we can re-borrow the
     // output ATA after the CPI. Borsh deserialization above held
@@ -215,6 +217,20 @@ pub fn handler<'info>(
         .ok_or(error!(SotamaError::SlippageExceeded))?;
     require!(received >= min_amount_out, SotamaError::SlippageExceeded);
     let _ = amount_in; // amount_in is informational at this layer; Jupiter's ix bytes carry it
+
+    // Read the post-CPI input ATA balance to compute the actual amount consumed.
+    let mut post_input_data: &[u8] = &input_ata_info.try_borrow_data()?;
+    let post_input = TokenAccount::try_deserialize(&mut post_input_data)?;
+    let input_consumed = input_before.saturating_sub(post_input.amount);
+
+    // Emit the fill event so the keeper can capture the effective fill
+    // price for downstream PriceRelativeToFill triggers.
+    emit!(AutomationFilled {
+        automation: auto_key,
+        input_amount: input_consumed,
+        output_amount: received,
+        fill_slot: Clock::get()?.slot,
+    });
 
     // Linked-rule auto-deposit: if this swap has a linked downstream
     // automation, transfer link_fee_deposit lamports from this PDA to

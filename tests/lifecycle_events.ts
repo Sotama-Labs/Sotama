@@ -383,6 +383,47 @@ describe("lifecycle events", () => {
     );
   });
 
+  // ── Test 5b: PriceRelativeToFill round-trip ───────────────────────────────
+
+  it("stores and round-trips a PriceRelativeToFill trigger variant", async () => {
+    // Use a random upstream pubkey — on-chain only stores it, never reads it.
+    const upstream = Keypair.generate().publicKey;
+
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    const amount = new BN(0.05 * LAMPORTS_PER_SOL);
+
+    await program.methods
+      .createAutomation(
+        // PriceRelativeToFill variant: direction=1 (grow_above_fill), pct_bps=500 (5%)
+        { priceRelativeToFill: { upstream, direction: 1, pctBps: 500 } },
+        action.transferSol(destination.publicKey, amount),
+        cadence.once(),
+        0
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    // Fetch the account and confirm the trigger round-trips correctly.
+    const acct = await program.account.automation.fetch(auto);
+    const t = acct.trigger as any;
+    assert.ok(t.priceRelativeToFill, "trigger variant is priceRelativeToFill");
+    assert.equal(
+      t.priceRelativeToFill.upstream.toBase58(),
+      upstream.toBase58(),
+      "upstream pubkey round-trips"
+    );
+    assert.equal(t.priceRelativeToFill.direction, 1, "direction = 1 (grow_above_fill)");
+    assert.equal(t.priceRelativeToFill.pctBps, 500, "pct_bps = 500 (5%)");
+  });
+
   // ── Test 5: AutomationFinished on Repeat-cadence exhaustion ──────────────
 
   it("emits AutomationFinished (reason=0) only on the second fire of a Repeat{total:2} automation", async () => {

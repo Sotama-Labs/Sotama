@@ -143,6 +143,19 @@ pub enum TriggerSpec {
         /// `MAX_TIME_ELAPSED_SECS` (~366 days) by `validate()`.
         duration_secs: u32,
     },
+    /// Fire when the trigger's base mint USD price has moved relative to the
+    /// effective fill price of an upstream automation. The keeper handles the
+    /// price comparison; on-chain only stores the parameters.
+    PriceRelativeToFill {
+        /// Pubkey of the upstream automation whose `AutomationFilled` event
+        /// established the cost basis.
+        upstream: Pubkey,
+        /// 0 = drop_below_fill (price <= fill * (1 - pct_bps/10000)).
+        /// 1 = grow_above_fill (price >= fill * (1 + pct_bps/10000)).
+        direction: u8,
+        /// Percent threshold in basis points. 100 = 1%, 500 = 5%, etc.
+        pct_bps: u32,
+    },
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
@@ -476,6 +489,12 @@ impl TriggerSpec {
                     SotamaError::BadCadence
                 );
             }
+            TriggerSpec::PriceRelativeToFill { direction, .. } => {
+                // Only two direction codes are defined: 0 = drop_below_fill,
+                // 1 = grow_above_fill. Anything else is rejected at create
+                // time so the keeper never has to handle unknown bytes.
+                require!(*direction <= 1, SotamaError::BadComparator);
+            }
         }
         Ok(())
     }
@@ -486,6 +505,8 @@ impl TriggerSpec {
             TriggerSpec::AccountActivity { .. } => trigger_kind::ACCOUNT_ACTIVITY,
             TriggerSpec::AssetPrice { .. } => trigger_kind::ASSET_PRICE,
             TriggerSpec::TimeElapsed { .. } => trigger_kind::TIME_ELAPSED,
+            // 3 is the next unallocated discriminator after TIME_ELAPSED(2).
+            TriggerSpec::PriceRelativeToFill { .. } => 3,
         }
     }
 
@@ -498,6 +519,9 @@ impl TriggerSpec {
             TriggerSpec::AccountActivity { account, .. } => *account,
             TriggerSpec::AssetPrice { feed, .. } => *feed,
             TriggerSpec::TimeElapsed { .. } => Pubkey::default(),
+            // Surface the upstream automation pubkey so indexers can
+            // link this trigger's event to the upstream fill event.
+            TriggerSpec::PriceRelativeToFill { upstream, .. } => *upstream,
         }
     }
 }
