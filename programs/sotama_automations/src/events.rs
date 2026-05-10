@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 #[event]
 pub struct AutomationCreated {
-    pub pubkey: Pubkey,
+    pub automation: Pubkey,
     pub owner: Pubkey,
     pub nonce: u64,
     /// `0` = AccountActivity, `1` = AssetPrice — keeps the event slim
@@ -21,7 +21,7 @@ pub struct AutomationCreated {
 
 #[event]
 pub struct AutomationExecuted {
-    pub pubkey: Pubkey,
+    pub automation: Pubkey,
     pub action_kind: u8,
     /// Lamports moved (or token base units for SPL).
     pub amount: u64,
@@ -36,7 +36,7 @@ pub struct AutomationExecuted {
 
 #[event]
 pub struct AutomationClosed {
-    pub pubkey: Pubkey,
+    pub automation: Pubkey,
     pub owner: Pubkey,
     pub refund_lamports: u64,
     /// Lamports diverted to `Config.treasury` before the owner refund.

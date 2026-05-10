@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::SotamaError;
+use crate::events::AutomationFinished;
 
 pub const MIN_AMOUNT_LAMPORTS: u64 = 1_000_000;
 
@@ -356,6 +357,27 @@ impl Automation {
             Cadence::Until { unix_deadline } => now > unix_deadline,
             _ => false,
         }
+    }
+
+    /// If the `Until` deadline has passed (and this automation is not yet
+    /// finished), marks it finished, emits `AutomationFinished{reason:0}`,
+    /// and returns `Ok(true)` — the caller should `return Ok(())` without
+    /// executing the action. Returns `Ok(false)` for all other cases so
+    /// the caller can proceed normally.
+    ///
+    /// Encapsulates the three-step until-expiry prologue that was previously
+    /// duplicated across `execute_automation`, `execute_automation_spl`, and
+    /// `execute_swap`.
+    pub fn handle_until_expiry(&mut self, key: Pubkey, now: i64) -> Result<bool> {
+        if self.is_until_expired(now) {
+            self.finished = true;
+            emit!(AutomationFinished {
+                automation: key,
+                reason: 0, // terminal — Until deadline reached
+            });
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Pre-flight check before executing an action. Run by every

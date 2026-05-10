@@ -154,7 +154,7 @@ pub fn handler(
         .ok_or(error!(SotamaError::DepositTooSmall))?;
 
     emit!(AutomationCreated {
-        pubkey: automation.key(),
+        automation: automation.key(),
         owner: automation.owner,
         nonce,
         trigger_kind: trigger_kind_byte,

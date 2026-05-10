@@ -176,13 +176,15 @@ pub fn handler<'info>(
 
     let refund = automation.to_account_info().lamports();
 
-    emit!(AutomationFinished {
-        automation: automation.key(),
-        reason: 1, // closed
-    });
+    if !automation.finished {
+        emit!(AutomationFinished {
+            automation: automation.key(),
+            reason: 1, // closed
+        });
+    }
 
     emit!(AutomationClosed {
-        pubkey: automation.key(),
+        automation: automation.key(),
         owner: ctx.accounts.owner.key(),
         refund_lamports: refund,
         fee_lamports,

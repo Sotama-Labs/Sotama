@@ -88,13 +88,15 @@ pub fn handler(ctx: Context<AdminCloseAutomation>) -> Result<()> {
         **owner_info.try_borrow_mut_lamports()? = new_owner_balance;
     }
 
-    emit!(AutomationFinished {
-        automation: ctx.accounts.automation.key(),
-        reason: 1, // closed
-    });
+    if !ctx.accounts.automation.finished {
+        emit!(AutomationFinished {
+            automation: ctx.accounts.automation.key(),
+            reason: 1, // closed
+        });
+    }
 
     emit!(AutomationClosed {
-        pubkey: ctx.accounts.automation.key(),
+        automation: ctx.accounts.automation.key(),
         owner: ctx.accounts.owner.key(),
         // For admin-close, "refund_lamports" is the deposit returned to
         // the owner; "fee_lamports" is the rent_min flowing to treasury.

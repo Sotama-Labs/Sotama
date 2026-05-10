@@ -55,6 +55,7 @@ const action = {
 const cadence = {
   once: () => ({ once: {} }),
   until: (unixDeadline: BN) => ({ until: { unixDeadline } }),
+  repeat: (total: number) => ({ repeat: { total } }),
 };
 
 // ── suite ────────────────────────────────────────────────────────────────────
@@ -145,7 +146,7 @@ describe("lifecycle events", () => {
       "expected exactly one AutomationCreated event"
     );
     const ev = createdEvents[0];
-    assert.ok(ev.pubkey, "pubkey field present");
+    assert.equal(ev.automation.toBase58(), auto.toBase58(), "automation field matches created PDA");
     assert.equal(
       ev.owner.toBase58(),
       owner.publicKey.toBase58(),
@@ -302,21 +303,29 @@ describe("lifecycle events", () => {
     });
 
     // Create an Until automation with a deadline 1 second in the future.
+    // create_automation requires unix_deadline > now; we use now+1 to satisfy
+    // that. The deadline will be in the past by the time the create tx
+    // confirms (~400 ms) and the execute tx is submitted (~400 ms more), so
+    // is_until_expired fires on the first execute without any explicit sleep.
     const cfg = await program.account.config.fetch(configPda);
     const nonce = BigInt(cfg.automationCount.toString());
     const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
     const amount = new BN(0.05 * LAMPORTS_PER_SOL);
 
-    // Set deadline 2 seconds in the future. At 400 ms / slot, 2 s is ~5 slots,
-    // which is enough for the on-chain unix_timestamp to advance past it.
-    const nowSec = Math.floor(Date.now() / 1000);
-    const deadline = new BN(nowSec + 2);
+    // Read the on-chain clock so the deadline is relative to validator time,
+    // not wall-clock time. This avoids failures when the validator lags
+    // wall-clock (which can happen on heavily-loaded CI machines).
+    const clockSlot = await provider.connection.getSlot("confirmed");
+    const onChainNow = (await provider.connection.getBlockTime(clockSlot))!;
+    // Set deadline 2 seconds ahead of on-chain time — passes create_automation's
+    // unix_deadline > now check by exactly 2 seconds on the validator's own clock.
+    const pastDeadline = new BN(onChainNow + 2);
 
     await program.methods
       .createAutomation(
         trigger.accountTransfer(watched.publicKey),
         action.transferSol(destination.publicKey, amount),
-        cadence.until(deadline),
+        cadence.until(pastDeadline),
         0
       )
       .accountsStrict({
@@ -328,10 +337,10 @@ describe("lifecycle events", () => {
       .signers([owner])
       .rpc();
 
-    // Wait long enough for the on-chain clock to advance past the deadline.
-    // solana-test-validator ticks ~1 slot per 400 ms; we wait 6 seconds
-    // (~15 slots) to be well clear of the 2-second deadline.
-    await new Promise((r) => setTimeout(r, 6000));
+    // Wait 3 s so the on-chain clock advances past the onChainNow+2 deadline.
+    // solana-test-validator ticks ~400 ms/slot; 3 s ≈ 7–8 slots — reliably
+    // past a 2-second deadline based on the validator's own timestamp.
+    await new Promise((r) => setTimeout(r, 3000));
 
     // Execute — deadline has passed so the handler should terminate without
     // firing the action and emit AutomationFinished(reason=0).
@@ -371,6 +380,122 @@ describe("lifecycle events", () => {
       acct.finished,
       true,
       "automation.finished is true after Until deadline expiry"
+    );
+  });
+
+  // ── Test 5: AutomationFinished on Repeat-cadence exhaustion ──────────────
+
+  it("emits AutomationFinished (reason=0) only on the second fire of a Repeat{total:2} automation", async () => {
+    const finishedEvents: any[] = [];
+    const executedEvents: any[] = [];
+    const listenerF = program.addEventListener("automationFinished", (ev) => {
+      finishedEvents.push(ev);
+    });
+    const listenerE = program.addEventListener("automationExecuted", (ev) => {
+      executedEvents.push(ev);
+    });
+
+    // Create a Repeat { total: 2 } automation.
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    const amount = new BN(0.05 * LAMPORTS_PER_SOL);
+
+    await program.methods
+      .createAutomation(
+        trigger.accountTransfer(watched.publicKey),
+        action.transferSol(destination.publicKey, amount),
+        cadence.repeat(2),
+        0
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    // Top up the PDA with one extra fire's worth of lamports. create_automation
+    // deposits only `amount` (enough for one fire); Repeat{total:2} needs 2×.
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(auto, amount.toNumber()),
+      "confirmed"
+    );
+
+    // First fire — should NOT emit AutomationFinished (executions=1, total=2).
+    await program.methods
+      .executeAutomation()
+      .accountsStrict({
+        keeper: adminAndKeeper.publicKey,
+        config: configPda,
+        automation: auto,
+        destination: destination.publicKey,
+      })
+      .rpc();
+
+    await new Promise((r) => setTimeout(r, 1500));
+
+    assert.equal(
+      finishedEvents.length,
+      0,
+      "no AutomationFinished after first fire of Repeat{total:2}"
+    );
+    assert.equal(
+      executedEvents.length,
+      1,
+      "one AutomationExecuted after first fire"
+    );
+    assert.equal(
+      executedEvents[0].finished,
+      false,
+      "AutomationExecuted.finished is false after first fire"
+    );
+
+    // Second fire — should emit AutomationFinished(reason=0).
+    await program.methods
+      .executeAutomation()
+      .accountsStrict({
+        keeper: adminAndKeeper.publicKey,
+        config: configPda,
+        automation: auto,
+        destination: destination.publicKey,
+      })
+      .rpc();
+
+    await new Promise((r) => setTimeout(r, 1500));
+    await program.removeEventListener(listenerF);
+    await program.removeEventListener(listenerE);
+
+    assert.equal(
+      finishedEvents.length,
+      1,
+      "one AutomationFinished after second fire of Repeat{total:2}"
+    );
+    assert.equal(finishedEvents[0].reason, 0, "reason = 0 (fired_terminal)");
+    assert.equal(
+      finishedEvents[0].automation.toBase58(),
+      auto.toBase58(),
+      "automation pubkey matches"
+    );
+    assert.equal(
+      executedEvents.length,
+      2,
+      "two AutomationExecuted events total"
+    );
+    assert.equal(
+      executedEvents[1].finished,
+      true,
+      "AutomationExecuted.finished is true on second fire"
+    );
+
+    // The on-chain account must have finished = true.
+    const acctFinal = await program.account.automation.fetch(auto);
+    assert.equal(
+      acctFinal.finished,
+      true,
+      "automation.finished is true after Repeat cadence exhaustion"
     );
   });
 });

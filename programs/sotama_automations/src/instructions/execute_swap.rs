@@ -75,13 +75,9 @@ pub fn handler<'info>(
 
     let automation = &mut ctx.accounts.automation;
     let now = Clock::get()?.unix_timestamp;
+    let auto_key = automation.key();
 
-    if automation.is_until_expired(now) {
-        automation.finished = true;
-        emit!(AutomationFinished {
-            automation: automation.key(),
-            reason: 0, // terminal — Until deadline reached
-        });
+    if automation.handle_until_expiry(auto_key, now)? {
         return Ok(());
     }
 
@@ -258,7 +254,7 @@ pub fn handler<'info>(
     automation.advance(now);
 
     emit!(AutomationExecuted {
-        pubkey: automation.key(),
+        automation: automation.key(),
         action_kind: automation.action.kind_byte(),
         amount: received,
         executions: automation.executions,

@@ -127,13 +127,15 @@ pub fn handler(ctx: Context<AdminCloseAutomationSwap>) -> Result<()> {
 
     let pda_lamports = automation.to_account_info().lamports();
 
-    emit!(AutomationFinished {
-        automation: automation.key(),
-        reason: 1, // closed
-    });
+    if !automation.finished {
+        emit!(AutomationFinished {
+            automation: automation.key(),
+            reason: 1, // closed
+        });
+    }
 
     emit!(AutomationClosed {
-        pubkey: automation.key(),
+        automation: automation.key(),
         owner: ctx.accounts.owner.key(),
         refund_lamports: 0,
         fee_lamports: pda_lamports,
