@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
     // WatchedSet delta-apply.
     //
     // Design note: `watch::Sender` is Clone (tokio 1.x wraps an Arc), so we
-    // can give one copy to the indexer's 60s reconcile task and keep another
+    // can give one copy to the indexer's reconcile task and keep another
     // for the lifecycle apply task below. Both call `send_if_modified`, which
     // is the correct mutation API for a watch channel.
     // -----------------------------------------------------------------------
@@ -191,7 +191,7 @@ async fn main() -> Result<()> {
 
     // Lifecycle apply task: for each decoded event, fetch the account (if
     // needed) then mutate the WatchedSet in-place via send_if_modified so
-    // all watchers see the delta without waiting for the next 60s reconcile.
+    // all watchers see the delta without waiting for the next 5min reconcile.
     let rpc_for_lifecycle = rpc.clone();
     let lifecycle_handle = tokio::spawn(async move {
         while let Some(ev) = lifecycle_rx.recv().await {

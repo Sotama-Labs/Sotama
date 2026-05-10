@@ -3,30 +3,6 @@ use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
 use std::time::{Duration, Instant};
-use tracing::{debug, warn};
-
-/// Hermes proactively closes connections at 24h. We reconnect at 23h.
-const RECONNECT_INTERVAL: Duration = Duration::from_secs(23 * 60 * 60);
-
-pub fn spawn(http: Client, base_url: String, feed_ids: Vec<String>, cache: PriceCache) {
-    tokio::spawn(async move {
-        let mut backoff = Duration::from_secs(1);
-        loop {
-            let started = Instant::now();
-            match run(&http, &base_url, &feed_ids, &cache, RECONNECT_INTERVAL).await {
-                Ok(()) => {
-                    debug!(target: "prices::hermes_sse", "reconnect window reached, reconnecting");
-                    backoff = Duration::from_secs(1);
-                }
-                Err(e) => {
-                    warn!(target: "prices::hermes_sse", error = %e, elapsed = ?started.elapsed(), "stream failed");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(30));
-                }
-            }
-        }
-    });
-}
 
 pub async fn run(
     http: &Client,

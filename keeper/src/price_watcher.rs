@@ -257,8 +257,16 @@ pub async fn run(
 
         // Map: correlation_key → (matches, snapshot_for_this_feed).
         let mut to_fire: HashMap<String, (Vec<AutomationCtx>, PriceSnapshot)> = HashMap::new();
+        // Track which automation pubkeys have already been evaluated this tick
+        // to prevent double-firing when the same feed appears in both
+        // local_prices (poll path) and PriceCache (SSE/Lazer path).
         let mut already: HashSet<Pubkey> = HashSet::new();
 
+        // -----------------------------------------------------------------------
+        // Poll-path (Off / Shadow): local_prices is populated by the 12s Hermes
+        // batch poll. In StreamMode::On this map is empty (poll suppressed) so
+        // this loop body does nothing — the cache-driven path below covers it.
+        // -----------------------------------------------------------------------
         for feed in &feeds {
             let feed_hex_id = pubkey_to_hex(feed);
             let Some(price) = prices.get(&feed_hex_id) else {
@@ -326,6 +334,64 @@ pub async fn run(
                         source: SourceLayer::HermesPoll,
                     };
                     let entry = to_fire.entry(key).or_insert_with(|| (Vec::new(), snap));
+                    entry.0.push(ctx.clone());
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Cache-driven path (StreamMode::On): when the 12s poll is suppressed,
+        // local_prices is always empty. Read absolute-price (non-ratio) triggers
+        // directly from PriceCache, which the SSE / Lazer paths write into.
+        //
+        // Precision note: PriceCache stores prices as f64. For Pyth's typical
+        // exponent of -8 (crypto pairs) the price has ~7 significant digits
+        // before the decimal and up to 8 after, fitting well within f64's
+        // ~15-digit precision. The threshold comparison is therefore safe for all
+        // practical Pyth price ranges. Integer-precise ratio comparisons are not
+        // implemented for this path — ratio triggers require expo metadata the
+        // cache doesn't carry and will only fire in Off/Shadow mode (poll still
+        // populates local_prices). TODO: wire ratio triggers through the cache
+        // in a follow-up once the cache carries raw + expo per snapshot.
+        // -----------------------------------------------------------------------
+        let cache_snaps = price_cache.snapshot_all().await;
+        for feed in &feeds {
+            let feed_hex_id = pubkey_to_hex(feed);
+            let Some(snap) = cache_snaps.get(&feed_hex_id) else {
+                continue;
+            };
+            let ctxs = set.price_matches_for_source(feed, crate::state::oracle_source::PYTH);
+            for ctx in &ctxs {
+                // Skip if already handled by the poll-path above (dedup).
+                if !already.insert(ctx.pubkey) {
+                    continue;
+                }
+                let TriggerSpec::AssetPrice {
+                    quote_mint: None, // ratio triggers not supported on this path yet
+                    comparator,
+                    threshold,
+                    expo,
+                    ..
+                } = &ctx.trigger
+                else {
+                    // Ratio triggers require integer-precise data the cache
+                    // doesn't carry; skip — they'll fire via the poll path
+                    // in Off/Shadow mode.
+                    continue;
+                };
+
+                // f64 threshold for comparison: threshold * 10^expo.
+                let threshold_f64 = (*threshold as f64) * 10f64.powi(*expo);
+                let crossed = match *comparator {
+                    0 => snap.price <= threshold_f64,
+                    1 => snap.price >= threshold_f64,
+                    _ => false,
+                };
+                if crossed {
+                    let key = format!("{}:{}", feed_hex_id, snap.publish_time);
+                    let entry = to_fire
+                        .entry(key)
+                        .or_insert_with(|| (Vec::new(), snap.clone()));
                     entry.0.push(ctx.clone());
                 }
             }
