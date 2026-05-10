@@ -24,7 +24,6 @@ use crate::program::{
     associated_token_address, build_execute_automation_ix, build_execute_automation_spl_ix,
     build_execute_swap_ix, config_pda, jupiter_program_id,
 };
-use crate::revalidate::{self, RevalidateCtx};
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
@@ -165,45 +164,26 @@ async fn process_event(
         cfg.rpc_url.clone(),
         CommitmentConfig::confirmed(),
     ));
-    let rev = RevalidateCtx {
-        http: http.clone(),
-        rpc: rpc.clone(),
-        hermes_url: cfg.hermes_url.clone(),
-        jupiter: JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone()),
-        swap_slippage_bps: cfg.swap_slippage_bps,
+
+    // Snapshot-age check: if the price snapshot that triggered this event
+    // is now stale, drop the fire and wait for the watcher to push a fresh
+    // crossing. Checked once per event (not per-match) because all matches
+    // in a single event share the same snapshot — the price reading that
+    // caused the crossing. Non-price triggers (snapshot=None) use a 2 s
+    // fallback so they always pass through immediately.
+    let max_age = match evt.snapshot.as_ref().map(|s| s.source) {
+        Some(layer) => layer.max_age(),
+        None => std::time::Duration::from_secs(2), // non-price triggers
     };
+    if let Some(snap) = &evt.snapshot {
+        if snap.fetched_at.elapsed() > max_age {
+            warn!(target: "executor", "snapshot stale, dropping fire");
+            return;
+        }
+    }
 
     for (i, ctx) in matches.iter().enumerate() {
         let pubkey = ctx.pubkey;
-
-        // Re-evaluate the trigger condition between fires (skip for
-        // the first one — the watcher just told us it holds — and for
-        // linked-rule fires which already serialize through upstream
-        // success).
-        if i > 0 && depth == 0 {
-            match revalidate::revalidate(&rev, ctx).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    info!(
-                        automation = %pubkey,
-                        correlation = %evt.correlation,
-                        position = i,
-                        "queue: condition no longer met, skipping later user"
-                    );
-                    continue;
-                }
-                Err(e) => {
-                    // Network blip on revalidate — be conservative and
-                    // pass through. On-chain check_can_fire still gates
-                    // each ix.
-                    debug!(
-                        automation = %pubkey,
-                        error = %e,
-                        "queue: revalidate errored, passing through"
-                    );
-                }
-            }
-        }
 
         let claim_result = {
             let mut g = dedupe.lock().unwrap_or_else(|p| p.into_inner());

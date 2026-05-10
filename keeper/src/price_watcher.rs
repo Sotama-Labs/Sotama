@@ -341,7 +341,7 @@ pub async fn run(
 
 /// Snapshot of a Jupiter `/quote` for one mint paired against USDC.
 /// Used as the quote leg of an AssetPrice trigger configured with a
-/// non-USD quote mint. Public so `revalidate.rs` can reuse the probe.
+/// non-USD quote mint.
 #[derive(Debug, Clone)]
 pub(crate) struct MintQuote {
     /// out_amount in USDC base units (6 decimals) when swapping
