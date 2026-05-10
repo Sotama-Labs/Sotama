@@ -178,10 +178,11 @@ async fn main() -> Result<()> {
 
     let executor_handle = {
         let cfg = cfg.clone();
+        let http_client = http_client.clone();
         let blockhash_cache = blockhash_cache.clone();
         let priority_fee_cache = priority_fee_cache.clone();
         tokio::spawn(async move {
-            if let Err(e) = executor::run(cfg, trigger_rx, blockhash_cache, priority_fee_cache).await {
+            if let Err(e) = executor::run(cfg, http_client, trigger_rx, blockhash_cache, priority_fee_cache).await {
                 error!(error = %e, "executor task exited");
             }
         })

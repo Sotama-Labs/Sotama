@@ -103,13 +103,11 @@ impl Dedupe {
 
 pub async fn run(
     cfg: Arc<KeeperConfig>,
+    http: reqwest::Client,
     mut rx: mpsc::Receiver<TriggerEvent>,
     blockhash_cache: BlockhashCache,
     priority_fee_cache: PriorityFeeCache,
 ) -> Result<()> {
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()?;
     let config = config_pda(&cfg.program_id);
     let dedupe: Arc<Mutex<Dedupe>> = Arc::new(Mutex::new(Dedupe::new()));
 
@@ -296,7 +294,7 @@ async fn process_event(
 async fn execute_one(
     cfg: &KeeperConfig,
     http: &reqwest::Client,
-    rpc: &RpcClient,
+    rpc: &Arc<RpcClient>,
     config: &Pubkey,
     ctx: &AutomationCtx,
     depth: u8,
@@ -351,7 +349,7 @@ async fn execute_one(
         "executor: sending tx via helius sender"
     );
 
-    let sig = send_with_one_shot_escalation(cfg, http, &ixs, &bh, fee_microlamports_per_cu).await?;
+    let sig = send_with_one_shot_escalation(cfg, http, rpc, &ixs, &bh, fee_microlamports_per_cu).await?;
     Ok(sig)
 }
 
@@ -382,6 +380,11 @@ async fn send_one(
     bh: &CachedBlockhash,
     fee_microlamports_per_cu: u64,
 ) -> Result<String> {
+    debug_assert!(
+        ixs.len() >= 2,
+        "send_one expects ixs[0]=CU-limit and ixs[1]=CU-price; got {} ixs",
+        ixs.len()
+    );
     // Overwrite slot [1] with the caller-supplied fee. slot [0] is the
     // CU-limit ix and is not fee-related.
     let mut ixs_owned = ixs.to_vec();
@@ -391,12 +394,13 @@ async fn send_one(
 }
 
 /// Sends the transaction. On a retryable send error (blockhash not found,
-/// transaction expired) escalates the priority fee to p95 once and retries.
-/// No sustained escalation — the 5 s cache refresh raises the new baseline
-/// naturally on the next fire.
+/// transaction expired) escalates the priority fee to p95 once and retries
+/// with a freshly fetched blockhash. No sustained escalation — the 5 s
+/// cache refresh raises the new baseline naturally on the next fire.
 async fn send_with_one_shot_escalation(
     cfg: &KeeperConfig,
     http: &reqwest::Client,
+    rpc: &Arc<RpcClient>,
     ixs: &[Instruction],
     bh: &CachedBlockhash,
     base_fee_micro: u64,
@@ -404,11 +408,19 @@ async fn send_with_one_shot_escalation(
     match send_one(cfg, http, ixs, bh, base_fee_micro).await {
         Ok(sig) => Ok(sig),
         Err(e) if is_retryable_send_error(&e) => {
-            warn!(target: "executor", error = %e, "retrying with p95 priority fee");
+            warn!(target: "executor", error = %e, "send failed; escalating fee and refreshing blockhash");
             let escalated = fetch_p95_once(http, &cfg.rpc_url, &cfg.program_id)
                 .await
                 .unwrap_or(base_fee_micro * 2);
-            send_one(cfg, http, ixs, bh, escalated).await
+            let (hash, last_valid_block_height) = rpc
+                .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+                .await?;
+            let fresh_bh = CachedBlockhash {
+                hash,
+                last_valid_block_height,
+                fetched_at: std::time::Instant::now(),
+            };
+            send_one(cfg, http, ixs, &fresh_bh, escalated).await
         }
         Err(e) => Err(e),
     }
