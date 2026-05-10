@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod bridge_dispatcher;
 mod prices;
@@ -283,14 +283,26 @@ async fn main() -> Result<()> {
                 )
                 .await
                 {
-                    Some(fill) => {
+                    Ok(fill) => {
+                        info!(
+                            target: "fills",
+                            upstream = %fill.upstream,
+                            input_amount = f.input_amount,
+                            output_amount = f.output_amount,
+                            effective_usd = fill.effective_usd_per_output,
+                            "fill recorded"
+                        );
                         fill_cache_for_lifecycle.put(fill).await;
                     }
-                    None => {
-                        tracing::warn!(
+                    Err(reason) => {
+                        warn!(
                             target: "fills",
-                            automation = %f.automation,
-                            "could not compute effective fill price; FillCache not updated"
+                            upstream = %f.automation,
+                            input_amount = f.input_amount,
+                            output_amount = f.output_amount,
+                            fill_slot = f.fill_slot,
+                            %reason,
+                            "fill rejected; downstream PriceRelativeToFill triggers on this upstream cannot fire"
                         );
                     }
                 }
@@ -501,14 +513,32 @@ async fn main() -> Result<()> {
 // Fill price computation helper
 // ---------------------------------------------------------------------------
 
+/// Structured rejection reason for `compute_effective_fill`.
+///
+/// Every early-return path produces a typed variant so the call site can
+/// emit a structured `warn!` with a `reason` field — no silent `None`.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum FillRejection {
+    #[error("upstream automation could not be fetched: {0}")]
+    AutomationFetch(String),
+    #[error("upstream automation could not be decoded")]
+    AutomationDecode,
+    #[error("input mint USD price unavailable (mint: {mint})")]
+    InputPriceMissing { mint: String },
+    #[error("zero output_amount — would divide by zero")]
+    ZeroOutput,
+    #[error("missing input/output decimals (mint: {mint})")]
+    DecimalsMissing { mint: String },
+}
+
 /// USDC mainnet mint. Stable: 1 USDC ≈ $1.00.
 const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /// USDT mainnet mint. Stable: 1 USDT ≈ $1.00.
 const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
 /// Compute the effective USD price per output unit from an `AutomationFilled`
-/// event. Returns `None` if the upstream automation account can't be decoded
-/// or if either the input or output USD price can't be resolved.
+/// event. Returns `Err(FillRejection)` with a typed reason whenever the fill
+/// cannot be priced; the call site logs the rejection with structured fields.
 ///
 /// Algorithm:
 ///   1. Fetch and decode the upstream automation account to get input_mint,
@@ -528,43 +558,21 @@ async fn compute_effective_fill(
     price_cache: &crate::prices::cache::PriceCache,
     mint_price_cache: &crate::mints::cache::MintPriceCache,
     ev: &crate::state::AutomationFilledEvent,
-) -> Option<crate::fills::cache::Fill> {
+) -> Result<crate::fills::cache::Fill, FillRejection> {
     use std::str::FromStr;
 
-    if ev.input_amount == 0 || ev.output_amount == 0 {
-        tracing::warn!(
-            target: "fills",
-            automation = %ev.automation,
-            "AutomationFilled has zero amounts; skipping"
-        );
-        return None;
+    if ev.output_amount == 0 {
+        return Err(FillRejection::ZeroOutput);
     }
 
     // Step 1: Fetch and decode the upstream automation account.
-    let account = match rpc.get_account(&ev.automation).await {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!(
-                target: "fills",
-                automation = %ev.automation,
-                error = %e,
-                "getAccount failed for upstream automation"
-            );
-            return None;
-        }
-    };
-    let automation = match crate::state::Automation::from_account_data(&account.data) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!(
-                target: "fills",
-                automation = %ev.automation,
-                error = %e,
-                "failed to decode upstream automation"
-            );
-            return None;
-        }
-    };
+    let account = rpc
+        .get_account(&ev.automation)
+        .await
+        .map_err(|e| FillRejection::AutomationFetch(e.to_string()))?;
+
+    let automation = crate::state::Automation::from_account_data(&account.data)
+        .map_err(|_| FillRejection::AutomationDecode)?;
 
     // Step 2: Extract input_mint and output_mint from the Swap action.
     let (input_mint, output_mint) = match &automation.action {
@@ -572,12 +580,7 @@ async fn compute_effective_fill(
             (*input_mint, *output_mint)
         }
         _ => {
-            tracing::warn!(
-                target: "fills",
-                automation = %ev.automation,
-                "AutomationFilled on non-Swap action; skipping"
-            );
-            return None;
+            return Err(FillRejection::AutomationDecode);
         }
     };
 
@@ -601,13 +604,9 @@ async fn compute_effective_fill(
             if let Some(snap) = price_cache.get_fresh(&feed_hex).await {
                 snap.price
             } else {
-                tracing::warn!(
-                    target: "fills",
-                    automation = %ev.automation,
-                    input_mint = %input_mint,
-                    "no USD price for input mint; cannot compute fill price"
-                );
-                return None;
+                return Err(FillRejection::InputPriceMissing {
+                    mint: input_mint.to_string(),
+                });
             }
         }
     };
@@ -617,7 +616,7 @@ async fn compute_effective_fill(
     let output_real = (ev.output_amount as f64) / 10f64.powi(output_decimals as i32);
 
     if output_real == 0.0 {
-        return None;
+        return Err(FillRejection::ZeroOutput);
     }
 
     let input_usd = input_real * input_usd_price;
@@ -636,7 +635,7 @@ async fn compute_effective_fill(
         "computed effective fill price"
     );
 
-    Some(crate::fills::cache::Fill {
+    Ok(crate::fills::cache::Fill {
         upstream: ev.automation,
         effective_usd_per_output,
         fill_slot: ev.fill_slot,

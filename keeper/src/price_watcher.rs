@@ -567,6 +567,11 @@ pub async fn run(
         // are already caught by the Pyth/Jupiter notify paths above. No
         // separate Notify for FillCache is needed.
         // -----------------------------------------------------------------------
+
+        // Track which upstream pubkeys we've already logged as missing this
+        // tick so we emit at most one debug line per upstream per heartbeat.
+        let mut missing_logged: HashSet<Pubkey> = HashSet::new();
+
         for ctx in set.by_pubkey.values() {
             if already.contains(&ctx.pubkey) {
                 continue;
@@ -578,7 +583,11 @@ pub async fn run(
 
             // Need the upstream fill record.
             let Some(fill) = fill_cache.get_fresh(upstream).await else {
-                continue; // no fill on record yet; wait for AutomationFilled event
+                // Only log once per distinct upstream per tick to avoid spam.
+                if missing_logged.insert(*upstream) {
+                    debug!(target: "fills", %upstream, automation = %ctx.pubkey, "skipping PriceRelativeToFill: no fresh fill for upstream");
+                }
+                continue;
             };
 
             // Resolve the current USD price for the downstream rule's output mint.
