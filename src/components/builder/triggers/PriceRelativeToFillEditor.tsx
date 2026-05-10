@@ -22,7 +22,13 @@ export function PriceRelativeToFillEditor({
   const displayPct = draft.pctBps != null ? draft.pctBps / 100 : null;
 
   const handlePctChange = (v: number | null) => {
-    onChange({ ...draft, pctBps: v != null ? Math.round(v * 100) : null });
+    if (v == null) {
+      onChange({ ...draft, pctBps: null });
+      return;
+    }
+    const bps = Math.round(v * 100);
+    const clamped = Math.min(Math.max(bps, 1), 100_000);
+    onChange({ ...draft, pctBps: clamped });
   };
 
   return (
@@ -100,6 +106,16 @@ export function PriceRelativeToFillEditor({
             ? `${draft.pctBps} bps — fires when price has ${draft.direction === "grow" ? "grown" : "dropped"} ${displayPct}% from fill`
             : "Enter a percentage to set the trigger threshold"}
         </div>
+        {draft.pctBps != null && draft.pctBps > 5000 && (
+          <span className="hig-caption-1" style={{ color: "var(--label-tertiary)", display: "block", marginTop: "0.25rem" }}>
+            Very large threshold — trigger may never fire.
+          </span>
+        )}
+        {draft.pctBps != null && draft.pctBps < 10 && (
+          <span className="hig-caption-1" style={{ color: "var(--label-tertiary)", display: "block", marginTop: "0.25rem" }}>
+            Very tight threshold — may fire on price noise.
+          </span>
+        )}
       </FieldRow>
     </EditorShell>
   );
