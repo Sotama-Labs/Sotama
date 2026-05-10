@@ -537,23 +537,6 @@ const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /// USDT mainnet mint. Stable: 1 USDT ≈ $1.00.
 const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
-/// Compute the effective USD price per output unit from an `AutomationFilled`
-/// event. Returns `Err(FillRejection)` with a typed reason whenever the fill
-/// cannot be priced; the call site logs the rejection with structured fields.
-///
-/// Algorithm:
-///   1. Fetch and decode the upstream automation account to get input_mint,
-///      output_mint, and their decimals (from the Swap action).
-///   2. Look up the input mint's USD price (stable → 1.0, Pyth → PriceCache,
-///      else → MintPriceCache).
-///   3. Compute:
-///      input_USD = (input_amount / 10^input_decimals) * input_USD_price
-///      effective  = input_USD / (output_amount / 10^output_decimals)
-///
-/// Note: output decimals are read from the ATA via `getAccountInfo` on the
-/// output mint. For the MVP we use a fixed SPL-standard decimals fallback
-/// approach: fetch the mint account for both mints. This avoids bundling
-/// the full SPL metadata stack.
 /// Pure computation: effective USD per output unit.
 ///
 /// Returns `Err(FillRejection::ZeroOutput)` if `output_amount == 0`.
@@ -574,6 +557,16 @@ pub(crate) fn compute_effective_usd_per_output(
     Ok(input_usd / output_real)
 }
 
+/// Compute the effective USD price per output unit from an `AutomationFilled`
+/// event. Returns `Err(FillRejection)` with a typed reason whenever the fill
+/// cannot be priced; the call site logs the rejection with structured fields.
+///
+/// Algorithm:
+///   1. Fetch and decode the upstream automation account to get input_mint,
+///      output_mint, and their decimals (from the Swap action).
+///   2. Look up the input mint's USD price (stable → 1.0, Pyth → PriceCache,
+///      else → MintPriceCache).
+///   3. Delegate the pure division to `compute_effective_usd_per_output`.
 async fn compute_effective_fill(
     rpc: &std::sync::Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     price_cache: &crate::prices::cache::PriceCache,
@@ -686,4 +679,66 @@ fn init_tracing() {
         .with(filter)
         .with(fmt::layer().with_target(true).with_level(true))
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_btc_at_80k_to_one_wbtc_gives_80k_per_wbtc() {
+        // 1 BTC (9 dec) at $80,000 → 1 WBTC (8 dec)
+        let r = compute_effective_usd_per_output(
+            1_000_000_000, // 1.0 BTC
+            100_000_000,   // 1.0 WBTC
+            9,
+            8,
+            80_000.0,
+        )
+        .unwrap();
+        assert!((r - 80_000.0).abs() < 1e-6, "got {r}");
+    }
+
+    #[test]
+    fn usdc_six_decimals_to_sol_nine_decimals() {
+        // 100 USDC (6 dec) at $1 → 0.5 SOL (9 dec) → $200/SOL
+        let r = compute_effective_usd_per_output(
+            100_000_000, // 100 USDC
+            500_000_000, // 0.5 SOL
+            6,
+            9,
+            1.0,
+        )
+        .unwrap();
+        assert!((r - 200.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_output_returns_zero_output_rejection() {
+        let r = compute_effective_usd_per_output(1_000, 0, 6, 9, 1.0);
+        assert!(matches!(r, Err(FillRejection::ZeroOutput)));
+    }
+
+    #[test]
+    fn slippage_eats_into_price_correctly() {
+        // 1 BTC paid (9 dec) at $80k → 0.99 WBTC received (8 dec, slippage)
+        // Effective USD per WBTC = 80_000 / 0.99 = ~$80,808.08
+        let r = compute_effective_usd_per_output(
+            1_000_000_000,
+            99_000_000, // 0.99 WBTC
+            9,
+            8,
+            80_000.0,
+        )
+        .unwrap();
+        assert!((r - 80_808.0808).abs() < 0.001, "got {r}");
+    }
+
+    #[test]
+    fn small_amounts_dont_lose_precision_excessively() {
+        // 0.000001 BTC (1000 base units, 9 dec) at $80k → 0.0000005 WBTC (50 base, 8 dec)
+        // Effective USD per WBTC = (1e-6 * 80000) / 5e-7 = 0.08 / 5e-7 = 160_000
+        let r = compute_effective_usd_per_output(1_000, 50, 9, 8, 80_000.0).unwrap();
+        assert!((r - 160_000.0).abs() < 1e-3, "got {r}");
+    }
 }
