@@ -522,16 +522,7 @@ export function LinkedChainBuilder({
               onClose={onClose}
             />
             {isChain && i < cards.length - 1 && (
-              <ChainArrow
-                linkClass={linkClasses[i]}
-                hint={
-                  linkClasses[i] === "matched_mints"
-                    ? "Rule output flows directly into next rule's input"
-                    : linkClasses[i] === "inverted_pair"
-                    ? "Inverted pair — Rule output funds Rule's input directly"
-                    : "Auto-bridge via Jupiter — Rule output is converted into next rule's input mint"
-                }
-              />
+              <ChainArrow hint="Rule output flows into next rule's input" />
             )}
           </div>
         );
@@ -932,17 +923,7 @@ function MenuItem({
 
 /* ── Visual: arrows between cards / loop-back connector ─────────── */
 
-function ChainArrow({ hint, linkClass }: { hint: string; linkClass: ChainLinkClass }) {
-  const label =
-    linkClass === "inverted_pair"
-      ? "↻ pair"
-      : linkClass === "bridge_required"
-      ? "⤳ bridge"
-      : "→";
-  const tone =
-    linkClass === "bridge_required"
-      ? { bg: "var(--accent-fill)", fg: "var(--accent)" }
-      : { bg: "var(--bg-system)", fg: "var(--label-secondary)" };
+function ChainArrow({ hint }: { hint: string }) {
   return (
     <div
       title={hint}
@@ -955,19 +936,17 @@ function ChainArrow({ hint, linkClass }: { hint: string; linkClass: ChainLinkCla
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "0.25rem 0.625rem",
+        width: "1.625rem",
+        height: "1.625rem",
         borderRadius: "999px",
-        background: tone.bg,
-        color: tone.fg,
+        background: "var(--bg-system)",
         border: "0.5px solid var(--separator)",
         boxShadow: "var(--shadow-1)",
         zIndex: 2,
-        fontSize: "0.75rem",
-        fontWeight: 500,
-        whiteSpace: "nowrap",
+        color: "var(--label-secondary)",
       }}
     >
-      {label}
+      <span style={{ fontSize: "0.875rem", lineHeight: 1 }}>↓</span>
     </div>
   );
 }
