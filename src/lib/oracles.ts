@@ -233,7 +233,7 @@ function isMainSessionFeed(f: FeedEntry): boolean {
  *  Inverted feeds compose end-to-end without any keeper-side change:
  *  the on-chain trigger ends up with comparator/threshold targeting
  *  the inverted pair, which is exactly what the keeper sees streaming. */
-async function lookupFeedForAsset(
+export async function lookupFeedForAsset(
   asset: AssetRef,
 ): Promise<{ feedId: string; symbol: string; inverted: boolean } | null> {
   const assetType = ASSET_CLASS_TO_QUERY_TYPE[asset.assetClass];
@@ -350,17 +350,20 @@ const resolvePyth: OracleResolver = async (asset, quote) => {
  *
  *  USD quote: returns a direct Jupiter price for the base mint.
  *
- *  Non-USD quote: also handled, but requires the quote asset to have an
- *  SPL mint of its own. The on-chain trigger stores the quote leg as
- *  `quote_mint: Pubkey`, and the keeper resolves it by polling Jupiter
- *  for that mint — so FX / Equity / Metal-class quotes (which have no
- *  Solana mint) can't be the quote side of a Jupiter-base trigger.
- *  When both base and quote have mints, the keeper's jupiter_watcher
- *  fetches both prices in the same `/price/v3` batch and compares the
- *  ratio against the threshold. */
+ *  Non-USD quote: accepted when the quote leg has SOMETHING the keeper
+ *  can convert to a USD price:
+ *   • SPL mint → keeper probes Jupiter `/price/v3` for that mint.
+ *   • Pyth feed (Equity / FX / Metal / Commodity / non-Solana Crypto)
+ *     → keeper polls Hermes/Lazer for that feed.
+ *  Either way, the on-chain trigger stores 32 bytes in `quote_mint` and
+ *  the keeper disambiguates at fire time by checking against its cached
+ *  Pyth symbol catalog (catalog hit → Pyth path; miss → Jupiter probe). */
 const resolveJupiter: OracleResolver = async (asset, quote) => {
   if (!asset.mint) return null;
-  if (quote.kind === "asset" && !quote.asset.mint) return null;
+  if (quote.kind === "asset" && !quote.asset.mint) {
+    const quotePyth = await lookupFeedForAsset(quote.asset);
+    if (!quotePyth) return null;
+  }
   const price = await fetchJupiterPriceUSD(asset.mint);
   if (!price) return null;
   const quoteSym = quote.kind === "usd" ? "USD" : quote.asset.displaySymbol;

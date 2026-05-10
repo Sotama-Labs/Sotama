@@ -28,6 +28,7 @@ import {
   type OnChainActionSpec,
   type OnChainTriggerSpec,
 } from "@/lib/program";
+import { lookupFeedForAsset } from "@/lib/oracles";
 import { Spinner } from "./icons";
 
 const SOLANA_NETWORK_FEE_SOL = 0.000045;
@@ -120,7 +121,7 @@ type OnChainSpec = SolSpec | SplSpec | SwapSpec;
 
 /** Map UI Trigger → on-chain TriggerSpec. Returns null if shape isn't yet
  *  supported on-chain (or has invalid fields). */
-function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
+async function buildTriggerSpec(t: Trigger): Promise<OnChainTriggerSpec | null> {
   switch (t.kind) {
     case "account_transfer": {
       const account = tryPubkey(t.account);
@@ -215,14 +216,24 @@ function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
           // Feed already encodes the pair; no quote_mint, threshold is
           // in the pair's natural Pyth scale.
           expo = defaultExpo;
-        } else {
-          // Fall back to Jupiter quote_mint path — only works for SPL
-          // tokens. FX/Equity/Metal/Commodity quote without a Pyth pair
-          // feed isn't deployable yet (would need keeper-side inferred
-          // ratios, schema-blocked).
+        } else if (t.quote.asset.mint) {
+          // SPL-mint quote → keeper probes Jupiter for its USD price.
           const m = tryPubkey(t.quote.asset.mint);
           if (!m) return null;
           quoteMint = m;
+          expo = -6;
+        } else {
+          // No SPL mint — fall back to the quote's Pyth feed id. The
+          // keeper disambiguates `quote_mint` bytes against the Pyth
+          // symbol catalog at fire time (catalog hit → Hermes path,
+          // miss → Jupiter probe). 32 bytes either way.
+          const quotePyth = await lookupFeedForAsset(t.quote.asset);
+          if (!quotePyth) return null;
+          try {
+            quoteMint = feedIdToPubkey(quotePyth.feedId);
+          } catch {
+            return null;
+          }
           expo = -6;
         }
       }
@@ -322,13 +333,13 @@ function buildActionSpec(
 }
 
 /** Compose the first-trigger × first-action shape into an OnChainSpec. */
-function getOnChainSpec(
+async function getOnChainSpec(
   owner: PublicKey,
   triggers: Trigger[],
   actions: Action[]
-): OnChainSpec | null {
+): Promise<OnChainSpec | null> {
   if (triggers.length === 0 || actions.length === 0) return null;
-  const trigger = buildTriggerSpec(triggers[0]);
+  const trigger = await buildTriggerSpec(triggers[0]);
   if (!trigger) return null;
   const action = buildActionSpec(owner, actions[0]);
   if (!action) return null;
@@ -436,13 +447,24 @@ export function DepositSheet({
   const { connection } = useConnection();
   const wallet = useWallet();
 
-  const onChainSpec = useMemo(
-    () =>
-      automation && wallet.publicKey
-        ? getOnChainSpec(wallet.publicKey, automation.triggers, automation.actions)
-        : null,
-    [automation, wallet.publicKey]
-  );
+  const [onChainSpec, setOnChainSpec] = useState<OnChainSpec | null>(null);
+  useEffect(() => {
+    if (!automation || !wallet.publicKey) {
+      setOnChainSpec(null);
+      return;
+    }
+    let alive = true;
+    void getOnChainSpec(
+      wallet.publicKey,
+      automation.triggers,
+      automation.actions,
+    ).then((spec) => {
+      if (alive) setOnChainSpec(spec);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [automation, wallet.publicKey]);
 
   useEffect(() => {
     if (!open) return;

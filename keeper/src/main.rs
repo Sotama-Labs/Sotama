@@ -13,6 +13,7 @@ mod jupiter_watcher;
 mod lazer_watcher;
 mod price_watcher;
 mod program;
+mod pyth_catalog;
 mod revalidate;
 mod shard;
 mod signer;

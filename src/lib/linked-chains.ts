@@ -57,6 +57,7 @@ import {
   type OnChainActionSpec,
   type OnChainTriggerSpec,
 } from "./program";
+import { lookupFeedForAsset } from "./oracles";
 import {
   INFINITE_LOOP_UNIX_DEADLINE,
   MAX_TIME_ELAPSED_SECS,
@@ -248,7 +249,7 @@ function feedIdToPubkey(feedId: string): PublicKey {
   return new PublicKey(Buffer.from(hex, "hex"));
 }
 
-function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
+async function buildTriggerSpec(t: Trigger): Promise<OnChainTriggerSpec | null> {
   switch (t.kind) {
     case "account_transfer": {
       const account = tryPubkey(t.account);
@@ -314,10 +315,24 @@ function buildTriggerSpec(t: Trigger): OnChainTriggerSpec | null {
             t.oracle.symbol.toUpperCase().includes(`${quoteTicker}/`));
         if (pairResolved) {
           expo = defaultExpo;
-        } else {
+        } else if (t.quote.asset.mint) {
           const m = tryPubkey(t.quote.asset.mint);
           if (!m) return null;
           quoteMint = m;
+          expo = -6;
+        } else {
+          // No SPL mint for the quote — fall back to its Pyth feed id.
+          // The keeper disambiguates `quote_mint` bytes by checking the
+          // Pyth symbol catalog at fire time (catalog hit → Hermes path,
+          // miss → Jupiter probe). Both are 32-byte values fitting the
+          // existing on-chain field, so no schema change.
+          const quotePyth = await lookupFeedForAsset(t.quote.asset);
+          if (!quotePyth) return null;
+          try {
+            quoteMint = feedIdToPubkey(quotePyth.feedId);
+          } catch {
+            return null;
+          }
           expo = -6;
         }
       }
@@ -484,7 +499,7 @@ export async function sendChainCreate(params: {
       throw new Error(`node ${i + 1}: chain rules must be Swap actions`);
     }
 
-    const onChainTrigger = buildTriggerSpec(trigger);
+    const onChainTrigger = await buildTriggerSpec(trigger);
     if (!onChainTrigger) {
       throw new Error(`node ${i + 1}: trigger could not be encoded`);
     }

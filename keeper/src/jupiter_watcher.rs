@@ -27,7 +27,11 @@ use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
-use crate::price_watcher::{crossed_above, crossed_below, ratio_compare, LatestPrice};
+use crate::price_watcher::{
+    crossed_above, crossed_below, fetch_prices as fetch_pyth_prices, pubkey_to_hex, ratio_compare,
+    LatestPrice,
+};
+use crate::pyth_catalog::{self, PythCatalog};
 use crate::state::{oracle_source, TriggerSpec};
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -69,6 +73,25 @@ pub async fn run(
     let mut tick = interval(cfg.price_poll_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    // Load the Pyth catalog so we can dispatch Pyth-feed `quote_mint`
+    // bytes (XAU, EUR, etc. — Pyth-listed quotes that have no Solana
+    // SPL mint) to Hermes instead of the Jupiter mint-probe path.
+    // Catalog load is best-effort: a failure here just means we lose
+    // cross-source quotes this session; SPL-mint quotes still work.
+    let catalog: PythCatalog = match pyth_catalog::fetch().await {
+        Ok(c) => {
+            info!(
+                feeds = c.len(),
+                "jupiter_watcher: loaded Pyth catalog for cross-source quote dispatch",
+            );
+            c
+        }
+        Err(e) => {
+            warn!(error = %e, "jupiter_watcher: Pyth catalog load failed; cross-source quotes disabled");
+            PythCatalog::new()
+        }
+    };
+
     info!(
         endpoint = %cfg.jupiter_price_url,
         cadence_secs = cfg.price_poll_interval.as_secs(),
@@ -84,11 +107,15 @@ pub async fn run(
             continue;
         }
 
-        // Collect quote_mints referenced by any Jupiter-source trigger
-        // so we can fetch base AND quote prices in a single batch and
-        // compute base/quote ratios without a second roundtrip.
-        let mut all_mints: Vec<Pubkey> = base_mints.clone();
+        // Partition quote_mints by dispatch:
+        //   • Catalog hit → Pyth feed id, fetched from Hermes.
+        //   • Miss        → SPL mint, fetched from Jupiter alongside bases.
+        // Pyth feed ids and SPL mints are both 32 bytes; the catalog is
+        // the only reliable disambiguator.
+        let mut jupiter_mints: Vec<Pubkey> = base_mints.clone();
         let mut seen: HashSet<Pubkey> = base_mints.iter().copied().collect();
+        let mut hermes_quote_pubkeys: Vec<Pubkey> = Vec::new();
+        let mut hermes_seen: HashSet<Pubkey> = HashSet::new();
         for base in &base_mints {
             for ctx in &set.price_matches_for_source(base, oracle_source::JUPITER) {
                 if let TriggerSpec::AssetPrice {
@@ -96,19 +123,27 @@ pub async fn run(
                     ..
                 } = &ctx.trigger
                 {
-                    if seen.insert(*qm) {
-                        all_mints.push(*qm);
+                    if catalog.contains_key(&qm.to_bytes()) {
+                        if hermes_seen.insert(*qm) {
+                            hermes_quote_pubkeys.push(*qm);
+                        }
+                    } else if seen.insert(*qm) {
+                        jupiter_mints.push(*qm);
                     }
                 }
             }
         }
 
-        debug!(count = all_mints.len(), "jupiter_watcher: polling");
+        debug!(
+            jupiter = jupiter_mints.len(),
+            hermes_quotes = hermes_quote_pubkeys.len(),
+            "jupiter_watcher: polling",
+        );
         let prices = match fetch_prices_batched(
             &http,
             &cfg.jupiter_price_url,
             cfg.jupiter_api_key.as_deref(),
-            &all_mints,
+            &jupiter_mints,
         )
         .await
         {
@@ -118,9 +153,34 @@ pub async fn run(
                 continue;
             }
         };
-        if prices.is_empty() {
+        if prices.is_empty() && hermes_quote_pubkeys.is_empty() {
             continue;
         }
+
+        // Hermes fetch for Pyth-feed quotes. Best-effort — a failure
+        // here drops only the cross-source-quoted triggers this tick;
+        // pure-Jupiter triggers still evaluate.
+        let hermes_prices: HashMap<Pubkey, LatestPrice> = if hermes_quote_pubkeys.is_empty() {
+            HashMap::new()
+        } else {
+            let feed_hex: Vec<String> =
+                hermes_quote_pubkeys.iter().map(pubkey_to_hex).collect();
+            match fetch_pyth_prices(&http, &cfg.hermes_url, &feed_hex).await {
+                Ok(by_hex) => {
+                    let mut out = HashMap::with_capacity(by_hex.len());
+                    for (i, hex) in feed_hex.iter().enumerate() {
+                        if let Some(p) = by_hex.get(&hex.to_lowercase()) {
+                            out.insert(hermes_quote_pubkeys[i], p.clone());
+                        }
+                    }
+                    out
+                }
+                Err(e) => {
+                    warn!(error = %e, "jupiter_watcher: hermes quote fetch failed");
+                    HashMap::new()
+                }
+            }
+        };
 
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -161,16 +221,22 @@ pub async fn run(
                         _ => false,
                     },
                     Some(qm) => {
-                        // Pair-quoted: ratio = base_jupiter / quote_jupiter.
-                        // Skip the trigger this tick if the quote price
-                        // wasn't returned (rare; will retry next tick).
-                        let Some(qp) = prices.get(qm) else {
+                        // Pair-quoted: ratio = base / quote. The quote
+                        // price comes from whichever source the catalog
+                        // dispatched to (Pyth feed id → Hermes, SPL
+                        // mint → Jupiter). Skip if the quote price
+                        // wasn't returned (will retry next tick).
+                        let (q_raw, q_expo) = if let Some(p) = hermes_prices.get(qm) {
+                            (p.raw as i128, p.expo)
+                        } else if let Some(p) = prices.get(qm) {
+                            (*p as i128, JUPITER_PRICE_EXPO)
+                        } else {
                             continue;
                         };
                         ratio_compare(
                             *comparator,
                             (latest.raw as i128, latest.expo),
-                            (*qp as i128, JUPITER_PRICE_EXPO),
+                            (q_raw, q_expo),
                             *threshold,
                             *expo,
                         )

@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::JupiterClient;
+use crate::pyth_catalog::{self, PythCatalog};
 use crate::state::TriggerSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -43,6 +44,26 @@ pub async fn run(
 
     let jupiter = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
 
+    // Pyth catalog for cross-source quote dispatch. Pyth-feed quote_mints
+    // (Equity / FX / Metal / Commodity quotes that have no SPL mint) are
+    // fetched from Hermes alongside the base feeds; SPL-mint quotes use
+    // the existing Jupiter `/quote` probe. Best-effort load — failure
+    // here just means we lose cross-source quotes this session, SPL-mint
+    // quotes still work via the unchanged probe path.
+    let catalog: PythCatalog = match pyth_catalog::fetch().await {
+        Ok(c) => {
+            info!(
+                feeds = c.len(),
+                "price_watcher: loaded Pyth catalog for cross-source quote dispatch",
+            );
+            c
+        }
+        Err(e) => {
+            warn!(error = %e, "price_watcher: Pyth catalog load failed; cross-source quotes disabled");
+            PythCatalog::new()
+        }
+    };
+
     loop {
         tick.tick().await;
         let set = set_rx.borrow().clone();
@@ -63,12 +84,28 @@ pub async fn run(
         // Pyth Hermes expects the 32-byte feed ID as hex (lowercase, no
         // 0x), but on-chain we stored it as a Pubkey's raw bytes (base58
         // when Display'd). Convert here for the HTTP query.
-        let feed_hex: Vec<String> = feeds.iter().map(pubkey_to_hex).collect();
-        let quote_mints = set.asset_price_quote_mints();
+        let mut feed_hex: Vec<String> = feeds.iter().map(pubkey_to_hex).collect();
+
+        // Partition quote_mints by dispatch (Pyth-catalog hit vs miss).
+        // Pyth-feed quotes get folded into the same Hermes batch; SPL
+        // mints stay on the Jupiter probe path.
+        let mut hermes_quote_pubkeys: Vec<Pubkey> = Vec::new();
+        let mut jupiter_quote_mints: Vec<Pubkey> = Vec::new();
+        for qm in set.asset_price_quote_mints() {
+            if catalog.contains_key(&qm.to_bytes()) {
+                hermes_quote_pubkeys.push(qm);
+            } else {
+                jupiter_quote_mints.push(qm);
+            }
+        }
+        for qm in &hermes_quote_pubkeys {
+            feed_hex.push(pubkey_to_hex(qm));
+        }
         debug!(
-            feeds = feed_hex.len(),
-            quote_mints = quote_mints.len(),
-            "price_watcher: polling Pyth Hermes (+ Jupiter for non-USD quotes)"
+            feeds = feeds.len(),
+            hermes_quotes = hermes_quote_pubkeys.len(),
+            jupiter_quotes = jupiter_quote_mints.len(),
+            "price_watcher: polling Pyth Hermes (+ Jupiter for SPL-mint quotes)"
         );
 
         let prices = match fetch_prices(&http, &cfg.hermes_url, &feed_hex).await {
@@ -79,11 +116,21 @@ pub async fn run(
             }
         };
 
-        // Per-tick cache of Jupiter `/quote` probes for the quote mints
-        // appearing in any AssetPrice trigger. Cached so a mint shared
-        // across many triggers (USDC most likely) isn't probed twice.
+        // Hermes-derived quote prices keyed by quote pubkey for fast
+        // lookup in the comparator dispatch below.
+        let mut hermes_quote_prices: HashMap<Pubkey, LatestPrice> = HashMap::new();
+        for qm in &hermes_quote_pubkeys {
+            let hex = pubkey_to_hex(qm).to_lowercase();
+            if let Some(p) = prices.get(&hex) {
+                hermes_quote_prices.insert(*qm, p.clone());
+            }
+        }
+
+        // Per-tick cache of Jupiter `/quote` probes for SPL-mint quotes.
+        // Cached so a mint shared across many triggers (USDC most likely)
+        // isn't probed twice.
         let mut mint_quotes: HashMap<Pubkey, MintQuote> = HashMap::new();
-        for mint in quote_mints {
+        for mint in jupiter_quote_mints {
             match probe_mint(&jupiter, &mint, cfg.swap_slippage_bps).await {
                 Ok(q) => {
                     mint_quotes.insert(mint, q);
@@ -131,16 +178,23 @@ pub async fn run(
                         _ => false,
                     },
                     Some(qm) => {
-                        // Quote-denominated: ratio = base_pyth / quote_jupiter.
-                        // Resolve quote via Jupiter; skip if probe failed
-                        // this tick (will retry next tick).
-                        let Some(q) = mint_quotes.get(qm) else {
-                            continue;
-                        };
+                        // Quote-denominated: ratio = base_pyth / quote.
+                        // Catalog dispatched the quote leg to Hermes (if
+                        // it's a known Pyth feed) or Jupiter (if it's
+                        // an SPL mint). Skip the trigger this tick if
+                        // the chosen source didn't return a price.
+                        let (q_raw, q_expo) =
+                            if let Some(p) = hermes_quote_prices.get(qm) {
+                                (p.raw as i128, p.expo)
+                            } else if let Some(q) = mint_quotes.get(qm) {
+                                (q.out_amount as i128, -6)
+                            } else {
+                                continue;
+                            };
                         ratio_compare(
                             *comparator,
                             (price.raw as i128, price.expo),
-                            (q.out_amount as i128, -6),
+                            (q_raw, q_expo),
                             *threshold,
                             *expo,
                         )
