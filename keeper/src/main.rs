@@ -333,8 +333,10 @@ async fn main() -> Result<()> {
         let cfg = cfg.clone();
         let set_rx = set_rx.clone();
         let vault_cache_for_bridge = vault_cache.clone();
+        let blockhash_cache_for_bridge = blockhash_cache.clone();
+        let priority_fee_cache_for_bridge = priority_fee_cache.clone();
         tokio::spawn(async move {
-            if let Err(e) = bridge_dispatcher::run(cfg, set_rx, vault_cache_for_bridge).await {
+            if let Err(e) = bridge_dispatcher::run(cfg, set_rx, vault_cache_for_bridge, blockhash_cache_for_bridge, priority_fee_cache_for_bridge).await {
                 error!(error = %e, "bridge_dispatcher task exited");
             }
         })

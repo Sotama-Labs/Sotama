@@ -34,6 +34,8 @@ use tokio::sync::watch;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
+use crate::caches;
+use crate::caches::blockhash::CachedBlockhash;
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::{self, JupiterClient};
@@ -49,15 +51,13 @@ use crate::vaults::VaultCache;
 /// the relayed Jupiter route is the dominant cost and 1M is the same
 /// upper bound the executor uses for `execute_swap`.
 const COMPUTE_UNIT_LIMIT_BRIDGE: u32 = 1_000_000;
-/// Default priority fee. Re-tuned per-tx against the Helius estimator
-/// in `executor.rs`; kept identical here so dispatcher fires don't
-/// silently underpay the cluster.
-const PRIORITY_FEE_DEFAULT_MICROLAMPORTS: u64 = 50_000;
 
 pub async fn run(
     cfg: Arc<KeeperConfig>,
     set_rx: watch::Receiver<WatchedSet>,
     vault_cache: VaultCache,
+    blockhash_cache: caches::blockhash::BlockhashCache,
+    priority_fee_cache: caches::priority_fee::PriorityFeeCache,
 ) -> Result<()> {
     info!(
         scan_interval_secs = 2,
@@ -100,7 +100,7 @@ pub async fn run(
 
         debug!(count = candidates.len(), "bridge_dispatcher: scanning cache");
         for ctx in candidates {
-            if let Err(e) = scan_pda_cached(&cfg, &http, &rpc, &jup, &config, &ctx, &vault_cache).await {
+            if let Err(e) = scan_pda_cached(&cfg, &http, &rpc, &jup, &config, &ctx, &vault_cache, &blockhash_cache, &priority_fee_cache).await {
                 warn!(automation = %ctx.pubkey, error = %e, "bridge_dispatcher: scan_pda failed");
             }
         }
@@ -122,6 +122,8 @@ async fn scan_pda_cached(
     config: &Pubkey,
     ctx: &AutomationCtx,
     vault_cache: &VaultCache,
+    blockhash_cache: &caches::blockhash::BlockhashCache,
+    priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
 ) -> Result<()> {
     // Bridge only makes sense for Swap actions — that's where there's a
     // canonical "input mint" to converge on. A non-Swap automation with
@@ -177,7 +179,7 @@ async fn scan_pda_cached(
             continue;
         }
 
-        if let Err(e) = bridge_one(cfg, http, rpc, jup, config, ctx, &parsed, &input_mint).await {
+        if let Err(e) = bridge_one(cfg, http, rpc, jup, config, ctx, &parsed, &input_mint, blockhash_cache, priority_fee_cache).await {
             warn!(
                 automation = %ctx.pubkey,
                 in_mint = %parsed.mint,
@@ -199,6 +201,8 @@ async fn bridge_one(
     ctx: &AutomationCtx,
     src: &ParsedTokenAccount,
     input_mint: &Pubkey,
+    blockhash_cache: &caches::blockhash::BlockhashCache,
+    priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
 ) -> Result<()> {
     info!(
         automation = %ctx.pubkey,
@@ -288,7 +292,7 @@ async fn bridge_one(
         min_amount_out,
     );
 
-    let sig = submit_with_priority(cfg, http, rpc, bridge_ix).await?;
+    let sig = submit_with_priority(cfg, http, rpc, bridge_ix, blockhash_cache, priority_fee_cache).await?;
     info!(
         automation = %ctx.pubkey,
         sig = %sig,
@@ -301,36 +305,43 @@ async fn bridge_one(
     Ok(())
 }
 
-/// Two-pass tx submit: (1) build a probe-signed tx, ask Helius for a
-/// priority-fee estimate, (2) re-sign with the tuned price and ship it
-/// through the Helius sender. Mirrors the same pattern as
-/// `executor::execute_one` so dispatcher tx pricing matches normal
-/// fires.
+/// Submit a bridge tx using blockhash and priority fee from the shared caches.
+/// Falls back to a synchronous RPC call if the blockhash cache is empty or
+/// stale (> 5 s old). Priority fee comes from `priority_fee_cache.buffered`,
+/// which returns the cached value × 1.2, or `cfg.priority_fee_floor` when
+/// the cache is empty.
 async fn submit_with_priority(
     cfg: &KeeperConfig,
     http: &reqwest::Client,
     rpc: &RpcClient,
     action_ix: Instruction,
+    blockhash_cache: &caches::blockhash::BlockhashCache,
+    priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
 ) -> Result<String> {
-    let blockhash = rpc.get_latest_blockhash().await?;
-    let mut ixs = vec![
-        ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_BRIDGE),
-        ComputeBudgetInstruction::set_compute_unit_price(PRIORITY_FEE_DEFAULT_MICROLAMPORTS),
-        action_ix,
-    ];
-    let probe_tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, blockhash).await?;
-
-    let micro_lamports = match estimate_priority_fee(http, &cfg.rpc_url, &probe_tx).await {
-        Ok(m) => m.max(1_000),
-        Err(e) => {
-            debug!(error = %e, "bridge_dispatcher: priority fee estimate failed; using default");
-            PRIORITY_FEE_DEFAULT_MICROLAMPORTS
+    let bh = match blockhash_cache.read().await {
+        Some(c) if c.fetched_at.elapsed() < std::time::Duration::from_secs(5) => c,
+        _ => {
+            let (hash, last_valid_block_height) = rpc
+                .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+                .await?;
+            CachedBlockhash {
+                hash,
+                last_valid_block_height,
+                fetched_at: std::time::Instant::now(),
+            }
         }
     };
-    ixs[1] = ComputeBudgetInstruction::set_compute_unit_price(micro_lamports);
-    let final_tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, blockhash).await?;
 
-    send_via_helius(http, &cfg.sender_url, &final_tx).await
+    let micro_lamports = priority_fee_cache.buffered(cfg.priority_fee_floor).await;
+
+    let ixs = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_BRIDGE),
+        ComputeBudgetInstruction::set_compute_unit_price(micro_lamports),
+        action_ix,
+    ];
+    let tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, bh.hash).await?;
+
+    send_via_helius(http, &cfg.sender_url, &tx).await
 }
 
 async fn sign_tx(
@@ -344,29 +355,6 @@ async fn sign_tx(
     let sig = signer.sign_message(&tx.message_data()).await?;
     tx.signatures = vec![sig];
     Ok(tx)
-}
-
-async fn estimate_priority_fee(
-    http: &reqwest::Client,
-    rpc_url: &str,
-    tx: &Transaction,
-) -> Result<u64> {
-    let serialized = bincode::serialize(tx).map_err(|e| anyhow!("bincode serialize: {e}"))?;
-    let b58 = bs58::encode(&serialized).into_string();
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getPriorityFeeEstimate",
-        "params": [{
-            "transaction": b58,
-            "options": { "priorityLevel": "Medium" }
-        }]
-    });
-    let resp: Value = http.post(rpc_url).json(&body).send().await?.json().await?;
-    let n = resp["result"]["priorityFeeEstimate"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("missing priorityFeeEstimate in {resp}"))?;
-    Ok(n.round() as u64)
 }
 
 async fn send_via_helius(
