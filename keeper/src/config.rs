@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use solana_sdk::pubkey::Pubkey;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,6 +133,10 @@ pub struct KeeperConfig {
     /// Streaming price path mode. See [`StreamMode`] for semantics.
     /// Env: KEEPER_STREAM_MODE (off | shadow | on). Default: off.
     pub stream_mode: StreamMode,
+    /// Optional path for persisting the FillCache to disk. When set the
+    /// cache survives keeper restarts (redeploy, crash, host migration).
+    /// Env: KEEPER_FILL_CACHE_PATH. Default: None (in-memory only).
+    pub fill_cache_path: Option<PathBuf>,
 }
 
 impl KeeperConfig {
@@ -207,6 +212,11 @@ impl KeeperConfig {
         let priority_fee_floor = parse_or::<u64>("KEEPER_PRIORITY_FEE_FLOOR", 50_000)?;
         let stream_mode = StreamMode::from_env();
 
+        let fill_cache_path = std::env::var("KEEPER_FILL_CACHE_PATH")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from);
+
         Ok(Self {
             cluster,
             api_key,
@@ -236,6 +246,7 @@ impl KeeperConfig {
             jupiter_api_key,
             priority_fee_floor,
             stream_mode,
+            fill_cache_path,
         })
     }
 }

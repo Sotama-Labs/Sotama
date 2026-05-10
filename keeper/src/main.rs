@@ -29,7 +29,6 @@ mod types;
 mod vaults;
 
 use crate::config::{KeeperConfig, StreamMode};
-use crate::fills::cache::FillCache;
 use crate::indexer::WatchedSet;
 
 #[tokio::main]
@@ -222,8 +221,20 @@ async fn main() -> Result<()> {
 
     // FillCache: populated by the lifecycle apply task on each AutomationFilled
     // event. Read by price_watcher's PriceRelativeToFill evaluator branch.
-    // NOTE: FillCache is in-memory only; keeper restarts clear all fill records.
-    let fill_cache = FillCache::new();
+    // When KEEPER_FILL_CACHE_PATH is set, fills survive keeper restarts.
+    let fill_cache = match &cfg.fill_cache_path {
+        Some(p) => fills::cache::FillCache::with_persistence(p.clone())
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    target: "main",
+                    error = %e,
+                    path = %p.display(),
+                    "fill cache persistence init failed; falling back to in-memory"
+                );
+                fills::cache::FillCache::new()
+            }),
+        None => fills::cache::FillCache::new(),
+    };
 
     // -----------------------------------------------------------------------
     // Events subscriber (Task 9): logsSubscribe → AutomationLifecycle →
