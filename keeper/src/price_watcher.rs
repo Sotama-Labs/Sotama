@@ -9,6 +9,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
+use crate::fills::cache::FillCache;
 use crate::indexer::WatchedSet;
 use crate::jupiter::JupiterClient;
 use crate::mints::cache::MintPriceCache;
@@ -47,6 +48,9 @@ pub async fn run(
     // Used by the cache-driven evaluator for Jup-involved ratio triggers
     // (Jup/Pyth, Jup/Jup, Pyth/Jup, Jup-absolute) in all stream modes.
     mint_cache: MintPriceCache,
+    // Fill record cache. Written by the lifecycle apply task on each
+    // AutomationFilled event. Read by the PriceRelativeToFill evaluator branch.
+    fill_cache: FillCache,
 ) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -551,6 +555,78 @@ pub async fn run(
             }
         }
 
+        // -----------------------------------------------------------------------
+        // PriceRelativeToFill triggers: evaluate every automation whose trigger
+        // is PriceRelativeToFill against the FillCache + current USD price.
+        //
+        // These triggers are NOT indexed by feed/account — they live only in
+        // `by_pubkey`. We iterate all automations and filter by trigger kind.
+        //
+        // Polling at the heartbeat tick (30s) is sufficient: FillCache records
+        // are rare (only on execute_swap), and the current USD price changes
+        // are already caught by the Pyth/Jupiter notify paths above. No
+        // separate Notify for FillCache is needed.
+        // -----------------------------------------------------------------------
+        for ctx in set.by_pubkey.values() {
+            if already.contains(&ctx.pubkey) {
+                continue;
+            }
+            let TriggerSpec::PriceRelativeToFill { upstream, direction, pct_bps } = &ctx.trigger
+            else {
+                continue;
+            };
+
+            // Need the upstream fill record.
+            let Some(fill) = fill_cache.get_fresh(upstream).await else {
+                continue; // no fill on record yet; wait for AutomationFilled event
+            };
+
+            // Resolve the current USD price for the downstream rule's output mint.
+            // The downstream trigger fires when ITS own output-mint price moves
+            // relative to the upstream fill price. We need the output mint from
+            // the downstream automation's Swap action.
+            let current_usd = match &ctx.action {
+                crate::state::ActionSpec::Swap { input_mint, .. } => {
+                    // The "price" this trigger tracks is the input_mint's current
+                    // USD price — same asset the user is about to re-buy or sell.
+                    resolve_current_usd_price(input_mint, &cache_snaps, &mint_snaps).await
+                }
+                _ => None,
+            };
+
+            let Some(current_usd) = current_usd else {
+                continue; // no USD price available this tick; skip
+            };
+
+            let crossed = decide_fill_relative_cross(
+                current_usd,
+                fill.effective_usd_per_output,
+                *direction,
+                *pct_bps,
+            );
+
+            if crossed && already.insert(ctx.pubkey) {
+                let now_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let key = format!("fill_rel:{}:{}", ctx.pubkey, now_unix);
+                let entry = to_fire.entry(key).or_insert_with(|| {
+                    let snap = PriceSnapshot {
+                        price: current_usd,
+                        conf: 0.0,
+                        publish_time: now_unix,
+                        fetched_at: std::time::Instant::now(),
+                        source: SourceLayer::HermesPoll,
+                        raw_price: None,
+                        expo: None,
+                    };
+                    (Vec::new(), snap)
+                });
+                entry.0.push(ctx.clone());
+            }
+        }
+
         // Drop the read guards before the async send below.
         drop(prices);
         drop(hermes_quote_prices);
@@ -836,6 +912,55 @@ pub(crate) fn decide_ratio_cross(
     }
 }
 
+/// Resolve the current USD price for a mint using the available caches.
+/// Priority: MintPriceCache (Jupiter probe, covers all SPL mints) →
+/// PriceCache (Pyth feed hex, for Pyth-registered mints).
+/// Returns `None` when neither cache has a fresh value.
+///
+/// The `cache_snaps` and `mint_snaps` arguments are pre-fetched snapshots
+/// from the outer evaluator tick so we don't take extra lock round-trips
+/// per trigger inside the evaluator loop.
+async fn resolve_current_usd_price(
+    mint: &Pubkey,
+    cache_snaps: &HashMap<String, PriceSnapshot>,
+    mint_snaps: &HashMap<Pubkey, crate::mints::cache::MintPriceSnapshot>,
+) -> Option<f64> {
+    // Jupiter probe covers all SPL mints and is always the cheapest lookup.
+    if let Some(snap) = mint_snaps.get(mint) {
+        return Some(snap.price_usd);
+    }
+    // Pyth fallback: mint bytes encoded as hex feed ID.
+    let feed_hex = pubkey_to_hex(mint);
+    if let Some(snap) = cache_snaps.get(&feed_hex) {
+        return Some(snap.price);
+    }
+    None
+}
+
+/// Decide whether a PriceRelativeToFill trigger should fire.
+///
+/// Returns `true` when:
+///   direction = 0 (drop_below): current_usd <= fill_usd * (1 - pct_bps/10_000)
+///   direction = 1 (grow_above): current_usd >= fill_usd * (1 + pct_bps/10_000)
+///
+/// Returns `false` for any other direction byte (treated as unknown).
+pub(crate) fn decide_fill_relative_cross(
+    current_usd: f64,
+    fill_usd_per_output: f64,
+    direction: u8,
+    pct_bps: u32,
+) -> bool {
+    if fill_usd_per_output <= 0.0 {
+        return false;
+    }
+    let factor = (pct_bps as f64) / 10_000.0;
+    match direction {
+        0 => current_usd <= fill_usd_per_output * (1.0 - factor), // drop_below
+        1 => current_usd >= fill_usd_per_output * (1.0 + factor), // grow_above
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1065,5 +1190,66 @@ mod tests {
         // ratio = 1.02; threshold = 1.05 — not crossed above
         let crossed = decide_ratio_cross(eur_usd, usdc_usd, 105, -2, 1);
         assert!(!crossed, "EUR/USDC = 1.02 should not cross above 1.05");
+    }
+
+    // -----------------------------------------------------------------------
+    // PriceRelativeToFill evaluator tests (decide_fill_relative_cross)
+    // -----------------------------------------------------------------------
+
+    /// Fill at $80k; current at $72k; threshold = 10% (1000 bps) drop_below.
+    /// 72k <= 80k * (1 - 0.10) = 72k → exactly at the boundary → fires.
+    #[test]
+    fn fill_relative_drop_below_exact_boundary_fires() {
+        let crossed = decide_fill_relative_cross(72_000.0, 80_000.0, 0, 1000);
+        assert!(crossed, "current == fill * 0.9 should cross drop_below at exactly the boundary");
+    }
+
+    /// Fill at $80k; current at $73k; threshold = 10% drop_below.
+    /// 73k > 72k → not crossed.
+    #[test]
+    fn fill_relative_drop_below_above_threshold_does_not_fire() {
+        let crossed = decide_fill_relative_cross(73_000.0, 80_000.0, 0, 1000);
+        assert!(!crossed, "current above threshold should not cross drop_below");
+    }
+
+    /// Fill at $80k; current at $88k; threshold = 10% (1000 bps) grow_above.
+    /// 88k >= 80k * 1.10 = 88k → exactly at boundary → fires.
+    #[test]
+    fn fill_relative_grow_above_exact_boundary_fires() {
+        let crossed = decide_fill_relative_cross(88_000.0, 80_000.0, 1, 1000);
+        assert!(crossed, "current == fill * 1.1 should cross grow_above at exactly the boundary");
+    }
+
+    /// Fill at $80k; current at $87k; threshold = 10% grow_above.
+    /// 87k < 88k → not crossed.
+    #[test]
+    fn fill_relative_grow_above_below_threshold_does_not_fire() {
+        let crossed = decide_fill_relative_cross(87_000.0, 80_000.0, 1, 1000);
+        assert!(!crossed, "current below threshold should not cross grow_above");
+    }
+
+    /// Zero or negative fill price must never fire (guard against bogus data).
+    #[test]
+    fn fill_relative_zero_fill_returns_false() {
+        assert!(!decide_fill_relative_cross(100.0, 0.0, 0, 100));
+        assert!(!decide_fill_relative_cross(100.0, -1.0, 1, 100));
+    }
+
+    /// Unknown direction byte returns false without panicking.
+    #[test]
+    fn fill_relative_unknown_direction_returns_false() {
+        assert!(!decide_fill_relative_cross(100.0, 80_000.0, 99, 500));
+    }
+
+    /// Tiny threshold: 1 bps (0.01%). Verify the math scales correctly.
+    #[test]
+    fn fill_relative_tiny_threshold_bps() {
+        // fill = $100.00; 1 bps drop_below threshold → trigger at $99.99
+        // current = $99.98 → crosses
+        let crossed = decide_fill_relative_cross(99.98, 100.0, 0, 1);
+        assert!(crossed, "99.98 <= 100 * (1 - 0.0001) = 99.99 should cross");
+        // current = $99.995 → does NOT cross (99.995 > 99.99)
+        let not_crossed = decide_fill_relative_cross(99.995, 100.0, 0, 1);
+        assert!(!not_crossed, "99.995 > 99.99 should not cross drop_below");
     }
 }

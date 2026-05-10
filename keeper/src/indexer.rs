@@ -55,6 +55,13 @@ impl WatchedSet {
             crate::state::TriggerSpec::TimeElapsed { .. } => {
                 self.time_triggers.push(ctx);
             }
+            crate::state::TriggerSpec::PriceRelativeToFill { .. } => {
+                // PriceRelativeToFill triggers have no fixed feed or account
+                // to index — they are evaluated on every heartbeat tick by
+                // the price_watcher against the FillCache. Stored only in
+                // `by_pubkey` so the evaluator can iterate them.
+                // No separate index bucket needed.
+            }
         }
     }
 
@@ -202,6 +209,10 @@ impl WatchedSet {
                         // immutable after create, so the outer
                         // automation pubkey already disambiguates.
                         (2u8, Pubkey::default(), 0u8)
+                    }
+                    crate::state::TriggerSpec::PriceRelativeToFill { upstream, direction, .. } => {
+                        // Upstream pubkey is the primary discriminating field.
+                        (3u8, *upstream, *direction)
                     }
                 };
                 (*pk, kind, target, source)
@@ -458,6 +469,10 @@ pub async fn resolve_lifecycle(
             fetch_and_resolve(rpc, pubkey).await
         }
         AutomationLifecycle::Finished(e) => Ok(Some(DeltaApply::Remove(e.automation))),
+        // Filled events do not change the WatchedSet — the automation still
+        // exists and only the fill record (in FillCache) changes. Return
+        // None so the lifecycle apply task skips the send_if_modified call.
+        AutomationLifecycle::Filled(_) => Ok(None),
     }
 }
 

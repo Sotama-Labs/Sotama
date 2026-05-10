@@ -10,6 +10,7 @@ mod events;
 mod caches;
 mod config;
 mod executor;
+mod fills;
 mod indexer;
 mod jupiter;
 mod jupiter_watcher;
@@ -28,6 +29,7 @@ mod types;
 mod vaults;
 
 use crate::config::{KeeperConfig, StreamMode};
+use crate::fills::cache::FillCache;
 use crate::indexer::WatchedSet;
 
 #[tokio::main]
@@ -218,6 +220,11 @@ async fn main() -> Result<()> {
         });
     }
 
+    // FillCache: populated by the lifecycle apply task on each AutomationFilled
+    // event. Read by price_watcher's PriceRelativeToFill evaluator branch.
+    // NOTE: FillCache is in-memory only; keeper restarts clear all fill records.
+    let fill_cache = FillCache::new();
+
     // -----------------------------------------------------------------------
     // Events subscriber (Task 9): logsSubscribe → AutomationLifecycle →
     // WatchedSet delta-apply.
@@ -245,9 +252,41 @@ async fn main() -> Result<()> {
     // Lifecycle apply task: for each decoded event, fetch the account (if
     // needed) then mutate the WatchedSet in-place via send_if_modified so
     // all watchers see the delta without waiting for the next 5min reconcile.
+    //
+    // AutomationFilled events are handled here too: the FillCache is updated
+    // with the effective USD per output unit (computed via compute_effective_fill).
+    // Filled events do NOT mutate the WatchedSet — the automation still exists.
     let rpc_for_lifecycle = rpc.clone();
+    let fill_cache_for_lifecycle = fill_cache.clone();
+    let price_cache_for_lifecycle = price_cache.clone();
+    let mint_cache_for_lifecycle = mint_cache.clone();
     let lifecycle_handle = tokio::spawn(async move {
         while let Some(ev) = lifecycle_rx.recv().await {
+            // Handle Filled events separately: update FillCache, skip WatchedSet.
+            if let events::AutomationLifecycle::Filled(ref f) = ev {
+                match compute_effective_fill(
+                    &rpc_for_lifecycle,
+                    &price_cache_for_lifecycle,
+                    &mint_cache_for_lifecycle,
+                    f,
+                )
+                .await
+                {
+                    Some(fill) => {
+                        fill_cache_for_lifecycle.put(fill).await;
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "fills",
+                            automation = %f.automation,
+                            "could not compute effective fill price; FillCache not updated"
+                        );
+                    }
+                }
+                continue;
+            }
+
+            // Created / Updated / Finished: update WatchedSet.
             match indexer::resolve_lifecycle(&rpc_for_lifecycle, &ev).await {
                 Ok(Some(delta)) => {
                     set_tx_for_lifecycle.send_if_modified(|ws| ws.apply_delta(delta));
@@ -317,9 +356,10 @@ async fn main() -> Result<()> {
         let lazer_active_feeds_rx = lazer_active_feeds_rx.clone();
         let price_cache_for_watcher = price_cache.clone();
         let mint_cache_for_watcher = mint_cache.clone();
+        let fill_cache_for_watcher = fill_cache.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll, mint_cache_for_watcher).await
+                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll, mint_cache_for_watcher, fill_cache_for_watcher).await
             {
                 error!(error = %e, "price_watcher task exited");
             }
@@ -444,6 +484,173 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Fill price computation helper
+// ---------------------------------------------------------------------------
+
+/// USDC mainnet mint. Stable: 1 USDC ≈ $1.00.
+const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/// USDT mainnet mint. Stable: 1 USDT ≈ $1.00.
+const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+
+/// Compute the effective USD price per output unit from an `AutomationFilled`
+/// event. Returns `None` if the upstream automation account can't be decoded
+/// or if either the input or output USD price can't be resolved.
+///
+/// Algorithm:
+///   1. Fetch and decode the upstream automation account to get input_mint,
+///      output_mint, and their decimals (from the Swap action).
+///   2. Look up the input mint's USD price (stable → 1.0, Pyth → PriceCache,
+///      else → MintPriceCache).
+///   3. Compute:
+///      input_USD = (input_amount / 10^input_decimals) * input_USD_price
+///      effective  = input_USD / (output_amount / 10^output_decimals)
+///
+/// Note: output decimals are read from the ATA via `getAccountInfo` on the
+/// output mint. For the MVP we use a fixed SPL-standard decimals fallback
+/// approach: fetch the mint account for both mints. This avoids bundling
+/// the full SPL metadata stack.
+async fn compute_effective_fill(
+    rpc: &std::sync::Arc<solana_client::nonblocking::rpc_client::RpcClient>,
+    price_cache: &crate::prices::cache::PriceCache,
+    mint_price_cache: &crate::mints::cache::MintPriceCache,
+    ev: &crate::state::AutomationFilledEvent,
+) -> Option<crate::fills::cache::Fill> {
+    use std::str::FromStr;
+
+    if ev.input_amount == 0 || ev.output_amount == 0 {
+        tracing::warn!(
+            target: "fills",
+            automation = %ev.automation,
+            "AutomationFilled has zero amounts; skipping"
+        );
+        return None;
+    }
+
+    // Step 1: Fetch and decode the upstream automation account.
+    let account = match rpc.get_account(&ev.automation).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(
+                target: "fills",
+                automation = %ev.automation,
+                error = %e,
+                "getAccount failed for upstream automation"
+            );
+            return None;
+        }
+    };
+    let automation = match crate::state::Automation::from_account_data(&account.data) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(
+                target: "fills",
+                automation = %ev.automation,
+                error = %e,
+                "failed to decode upstream automation"
+            );
+            return None;
+        }
+    };
+
+    // Step 2: Extract input_mint and output_mint from the Swap action.
+    let (input_mint, output_mint) = match &automation.action {
+        crate::state::ActionSpec::Swap { input_mint, output_mint, .. } => {
+            (*input_mint, *output_mint)
+        }
+        _ => {
+            tracing::warn!(
+                target: "fills",
+                automation = %ev.automation,
+                "AutomationFilled on non-Swap action; skipping"
+            );
+            return None;
+        }
+    };
+
+    // Step 3: Fetch decimals for input and output mints via getAccountInfo.
+    let input_decimals = fetch_mint_decimals(rpc, &input_mint).await.unwrap_or(6);
+    let output_decimals = fetch_mint_decimals(rpc, &output_mint).await.unwrap_or(6);
+
+    // Step 4: Resolve input mint USD price.
+    let usdc = solana_sdk::pubkey::Pubkey::from_str(USDC_MINT).expect("USDC constant valid");
+    let usdt = solana_sdk::pubkey::Pubkey::from_str(USDT_MINT).expect("USDT constant valid");
+
+    let input_usd_price = if input_mint == usdc || input_mint == usdt {
+        1.0_f64
+    } else {
+        // Try MintPriceCache (Jupiter probe) first — it covers all SPL mints.
+        if let Some(snap) = mint_price_cache.get_fresh(&input_mint).await {
+            snap.price_usd
+        } else {
+            // Fall back to PriceCache (Pyth) using the mint bytes as feed hex.
+            let feed_hex = crate::price_watcher::pubkey_to_hex(&input_mint);
+            if let Some(snap) = price_cache.get_fresh(&feed_hex).await {
+                snap.price
+            } else {
+                tracing::warn!(
+                    target: "fills",
+                    automation = %ev.automation,
+                    input_mint = %input_mint,
+                    "no USD price for input mint; cannot compute fill price"
+                );
+                return None;
+            }
+        }
+    };
+
+    // Step 5: Compute effective USD per output unit.
+    let input_real = (ev.input_amount as f64) / 10f64.powi(input_decimals as i32);
+    let output_real = (ev.output_amount as f64) / 10f64.powi(output_decimals as i32);
+
+    if output_real == 0.0 {
+        return None;
+    }
+
+    let input_usd = input_real * input_usd_price;
+    let effective_usd_per_output = input_usd / output_real;
+
+    tracing::debug!(
+        target: "fills",
+        automation = %ev.automation,
+        input_amount = ev.input_amount,
+        output_amount = ev.output_amount,
+        input_decimals,
+        output_decimals,
+        input_usd_price,
+        effective_usd_per_output,
+        fill_slot = ev.fill_slot,
+        "computed effective fill price"
+    );
+
+    Some(crate::fills::cache::Fill {
+        upstream: ev.automation,
+        effective_usd_per_output,
+        fill_slot: ev.fill_slot,
+        observed_at: std::time::Instant::now(),
+    })
+}
+
+/// Fetch the decimal count for an SPL mint via `getAccountInfo`.
+/// SPL mint layout: 44 bytes header, byte 44 = decimals.
+/// Returns `None` on any error so callers can fall back to a safe default.
+async fn fetch_mint_decimals(
+    rpc: &std::sync::Arc<solana_client::nonblocking::rpc_client::RpcClient>,
+    mint: &solana_sdk::pubkey::Pubkey,
+) -> Option<u8> {
+    let account = rpc.get_account(mint).await.ok()?;
+    // SPL Mint layout (v1/v2):
+    //   [0..4]  mint_authority option tag (4 bytes)
+    //   [4..36] mint_authority pubkey (32 bytes)
+    //   [36..44] supply (u64, 8 bytes)
+    //   [44]   decimals (u8)
+    if account.data.len() >= 45 {
+        Some(account.data[44])
+    } else {
+        None
+    }
 }
 
 fn init_tracing() {

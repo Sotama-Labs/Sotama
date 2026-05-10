@@ -13,6 +13,12 @@ pub mod oracle_source {
 
 /// Borsh-mirror of the on-chain `TriggerSpec` enum. Layout MUST match
 /// `programs/sotama_automations/src/state.rs::TriggerSpec`.
+/// Variant order is fixed: Borsh encodes enums as a discriminator byte
+/// followed by the variant fields. Variant indices (0-indexed):
+///   0 = AccountActivity
+///   1 = AssetPrice
+///   2 = TimeElapsed
+///   3 = PriceRelativeToFill   ← on-chain kind_byte() returns 3
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub enum TriggerSpec {
     AccountActivity {
@@ -38,6 +44,22 @@ pub enum TriggerSpec {
     /// `time_watcher` ticks every minute and fires any rule whose
     /// `created_at + duration_secs <= now`.
     TimeElapsed { duration_secs: u32 },
+    /// Fire when the downstream rule's base-mint USD price has moved
+    /// by `pct_bps` relative to the effective fill price of the upstream
+    /// automation. The keeper handles the comparison; on-chain stores params.
+    ///
+    /// On-chain kind_byte = 3. Must remain the 4th variant (index 3) so
+    /// Borsh decodes the discriminator byte correctly.
+    PriceRelativeToFill {
+        /// Pubkey of the upstream automation whose `AutomationFilled` event
+        /// established the cost basis (effective USD per output unit).
+        upstream: Pubkey,
+        /// 0 = drop_below_fill (current <= fill * (1 - pct_bps/10000)).
+        /// 1 = grow_above_fill (current >= fill * (1 + pct_bps/10000)).
+        direction: u8,
+        /// Percent threshold in basis points. 100 = 1%, 500 = 5%, etc.
+        pct_bps: u32,
+    },
 }
 
 /// Borsh-mirror of the on-chain `ActionSpec` enum.
@@ -143,6 +165,13 @@ impl Automation {
             TriggerSpec::TimeElapsed { duration_secs } => Monitor::Time {
                 duration_secs: *duration_secs,
             },
+            TriggerSpec::PriceRelativeToFill { upstream, direction, pct_bps } => {
+                Monitor::FillRelative {
+                    upstream: *upstream,
+                    direction: *direction,
+                    pct_bps: *pct_bps,
+                }
+            }
         }
     }
 }
@@ -170,6 +199,14 @@ pub enum Monitor {
     },
     Time {
         duration_secs: u32,
+    },
+    /// Triggered by movement relative to the fill price of an upstream
+    /// automation. The keeper evaluates this in `price_watcher` on each
+    /// heartbeat tick using the `FillCache`.
+    FillRelative {
+        upstream: Pubkey,
+        direction: u8,
+        pct_bps: u32,
     },
 }
 
@@ -203,6 +240,17 @@ pub struct AutomationUpdatedEvent {
 pub struct AutomationFinishedEvent {
     pub automation: Pubkey,
     pub reason: u8,
+}
+
+/// Mirror of `AutomationFilled` event emitted at the end of every
+/// `execute_swap` after the Jupiter CPI succeeds. Field order and types
+/// MUST match `programs/sotama_automations/src/events.rs::AutomationFilled`.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AutomationFilledEvent {
+    pub automation: Pubkey,
+    pub input_amount: u64,
+    pub output_amount: u64,
+    pub fill_slot: u64,
 }
 
 /// Compute the Anchor event discriminator: `sha256("event:<EventName>")[..8]`.
