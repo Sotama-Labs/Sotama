@@ -1,11 +1,10 @@
 //! Keeper-side bridge dispatcher.
 //!
-//! Polls the indexer's WatchedSet every `cfg.bridge_scan_interval` and,
-//! for each automation with `bridge_enabled = true`, scans the PDA's
-//! token accounts. Any non-input-mint balance above the dust floor is
-//! converted back into the canonical input mint via Jupiter, relayed
-//! through the on-chain `execute_bridge` handler so the PDA signs the
-//! inner Jupiter ix.
+//! Scans the VaultCache every 2 s for bridge-enabled automations holding
+//! orphaned non-input-mint balances, and converts them back to the
+//! canonical input mint via `execute_bridge`. Token-account state comes
+//! from the push-driven `VaultCache` (accountSubscribe, Task 15) —
+//! no `getTokenAccountsByOwner` RPC calls are made.
 //!
 //! Why this exists: linked-rule chains can leave the PDA holding the
 //! WRONG mint (e.g. an arb sells SOL→USDC on the upstream leg, then the
@@ -25,7 +24,6 @@ use anyhow::{anyhow, Result};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_request::TokenAccountsFilter;
 use solana_sdk::{
     commitment_config::CommitmentConfig, compute_budget::ComputeBudgetInstruction, hash::Hash,
     instruction::Instruction, message::Message, pubkey::Pubkey, transaction::Transaction,
@@ -41,11 +39,11 @@ use crate::indexer::WatchedSet;
 use crate::jupiter::{self, JupiterClient};
 use crate::program::{
     associated_token_address, build_execute_bridge_ix, config_pda, jupiter_program_id,
-    spl_token_program_id,
 };
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
 use crate::types::AutomationCtx;
+use crate::vaults::VaultCache;
 
 /// Compute-unit ceiling for `execute_bridge`. Same as a normal swap —
 /// the relayed Jupiter route is the dominant cost and 1M is the same
@@ -56,12 +54,16 @@ const COMPUTE_UNIT_LIMIT_BRIDGE: u32 = 1_000_000;
 /// silently underpay the cluster.
 const PRIORITY_FEE_DEFAULT_MICROLAMPORTS: u64 = 50_000;
 
-pub async fn run(cfg: Arc<KeeperConfig>, set_rx: watch::Receiver<WatchedSet>) -> Result<()> {
+pub async fn run(
+    cfg: Arc<KeeperConfig>,
+    set_rx: watch::Receiver<WatchedSet>,
+    vault_cache: VaultCache,
+) -> Result<()> {
     info!(
-        interval_secs = cfg.bridge_scan_interval.as_secs(),
+        scan_interval_secs = 2,
         min_balance = cfg.bridge_min_balance,
         slippage_bps = cfg.bridge_slippage_bps,
-        "bridge_dispatcher starting"
+        "bridge_dispatcher starting (cache-driven)"
     );
 
     let http = reqwest::Client::builder()
@@ -74,10 +76,12 @@ pub async fn run(cfg: Arc<KeeperConfig>, set_rx: watch::Receiver<WatchedSet>) ->
     let jup = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
     let config = config_pda(&cfg.program_id);
 
-    let mut tick = interval(cfg.bridge_scan_interval);
+    // 2s cadence — each tick does only in-memory VaultCache reads (push-driven
+    // by accountSubscribe), so scanning frequently is cheap.
+    let mut tick = interval(std::time::Duration::from_secs(2));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // Burn the immediate first tick so the indexer has a chance to seed
-    // before our first scan — same pattern as `indexer::run`.
+    // and VaultManager has a chance to warm the cache before our first scan.
     tick.tick().await;
 
     loop {
@@ -94,22 +98,30 @@ pub async fn run(cfg: Arc<KeeperConfig>, set_rx: watch::Receiver<WatchedSet>) ->
             continue;
         }
 
-        debug!(count = candidates.len(), "bridge_dispatcher: scanning PDAs");
+        debug!(count = candidates.len(), "bridge_dispatcher: scanning cache");
         for ctx in candidates {
-            if let Err(e) = scan_pda(&cfg, &http, &rpc, &jup, &config, &ctx).await {
+            if let Err(e) = scan_pda_cached(&cfg, &http, &rpc, &jup, &config, &ctx, &vault_cache).await {
                 warn!(automation = %ctx.pubkey, error = %e, "bridge_dispatcher: scan_pda failed");
             }
         }
     }
 }
 
-async fn scan_pda(
+/// Cache-driven replacement for the old `scan_pda` function. Instead of
+/// calling `getTokenAccountsByOwner` over RPC, it iterates the automation's
+/// `vault_targets()` (input_mint ATA + output_mint ATA), looks each ATA up
+/// in the push-driven `VaultCache`, and unpacks the SPL token balance
+/// directly from the raw account bytes. The decision logic is identical to
+/// the old implementation: skip the input_mint ATA (already canonical) and
+/// skip balances below the dust floor.
+async fn scan_pda_cached(
     cfg: &KeeperConfig,
     http: &reqwest::Client,
     rpc: &RpcClient,
     jup: &JupiterClient,
     config: &Pubkey,
     ctx: &AutomationCtx,
+    vault_cache: &VaultCache,
 ) -> Result<()> {
     // Bridge only makes sense for Swap actions — that's where there's a
     // canonical "input mint" to converge on. A non-Swap automation with
@@ -123,21 +135,40 @@ async fn scan_pda(
         }
     };
 
-    // Filter to legacy SPL Token at the RPC layer. This drops Token-2022
-    // accounts entirely — Jupiter's v6 program doesn't sign for the 2022
-    // program, and our on-chain handler hard-codes spl_token. Cheaper
-    // than fetching every owner account and filtering client-side.
-    let token_program = *spl_token_program_id();
-    let accounts = rpc
-        .get_token_accounts_by_owner(&ctx.pubkey, TokenAccountsFilter::ProgramId(token_program))
-        .await
-        .map_err(|e| anyhow!("get_token_accounts_by_owner: {e}"))?;
-
-    for acct in accounts {
-        let parsed = match parse_token_account(&acct.account.data) {
-            Some(p) => p,
-            None => continue,
+    // vault_targets() returns one VaultTarget per mint the PDA can accumulate
+    // (input_mint + output_mint for bridge-enabled Swap automations). The ATA
+    // for each target was subscribed by VaultManager (Task 15), so the cache
+    // should already hold fresh data pushed by accountSubscribe.
+    let targets = ctx.vault_targets();
+    for target in &targets {
+        let ata = associated_token_address(&target.owner, &target.mint);
+        let update = match vault_cache.get(&ata).await {
+            Some(u) => u,
+            None => {
+                debug!(
+                    automation = %ctx.pubkey,
+                    ata = %ata,
+                    "bridge_dispatcher: ATA not yet in cache, skipping"
+                );
+                continue;
+            }
         };
+
+        // Unpack mint and amount from the raw SPL token account bytes.
+        // SPL token account layout (stable): mint[0..32], owner[32..64], amount[64..72].
+        let parsed = match unpack_token_account(&update.data) {
+            Some(p) => p,
+            None => {
+                debug!(
+                    automation = %ctx.pubkey,
+                    ata = %ata,
+                    len = update.data.len(),
+                    "bridge_dispatcher: ATA data too short / malformed, skipping"
+                );
+                continue;
+            }
+        };
+
         if parsed.mint == input_mint {
             // Already in the canonical mint — nothing to bridge.
             continue;
@@ -365,32 +396,28 @@ async fn send_via_helius(
     Ok(sig)
 }
 
-/// Minimal projection of an SPL token account we actually use. Pulled
-/// out of the JsonParsed RPC response so the rest of the dispatcher
-/// doesn't have to know about `solana_account_decoder`'s shape.
+/// Minimal projection of an SPL token account we actually use.
 struct ParsedTokenAccount {
     mint: Pubkey,
     amount: u64,
 }
 
-/// Extract `(mint, amount)` from a JsonParsed `UiAccountData`. Returns
-/// `None` for non-Json variants (binary encoding, malformed responses)
-/// or accounts that aren't SPL Token-shaped — caller treats those as
-/// "skip silently."
-fn parse_token_account(data: &solana_account_decoder::UiAccountData) -> Option<ParsedTokenAccount> {
-    let parsed = match data {
-        solana_account_decoder::UiAccountData::Json(p) => p,
-        _ => return None,
-    };
-    // The JsonParsed response shape is:
-    //   { "type": "account", "info": { "mint": "...", "tokenAmount": { "amount": "<u64-string>", ... }, ... } }
-    let info = parsed.parsed.get("info")?;
-    let mint_str = info.get("mint")?.as_str()?;
-    let mint = Pubkey::from_str(mint_str).ok()?;
-    let amount_str = info
-        .get("tokenAmount")
-        .and_then(|t| t.get("amount"))
-        .and_then(|a| a.as_str())?;
-    let amount: u64 = amount_str.parse().ok()?;
+/// Unpack `(mint, amount)` from the raw bytes of an SPL token account as
+/// delivered by `AccountUpdate.data` from `accountSubscribe`.
+///
+/// SPL token account layout (stable, see spl-token source):
+///   bytes  0-31: mint pubkey
+///   bytes 32-63: owner pubkey
+///   bytes 64-71: amount (u64, little-endian)
+///   bytes 72+  : rest of account state
+///
+/// Returns `None` if the slice is shorter than 72 bytes (not an SPL token
+/// account) — caller treats that as "skip silently."
+fn unpack_token_account(data: &[u8]) -> Option<ParsedTokenAccount> {
+    if data.len() < 72 {
+        return None;
+    }
+    let mint = Pubkey::try_from(&data[0..32]).ok()?;
+    let amount = u64::from_le_bytes(data[64..72].try_into().ok()?);
     Some(ParsedTokenAccount { mint, amount })
 }

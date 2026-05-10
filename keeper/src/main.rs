@@ -261,25 +261,26 @@ async fn main() -> Result<()> {
         })
     };
 
-    // Bridge dispatcher. Polls every `bridge_scan_interval` for
-    // automations with `bridge_enabled = true` and converts any stuck
-    // non-input-mint balance back to the canonical input mint via
-    // `execute_bridge`. This keeps linked-rule chains liquid even when
-    // the downstream leg never crosses (orphaned arb output cleanup).
+    let vault_cache = vaults::VaultCache::new();
+    let vault_mgr = std::sync::Arc::new(vaults::VaultManager::new(source.clone(), vault_cache.clone()));
+
+    // Bridge dispatcher. Scans VaultCache every 2s for bridge-enabled
+    // automations holding orphaned non-input-mint balances and converts
+    // them back to the canonical input mint via `execute_bridge`. The
+    // VaultCache is push-driven by accountSubscribe (Task 15), so the
+    // 2s tick does only in-memory reads — no per-tick RPC fan-out.
     // Doesn't share the trigger_tx — it bypasses the executor and ships
     // its own tx directly, since it's not condition-driven.
     let bridge_handle = {
         let cfg = cfg.clone();
         let set_rx = set_rx.clone();
+        let vault_cache_for_bridge = vault_cache.clone();
         tokio::spawn(async move {
-            if let Err(e) = bridge_dispatcher::run(cfg, set_rx).await {
+            if let Err(e) = bridge_dispatcher::run(cfg, set_rx, vault_cache_for_bridge).await {
                 error!(error = %e, "bridge_dispatcher task exited");
             }
         })
     };
-
-    let vault_cache = vaults::VaultCache::new();
-    let vault_mgr = std::sync::Arc::new(vaults::VaultManager::new(source.clone(), vault_cache.clone()));
 
     // Vault subscription reconciler: every 2s, derive the active vault targets
     // (mint + owner PDA pairs) from the WatchedSet and reconcile
