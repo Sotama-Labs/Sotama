@@ -215,14 +215,16 @@ impl WatchedSet {
         self.by_pubkey.len()
     }
 
-    /// All vault accounts currently watched by bridge-aware automations.
-    /// Derived from each automation's `vault_accounts()` helper.
-    /// Deduplicated. The vault manager subscribes to each via accountSubscribe.
-    pub fn active_vault_pubkeys(&self) -> Vec<Pubkey> {
-        let mut s: HashSet<Pubkey> = HashSet::new();
+    /// All vault targets currently needed by bridge-aware automations.
+    /// Derived from each automation's `vault_targets()` helper.
+    /// Deduplicated. The vault manager computes the ATA for each target
+    /// and subscribes via accountSubscribe so balance updates are pushed
+    /// rather than polled.
+    pub fn active_vault_targets(&self) -> Vec<crate::types::VaultTarget> {
+        let mut s: HashSet<crate::types::VaultTarget> = HashSet::new();
         for ctx in self.by_pubkey.values() {
-            for v in ctx.vault_accounts() {
-                s.insert(v);
+            for t in ctx.vault_targets() {
+                s.insert(t);
             }
         }
         s.into_iter().collect()

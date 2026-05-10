@@ -281,9 +281,10 @@ async fn main() -> Result<()> {
     let vault_cache = vaults::VaultCache::new();
     let vault_mgr = std::sync::Arc::new(vaults::VaultManager::new(source.clone(), vault_cache.clone()));
 
-    // Vault subscription reconciler: every 2s, derive the active vault pubkey
-    // set from the WatchedSet and reconcile accountSubscribe handles so the
-    // VaultCache stays current without polling getTokenAccountsByOwner.
+    // Vault subscription reconciler: every 2s, derive the active vault targets
+    // (mint + owner PDA pairs) from the WatchedSet and reconcile
+    // accountSubscribe handles. VaultManager computes each ATA address
+    // deterministically — no RPC call at subscribe time.
     // Same cadence as the feed-ids loop — both are O(N) over active automations.
     let _vault_reconcile_handle = {
         let watched_set_for_vaults = set_rx.clone();
@@ -293,7 +294,7 @@ async fn main() -> Result<()> {
             iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 iv.tick().await;
-                let desired = watched_set_for_vaults.borrow().active_vault_pubkeys();
+                let desired = watched_set_for_vaults.borrow().active_vault_targets();
                 vault_mgr_clone.reconcile(&desired).await;
             }
         })

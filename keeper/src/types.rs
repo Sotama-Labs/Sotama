@@ -30,6 +30,20 @@ pub struct AutomationCtx {
     pub bridge_enabled: bool,
 }
 
+/// Carries enough information for `VaultManager` to compute the ATA
+/// address that should be subscribed to via accountSubscribe.
+///
+/// The ATA pubkey is `find_program_address([owner, spl_token_program,
+/// mint], ata_program)` — deterministic from `(owner, mint)` alone, so
+/// no RPC call is needed at subscribe time.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VaultTarget {
+    /// The SPL mint whose ATA we want to watch.
+    pub mint: Pubkey,
+    /// The automation PDA that owns the ATA.
+    pub owner: Pubkey,
+}
+
 impl AutomationCtx {
     /// Watched account if this is an AccountActivity trigger, else None.
     pub fn watched_account(&self) -> Option<Pubkey> {
@@ -39,16 +53,111 @@ impl AutomationCtx {
         }
     }
 
-    /// Vault accounts owned by this automation's PDA that the bridge
-    /// dispatcher must scan. Only bridge-enabled Swap automations have a
-    /// meaningful vault — the PDA itself holds token accounts that can
-    /// accumulate stuck non-input-mint balances between chain legs.
-    /// Returns the automation PDA when bridge_enabled, empty otherwise.
-    pub fn vault_accounts(&self) -> Vec<Pubkey> {
-        if self.bridge_enabled {
-            vec![self.pubkey]
+    /// Vault targets for this automation — one `VaultTarget` per mint
+    /// that the PDA could accumulate. The `VaultManager` computes the
+    /// ATA pubkey from each target and subscribes to it via
+    /// accountSubscribe so balance changes land in `VaultCache`
+    /// immediately rather than being discovered by polling.
+    ///
+    /// Only bridge-enabled Swap automations produce targets (the
+    /// spec says ≤2: input mint + output mint). Non-bridge or
+    /// non-Swap automations return empty — they never hold stuck
+    /// token balances that need monitoring.
+    pub fn vault_targets(&self) -> Vec<VaultTarget> {
+        if !self.bridge_enabled {
+            return vec![];
+        }
+        match &self.action {
+            ActionSpec::Swap { input_mint, output_mint, .. } => {
+                vec![
+                    VaultTarget { mint: *input_mint, owner: self.pubkey },
+                    VaultTarget { mint: *output_mint, owner: self.pubkey },
+                ]
+            }
+            _ => vec![],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{ActionSpec, Cadence, TriggerSpec};
+
+    fn swap_ctx(bridge_enabled: bool) -> AutomationCtx {
+        let pda = Pubkey::new_unique();
+        let input_mint = Pubkey::new_unique();
+        let output_mint = Pubkey::new_unique();
+        AutomationCtx {
+            pubkey: pda,
+            owner: Pubkey::new_unique(),
+            nonce: 0,
+            created_at: 0,
+            trigger: TriggerSpec::TimeElapsed { duration_secs: 60 },
+            action: ActionSpec::Swap {
+                input_mint,
+                output_mint,
+                destination: Pubkey::new_unique(),
+                amount_in: 1_000_000,
+                min_amount_out: 900_000,
+                linked_downstream: None,
+                link_fee_deposit: 0,
+                consume_upstream_output: false,
+            },
+            bridge_enabled,
+        }
+    }
+
+    fn sol_ctx() -> AutomationCtx {
+        AutomationCtx {
+            pubkey: Pubkey::new_unique(),
+            owner: Pubkey::new_unique(),
+            nonce: 0,
+            created_at: 0,
+            trigger: TriggerSpec::TimeElapsed { duration_secs: 60 },
+            action: ActionSpec::TransferSol {
+                destination: Pubkey::new_unique(),
+                amount: 1_000_000,
+            },
+            bridge_enabled: true, // even if set, non-Swap should produce no targets
+        }
+    }
+
+    #[test]
+    fn bridge_disabled_produces_no_targets() {
+        let ctx = swap_ctx(false);
+        assert!(ctx.vault_targets().is_empty());
+    }
+
+    #[test]
+    fn bridge_enabled_swap_produces_two_targets() {
+        let ctx = swap_ctx(true);
+        let targets = ctx.vault_targets();
+        assert_eq!(targets.len(), 2);
+        // Both targets are owned by the automation PDA.
+        for t in &targets {
+            assert_eq!(t.owner, ctx.pubkey);
+        }
+        // The two targets carry distinct mints.
+        assert_ne!(targets[0].mint, targets[1].mint);
+    }
+
+    #[test]
+    fn bridge_enabled_non_swap_produces_no_targets() {
+        let ctx = sol_ctx();
+        assert!(ctx.vault_targets().is_empty());
+    }
+
+    #[test]
+    fn vault_target_mints_match_action_mints() {
+        let ctx = swap_ctx(true);
+        let targets = ctx.vault_targets();
+        let mints: Vec<Pubkey> = targets.iter().map(|t| t.mint).collect();
+        if let ActionSpec::Swap { input_mint, output_mint, .. } = &ctx.action {
+            assert!(mints.contains(input_mint));
+            assert!(mints.contains(output_mint));
         } else {
-            vec![]
+            panic!("expected Swap action");
         }
     }
 }
