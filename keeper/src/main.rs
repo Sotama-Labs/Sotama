@@ -302,6 +302,7 @@ async fn main() -> Result<()> {
                             output_amount = f.output_amount,
                             fill_slot = f.fill_slot,
                             %reason,
+                            runbook = "docs/superpowers/runbooks/fills.md",
                             "fill rejected; downstream PriceRelativeToFill triggers on this upstream cannot fire"
                         );
                     }
@@ -553,6 +554,26 @@ const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 /// output mint. For the MVP we use a fixed SPL-standard decimals fallback
 /// approach: fetch the mint account for both mints. This avoids bundling
 /// the full SPL metadata stack.
+/// Pure computation: effective USD per output unit.
+///
+/// Returns `Err(FillRejection::ZeroOutput)` if `output_amount == 0`.
+/// Otherwise: `(input_amount / 10^input_decimals * input_usd_price) / (output_amount / 10^output_decimals)`.
+pub(crate) fn compute_effective_usd_per_output(
+    input_amount: u64,
+    output_amount: u64,
+    input_decimals: u8,
+    output_decimals: u8,
+    input_usd_price: f64,
+) -> Result<f64, FillRejection> {
+    if output_amount == 0 {
+        return Err(FillRejection::ZeroOutput);
+    }
+    let input_real = (input_amount as f64) / 10f64.powi(input_decimals as i32);
+    let output_real = (output_amount as f64) / 10f64.powi(output_decimals as i32);
+    let input_usd = input_real * input_usd_price;
+    Ok(input_usd / output_real)
+}
+
 async fn compute_effective_fill(
     rpc: &std::sync::Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     price_cache: &crate::prices::cache::PriceCache,
@@ -560,10 +581,6 @@ async fn compute_effective_fill(
     ev: &crate::state::AutomationFilledEvent,
 ) -> Result<crate::fills::cache::Fill, FillRejection> {
     use std::str::FromStr;
-
-    if ev.output_amount == 0 {
-        return Err(FillRejection::ZeroOutput);
-    }
 
     // Step 1: Fetch and decode the upstream automation account.
     let account = rpc
@@ -612,15 +629,13 @@ async fn compute_effective_fill(
     };
 
     // Step 5: Compute effective USD per output unit.
-    let input_real = (ev.input_amount as f64) / 10f64.powi(input_decimals as i32);
-    let output_real = (ev.output_amount as f64) / 10f64.powi(output_decimals as i32);
-
-    if output_real == 0.0 {
-        return Err(FillRejection::ZeroOutput);
-    }
-
-    let input_usd = input_real * input_usd_price;
-    let effective_usd_per_output = input_usd / output_real;
+    let effective_usd_per_output = compute_effective_usd_per_output(
+        ev.input_amount,
+        ev.output_amount,
+        input_decimals,
+        output_decimals,
+        input_usd_price,
+    )?;
 
     tracing::debug!(
         target: "fills",
