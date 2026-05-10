@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as SplTransfer};
 
 use crate::errors::SotamaError;
-use crate::events::AutomationClosed;
+use crate::events::{AutomationClosed, AutomationFinished};
 use crate::instructions::close_automation::deduct_close_fee;
 use crate::state::{ActionSpec, Automation, Config};
 
@@ -175,6 +175,12 @@ pub fn handler<'info>(
     )?;
 
     let refund = automation.to_account_info().lamports();
+
+    emit!(AutomationFinished {
+        automation: automation.key(),
+        reason: 1, // closed
+    });
+
     emit!(AutomationClosed {
         pubkey: automation.key(),
         owner: ctx.accounts.owner.key(),

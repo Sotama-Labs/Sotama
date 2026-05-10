@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as SplTransfer};
 
 use crate::errors::SotamaError;
-use crate::events::AutomationClosed;
+use crate::events::{AutomationClosed, AutomationFinished};
 use crate::state::{ActionSpec, Automation, Config};
 
 /// Admin-driven close for `TransferSpl` automations during wind-down.
@@ -135,6 +135,11 @@ pub fn handler(ctx: Context<AdminCloseAutomationSpl>) -> Result<()> {
     // sending the PDA's rent_min to treasury. We capture the lamport
     // figures for the event before that runs.
     let pda_lamports = automation.to_account_info().lamports();
+
+    emit!(AutomationFinished {
+        automation: automation.key(),
+        reason: 1, // closed
+    });
 
     emit!(AutomationClosed {
         pubkey: automation.key(),

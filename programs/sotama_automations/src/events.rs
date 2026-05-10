@@ -44,3 +44,36 @@ pub struct AutomationClosed {
     /// excess lamports above rent-exempt minimum to cover the fee.
     pub fee_lamports: u64,
 }
+
+/// Emitted when a mutable field on a live automation is updated. The
+/// keeper can use this to invalidate its cached copy of the rule without
+/// re-fetching all accounts via getProgramAccounts.
+///
+/// `change_kind` codes:
+///   0 = trigger updated
+///   1 = action updated
+///   2 = cadence updated
+///   3 = link (linked_downstream / link_fee_deposit) updated
+#[event]
+pub struct AutomationUpdated {
+    pub automation: Pubkey,
+    pub change_kind: u8,
+}
+
+/// Emitted when an automation reaches its terminal state, either by
+/// firing its last allowed execution (`reason = 0`) or by being
+/// explicitly closed by the owner or admin (`reason = 1`).
+///
+/// `reason` codes:
+///   0 = fired_terminal  — cadence exhausted (Once fired, Repeat hit total, Until past deadline)
+///   1 = closed          — owner or admin called close_automation*
+///   2 = error           — reserved for keeper-side error annotation (not emitted on-chain today)
+///
+/// The keeper subscribes to this event to prune finished automations
+/// from its active polling set without a full getProgramAccounts scan.
+#[event]
+pub struct AutomationFinished {
+    pub automation: Pubkey,
+    /// `0` = fired_terminal, `1` = closed, `2` = error
+    pub reason: u8,
+}

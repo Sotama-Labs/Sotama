@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::SotamaError;
-use crate::events::AutomationClosed;
+use crate::events::{AutomationClosed, AutomationFinished};
 use crate::state::{Automation, Config};
 
 /// Admin-driven close for `TransferSol` automations. Only callable
@@ -87,6 +87,11 @@ pub fn handler(ctx: Context<AdminCloseAutomation>) -> Result<()> {
         **automation_info.try_borrow_mut_lamports()? = new_pda_balance;
         **owner_info.try_borrow_mut_lamports()? = new_owner_balance;
     }
+
+    emit!(AutomationFinished {
+        automation: ctx.accounts.automation.key(),
+        reason: 1, // closed
+    });
 
     emit!(AutomationClosed {
         pubkey: ctx.accounts.automation.key(),

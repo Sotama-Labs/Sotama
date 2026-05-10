@@ -6,7 +6,7 @@ use anchor_lang::solana_program::{
 use anchor_spl::token::TokenAccount;
 
 use crate::errors::SotamaError;
-use crate::events::AutomationExecuted;
+use crate::events::{AutomationExecuted, AutomationFinished};
 use crate::jupiter::{self, SwapAccountMeta};
 use crate::state::{ActionSpec, Automation, Config};
 
@@ -254,6 +254,13 @@ pub fn handler<'info>(
         executions: automation.executions,
         finished: automation.finished,
     });
+
+    if automation.finished {
+        emit!(AutomationFinished {
+            automation: automation.key(),
+            reason: 0, // fired_terminal
+        });
+    }
 
     Ok(())
 }

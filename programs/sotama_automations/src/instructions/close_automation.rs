@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::SotamaError;
-use crate::events::AutomationClosed;
+use crate::events::{AutomationClosed, AutomationFinished};
 use crate::state::{Automation, Config};
 
 /// Close an automation whose action is `TransferSol`. Anchor sweeps the
@@ -54,6 +54,11 @@ pub fn handler(ctx: Context<CloseAutomation>) -> Result<()> {
 
     let automation = &ctx.accounts.automation;
     let refund = automation.to_account_info().lamports();
+
+    emit!(AutomationFinished {
+        automation: automation.key(),
+        reason: 1, // closed
+    });
 
     emit!(AutomationClosed {
         pubkey: automation.key(),

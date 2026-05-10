@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::SotamaError;
-use crate::events::AutomationExecuted;
+use crate::events::{AutomationExecuted, AutomationFinished};
 use crate::state::{ActionSpec, Automation, Config};
 
 /// Execute a `TransferSol` automation. The keeper signer is verified
@@ -80,6 +80,13 @@ pub fn handler(ctx: Context<ExecuteAutomation>) -> Result<()> {
         executions: automation.executions,
         finished: automation.finished,
     });
+
+    if automation.finished {
+        emit!(AutomationFinished {
+            automation: automation.key(),
+            reason: 0, // fired_terminal
+        });
+    }
 
     Ok(())
 }
