@@ -82,6 +82,36 @@ async fn main() -> Result<()> {
     let (lazer_active_feeds_tx, lazer_active_feeds_rx) =
         watch::channel::<HashSet<solana_sdk::pubkey::Pubkey>>(HashSet::new());
 
+    // Shared PriceCache threaded through both Lazer and Hermes SSE paths.
+    let price_cache = prices::cache::PriceCache::new();
+
+    // Feed-ids broadcaster: every 2s, derive the active hex feed-id set
+    // from the WatchedSet and publish it on a watch channel so the stream
+    // orchestrator knows when to restart the Hermes SSE subscription.
+    let (feed_ids_tx, feed_ids_rx) = watch::channel::<Vec<String>>(vec![]);
+    {
+        let watched_set_for_feeds = set_rx.clone();
+        let feed_ids_tx_clone = feed_ids_tx.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(std::time::Duration::from_secs(2));
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                iv.tick().await;
+                let active = watched_set_for_feeds.borrow().active_feed_ids();
+                let _ = feed_ids_tx_clone.send(active);
+            }
+        });
+    }
+
+    // Stream orchestrator: manages the Hermes SSE subscription, restarting it
+    // whenever the feed-id set changes. Lazer writes to the same cache directly.
+    prices::stream::spawn(
+        http_client.clone(),
+        cfg.hermes_url.clone(),
+        price_cache.clone(),
+        feed_ids_rx,
+    );
+
     // -----------------------------------------------------------------------
     // Events subscriber (Task 9): logsSubscribe → AutomationLifecycle →
     // WatchedSet delta-apply.
@@ -193,9 +223,10 @@ async fn main() -> Result<()> {
         let set_rx = set_rx.clone();
         let trigger_tx = trigger_tx.clone();
         let lazer_active_feeds_tx = lazer_active_feeds_tx.clone();
+        let price_cache_for_lazer = price_cache.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                lazer_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_tx).await
+                lazer_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_tx, price_cache_for_lazer).await
             {
                 error!(error = %e, "lazer_watcher task exited");
             }

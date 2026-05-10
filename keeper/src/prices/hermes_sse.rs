@@ -28,7 +28,7 @@ pub fn spawn(http: Client, base_url: String, feed_ids: Vec<String>, cache: Price
     });
 }
 
-async fn run(
+pub async fn run(
     http: &Client,
     base_url: &str,
     feed_ids: &[String],

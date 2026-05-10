@@ -52,6 +52,7 @@ use tracing::{debug, info, warn};
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::price_watcher::{crossed_above, crossed_below, LatestPrice};
+use crate::prices::cache::{PriceCache, PriceSnapshot, SourceLayer};
 use crate::state::TriggerSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -86,6 +87,7 @@ pub async fn run(
     set_rx: watch::Receiver<WatchedSet>,
     trigger_tx: mpsc::Sender<TriggerEvent>,
     active_feeds_tx: watch::Sender<HashSet<Pubkey>>,
+    price_cache: PriceCache,
 ) -> Result<()> {
     let token = match cfg.lazer_access_token.as_ref() {
         Some(t) => t.clone(),
@@ -133,6 +135,7 @@ pub async fn run(
             &hermes_to_meta,
             &lazer_to_hermes,
             &active_feeds_tx,
+            &price_cache,
         )
         .await;
 
@@ -215,6 +218,7 @@ async fn connect_and_run(
     hermes_to_meta: &Arc<HashMap<[u8; 32], FeedMeta>>,
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
     active_feeds_tx: &watch::Sender<HashSet<Pubkey>>,
+    price_cache: &PriceCache,
 ) -> Result<()> {
     let mut req = endpoint.into_client_request().context("parse lazer endpoint")?;
     let auth_value: http::HeaderValue = format!("Bearer {token}")
@@ -278,7 +282,7 @@ async fn connect_and_run(
                 };
                 match msg {
                     Message::Text(text) => {
-                        match handle_text(&text, set_rx, trigger_tx, hermes_to_meta, lazer_to_hermes).await {
+                        match handle_text(&text, set_rx, trigger_tx, hermes_to_meta, lazer_to_hermes, price_cache).await {
                             Ok(()) => consecutive_parse_errors = 0,
                             Err(e) => {
                                 consecutive_parse_errors = consecutive_parse_errors.saturating_add(1);
@@ -411,6 +415,7 @@ async fn handle_text(
     trigger_tx: &mpsc::Sender<TriggerEvent>,
     hermes_to_meta: &Arc<HashMap<[u8; 32], FeedMeta>>,
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
+    price_cache: &PriceCache,
 ) -> std::result::Result<(), serde_json::Error> {
     let parsed: WsResponse = serde_json::from_str(text)?;
     match parsed {
@@ -434,7 +439,7 @@ async fn handle_text(
         WsResponse::StreamUpdated(update) => {
             if let Some(parsed) = update.payload.parsed {
                 for feed in parsed.price_feeds {
-                    process_feed_update(set_rx, trigger_tx, hermes_to_meta, lazer_to_hermes, &feed)
+                    process_feed_update(set_rx, trigger_tx, hermes_to_meta, lazer_to_hermes, price_cache, &feed)
                         .await;
                 }
             }
@@ -448,6 +453,7 @@ async fn process_feed_update(
     trigger_tx: &mpsc::Sender<TriggerEvent>,
     hermes_to_meta: &Arc<HashMap<[u8; 32], FeedMeta>>,
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
+    price_cache: &PriceCache,
     feed: &ParsedFeedPayload,
 ) {
     let lazer_id = feed.price_feed_id.0;
@@ -499,6 +505,22 @@ async fn process_feed_update(
     }
     let expo = cached_expo;
     let publish_time: i64 = parsed_timestamp_to_unix_seconds(&feed);
+
+    // Write the price snapshot into the shared PriceCache so downstream
+    // consumers (e.g. the stream orchestrator) can read it without an
+    // additional Hermes round-trip. The feed_id key is the hex-encoded
+    // Hermes bytes, matching the format used by hermes_sse and active_feed_ids.
+    let scale = 10f64.powi(expo);
+    price_cache.put(
+        hex::encode(hermes_bytes),
+        PriceSnapshot {
+            price: raw as f64 * scale,
+            conf: 0.0, // Lazer parsed feed doesn't carry a separate conf field
+            publish_time,
+            fetched_at: std::time::Instant::now(),
+            source: SourceLayer::Lazer,
+        },
+    ).await;
 
     let latest = LatestPrice {
         raw,

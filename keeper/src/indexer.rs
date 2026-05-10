@@ -214,6 +214,17 @@ impl WatchedSet {
     pub fn len(&self) -> usize {
         self.by_pubkey.len()
     }
+
+    /// All feed_id strings currently watched by price triggers (deduplicated,
+    /// hex-encoded). For Pyth feeds the key is the feed_id hex; the Hermes SSE
+    /// endpoint expects these as `ids[]` query params. The orchestrator just
+    /// passes these through — both Lazer and Hermes paths share this set.
+    pub fn active_feed_ids(&self) -> Vec<String> {
+        self.price_triggers
+            .keys()
+            .map(|pk| hex::encode(pk.to_bytes()))
+            .collect()
+    }
 }
 
 pub async fn seed_initial(cfg: &KeeperConfig) -> Result<Vec<AutomationCtx>> {
