@@ -333,16 +333,25 @@ const resolvePyth: OracleResolver = async (asset, quote) => {
     : null;
 };
 
-/** Jupiter resolver: USD-quoted prices for any tradable SPL mint. Only
- *  fires when the asset has a `mint` (Crypto class) — Equity/FX/Metal
- *  aren't on-chain assets and have no Solana mint. Non-USD quotes route
- *  through Pyth's pair feeds (Jupiter doesn't price arbitrary pairs). */
+/** Jupiter resolver: USD-denominated prices for any tradable SPL mint.
+ *
+ *  USD quote: returns a direct Jupiter price for the base mint.
+ *
+ *  Non-USD quote: also handled, but requires the quote asset to have an
+ *  SPL mint of its own. The on-chain trigger stores the quote leg as
+ *  `quote_mint: Pubkey`, and the keeper resolves it by polling Jupiter
+ *  for that mint — so FX / Equity / Metal-class quotes (which have no
+ *  Solana mint) can't be the quote side of a Jupiter-base trigger.
+ *  When both base and quote have mints, the keeper's jupiter_watcher
+ *  fetches both prices in the same `/price/v3` batch and compares the
+ *  ratio against the threshold. */
 const resolveJupiter: OracleResolver = async (asset, quote) => {
-  if (quote.kind !== "usd") return null;
   if (!asset.mint) return null;
+  if (quote.kind === "asset" && !quote.asset.mint) return null;
   const price = await fetchJupiterPriceUSD(asset.mint);
   if (!price) return null;
-  return { kind: "jupiter", mint: asset.mint, symbol: `${asset.displaySymbol}/USD` };
+  const quoteSym = quote.kind === "usd" ? "USD" : quote.asset.displaySymbol;
+  return { kind: "jupiter", mint: asset.mint, symbol: `${asset.displaySymbol}/${quoteSym}` };
 };
 
 /** Registry of available oracle providers, in priority order. The first

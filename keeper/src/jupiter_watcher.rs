@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
-use crate::price_watcher::{crossed_above, crossed_below, LatestPrice};
+use crate::price_watcher::{crossed_above, crossed_below, ratio_compare, LatestPrice};
 use crate::state::{oracle_source, TriggerSpec};
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -79,17 +79,36 @@ pub async fn run(
     loop {
         tick.tick().await;
         let set = set_rx.borrow().clone();
-        let mints: Vec<Pubkey> = set.price_feeds_for_source(oracle_source::JUPITER);
-        if mints.is_empty() {
+        let base_mints: Vec<Pubkey> = set.price_feeds_for_source(oracle_source::JUPITER);
+        if base_mints.is_empty() {
             continue;
         }
 
-        debug!(count = mints.len(), "jupiter_watcher: polling");
+        // Collect quote_mints referenced by any Jupiter-source trigger
+        // so we can fetch base AND quote prices in a single batch and
+        // compute base/quote ratios without a second roundtrip.
+        let mut all_mints: Vec<Pubkey> = base_mints.clone();
+        let mut seen: HashSet<Pubkey> = base_mints.iter().copied().collect();
+        for base in &base_mints {
+            for ctx in &set.price_matches_for_source(base, oracle_source::JUPITER) {
+                if let TriggerSpec::AssetPrice {
+                    quote_mint: Some(qm),
+                    ..
+                } = &ctx.trigger
+                {
+                    if seen.insert(*qm) {
+                        all_mints.push(*qm);
+                    }
+                }
+            }
+        }
+
+        debug!(count = all_mints.len(), "jupiter_watcher: polling");
         let prices = match fetch_prices_batched(
             &http,
             &cfg.jupiter_price_url,
             cfg.jupiter_api_key.as_deref(),
-            &mints,
+            &all_mints,
         )
         .await
         {
@@ -111,7 +130,7 @@ pub async fn run(
         let mut to_fire: HashMap<String, Vec<AutomationCtx>> = HashMap::new();
         let mut already: HashSet<Pubkey> = HashSet::new();
 
-        for mint in &mints {
+        for mint in &base_mints {
             let Some(price) = prices.get(mint) else {
                 continue;
             };
@@ -135,18 +154,28 @@ pub async fn run(
                 else {
                     continue;
                 };
-                // USD-quote only. Jupiter natively prices in USD; pair
-                // ratios with a non-USD quote_mint aren't supported on
-                // this watcher (the frontend already restricts non-USD
-                // quotes to mint-bearing assets, and those go through
-                // price_watcher's Jupiter `/quote` probe).
-                if quote_mint.is_some() {
-                    continue;
-                }
-                let crossed = match *comparator {
-                    0 => crossed_below(&latest, *threshold, *expo),
-                    1 => crossed_above(&latest, *threshold, *expo),
-                    _ => false,
+                let crossed = match quote_mint {
+                    None => match *comparator {
+                        0 => crossed_below(&latest, *threshold, *expo),
+                        1 => crossed_above(&latest, *threshold, *expo),
+                        _ => false,
+                    },
+                    Some(qm) => {
+                        // Pair-quoted: ratio = base_jupiter / quote_jupiter.
+                        // Skip the trigger this tick if the quote price
+                        // wasn't returned (rare; will retry next tick).
+                        let Some(qp) = prices.get(qm) else {
+                            continue;
+                        };
+                        ratio_compare(
+                            *comparator,
+                            (latest.raw as i128, latest.expo),
+                            (*qp as i128, JUPITER_PRICE_EXPO),
+                            *threshold,
+                            *expo,
+                        )
+                        .unwrap_or(false)
+                    }
                 };
                 if crossed {
                     let key = format!("jupiter:{}:{now_unix}", mint);
@@ -241,4 +270,64 @@ async fn fetch_prices(
         out.insert(mint, scaled.round() as i64);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jup_raw(usd: f64) -> i64 {
+        (usd * JUPITER_PRICE_SCALE).round() as i64
+    }
+
+    /// Pair-quoted Jupiter trigger: ratio = base/quote in USD terms.
+    /// Both legs come from `/price/v3` at expo=-6, so `ratio_compare`
+    /// just cross-multiplies the raw integers.
+    #[test]
+    fn jupiter_ratio_above_threshold_crosses() {
+        let base = jup_raw(150.0);
+        let quote = jup_raw(100.0);
+        // 150 / 100 = 1.5 vs threshold 1.4 (raw=1_400_000, expo=-6)
+        let crossed = ratio_compare(
+            1,
+            (base as i128, JUPITER_PRICE_EXPO),
+            (quote as i128, JUPITER_PRICE_EXPO),
+            1_400_000,
+            -6,
+        )
+        .unwrap();
+        assert!(crossed, "1.5 should cross above 1.4");
+    }
+
+    #[test]
+    fn jupiter_ratio_below_threshold_does_not_cross() {
+        let base = jup_raw(150.0);
+        let quote = jup_raw(100.0);
+        // 150 / 100 = 1.5 vs threshold 1.6 — not crossed above
+        let crossed = ratio_compare(
+            1,
+            (base as i128, JUPITER_PRICE_EXPO),
+            (quote as i128, JUPITER_PRICE_EXPO),
+            1_600_000,
+            -6,
+        )
+        .unwrap();
+        assert!(!crossed, "1.5 should not cross above 1.6");
+    }
+
+    #[test]
+    fn jupiter_ratio_below_comparator_crosses() {
+        let base = jup_raw(0.85);
+        let quote = jup_raw(1.0);
+        // 0.85 / 1.0 = 0.85 vs threshold 0.9 — crosses below
+        let crossed = ratio_compare(
+            0,
+            (base as i128, JUPITER_PRICE_EXPO),
+            (quote as i128, JUPITER_PRICE_EXPO),
+            900_000,
+            -6,
+        )
+        .unwrap();
+        assert!(crossed, "0.85 should cross below 0.9");
+    }
 }

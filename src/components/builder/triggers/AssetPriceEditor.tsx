@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { AssetRef, DraftAssetPrice } from "@/lib/types";
+import type { AssetRef, DraftAssetPrice, OracleSource } from "@/lib/types";
 import { resolveOracleForPair } from "@/lib/oracles";
 import { usePythPrice } from "@/hooks/usePythPrice";
 import { useJupiterPrice } from "@/hooks/useJupiterPrice";
@@ -25,30 +25,36 @@ export function AssetPriceEditor({
 }) {
   const [stage, setStage] = useState<Stage>("form");
   const [resolving, setResolving] = useState(false);
-  const [quoteFeedId, setQuoteFeedId] = useState<string | null>(null);
+  // Resolved oracle for the QUOTE asset (only used when we need a
+  // quote/USD price for an inferred pair ratio). Holds a Pyth feed id or
+  // a Jupiter mint — whichever provider resolves the quote — so the
+  // live preview works whether the quote leg is on Pyth or Jupiter.
+  const [quoteOracle, setQuoteOracle] = useState<OracleSource | null>(null);
 
   // Key used to detect quote changes in the effect dep array
   const quoteKey = draft.quote.kind === "usd" ? "usd" : draft.quote.asset.symbol;
 
-  // Determine whether the oracle's price already represents the
-  // requested base/quote pair (no further math needed) or whether we
-  // need to compute an inferred ratio (base/USD ÷ quote/USD).
+  // Whether the base oracle's price is already in the user's chosen
+  // pair units. When false, we compute base/USD ÷ quote/USD to get the
+  // live preview ratio.
   //
-  //  • Jupiter feeds are always USD-denominated and treated as direct.
-  //  • Pyth pair feeds (FX.AUD/JPY) end with `/<quote>`.
-  //  • Pyth inverted feeds (FX.USD/SGD for SGD, FX.EUR/USD for USD/EUR)
-  //    are flagged via `oracle.inverted`; pythPrice already does 1/raw,
-  //    so they're effectively direct from the preview's perspective.
-  //  • Otherwise the resolver returned a base/USD feed and we must
-  //    divide by quote/USD to get the live ratio.
+  //  • USD quote: any oracle's USD price is direct.
+  //  • Pyth pair feed (FX.AUD/JPY) ending with "/<quote>": direct.
+  //  • Pyth inverted feed (FX.USD/SGD for SGD): pythPrice already does
+  //    1/raw, so direct from the preview's perspective.
+  //  • Jupiter base + non-USD quote: NOT direct — Jupiter prices in USD
+  //    only, so we need a quote/USD price to infer the ratio.
   const quoteSymbol = draft.quote.kind === "usd"
     ? "USD"
     : draft.quote.asset.displaySymbol.toUpperCase();
   const isDirectPair = useMemo(() => {
-    if (!draft.oracle || draft.oracle.kind !== "pyth") return true;
+    if (draft.quote.kind === "usd") return true;
+    if (!draft.oracle) return true;
+    if (draft.oracle.kind === "jupiter") return false;
+    if (draft.oracle.kind !== "pyth") return true;
     if (draft.oracle.inverted) return true;
     return draft.oracle.symbol.toUpperCase().endsWith(`/${quoteSymbol}`);
-  }, [draft.oracle, quoteSymbol]);
+  }, [draft.oracle, draft.quote.kind, quoteSymbol]);
 
   // Base feed: always the oracle feedId (direct pair OR base/USD)
   const baseFeedId = draft.oracle?.kind === "pyth" ? draft.oracle.feedId : null;
@@ -74,10 +80,24 @@ export function AssetPriceEditor({
 
   const baseOrPairPrice = pythPrice ?? jupiterUsdPrice;
 
-  // Quote/USD feed — only used for inferred pair computation (Pyth side).
-  const { price: quoteUsdPrice } = usePythPrice(
-    !isDirectPair && quoteFeedId ? quoteFeedId : null,
-  );
+  // Quote/USD price — Pyth or Jupiter, whichever resolved for the quote
+  // asset. Only subscribed when an inferred ratio is needed.
+  const quotePythFeedId =
+    !isDirectPair && quoteOracle?.kind === "pyth" ? quoteOracle.feedId : null;
+  const quoteJupiterMint =
+    !isDirectPair && quoteOracle?.kind === "jupiter" ? quoteOracle.mint : null;
+  const { price: quotePythRaw } = usePythPrice(quotePythFeedId);
+  const { price: quoteJupiterPrice } = useJupiterPrice(quoteJupiterMint);
+  const quoteInverted =
+    quoteOracle?.kind === "pyth" && quoteOracle.inverted === true;
+  const quoteUsdPrice = useMemo(() => {
+    if (quotePythRaw != null) {
+      if (!quoteInverted) return quotePythRaw;
+      if (quotePythRaw === 0) return null;
+      return 1 / quotePythRaw;
+    }
+    return quoteJupiterPrice;
+  }, [quotePythRaw, quoteInverted, quoteJupiterPrice]);
 
   // Live pair price: direct feed or inferred ratio
   const pairPrice = useMemo(() => {
@@ -99,20 +119,23 @@ export function AssetPriceEditor({
       const oracle = await resolveOracleForPair(asset, quote);
       if (!alive) return;
 
-      // Decide whether we need a quote/USD feed for the live inferred
-      // ratio. Mirrors `isDirectPair`: only fetch when the resolver
-      // returned a base/USD feed (no pair, no inversion). For pair or
-      // inverted feeds, baseOrPairPrice is already in the right units.
-      const needsInferred =
-        quote.kind === "asset" &&
+      // We need a quote/USD price whenever the base oracle's price
+      // isn't already in the user's chosen pair units. That's true for
+      // ANY base oracle (Pyth or Jupiter) when the quote is non-USD and
+      // the resolved feed isn't a direct/inverted Pyth pair.
+      const quoteSym = quote.kind === "asset"
+        ? quote.asset.displaySymbol.toUpperCase()
+        : "USD";
+      const oracleIsDirectPair =
         oracle.kind === "pyth" &&
-        !oracle.inverted &&
-        !oracle.symbol.toUpperCase().endsWith(`/${quote.asset.displaySymbol.toUpperCase()}`);
+        (oracle.inverted === true ||
+          oracle.symbol.toUpperCase().endsWith(`/${quoteSym}`));
+      const needsInferred = quote.kind === "asset" && !oracleIsDirectPair;
       if (needsInferred && quote.kind === "asset") {
         const qOracle = await resolveOracleForPair(quote.asset, { kind: "usd" });
-        if (alive) setQuoteFeedId(qOracle.kind === "pyth" ? qOracle.feedId : null);
+        if (alive) setQuoteOracle(qOracle);
       } else {
-        setQuoteFeedId(null);
+        setQuoteOracle(null);
       }
 
       if (!alive) return;
