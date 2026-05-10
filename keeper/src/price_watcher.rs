@@ -11,10 +11,11 @@ use tracing::{debug, info, warn};
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::JupiterClient;
+use crate::mints::cache::MintPriceCache;
 use crate::prices::adaptive_poll;
 use crate::prices::cache::{PriceCache, PriceSnapshot, SourceLayer};
 use crate::pyth_catalog::{self, PythCatalog};
-use crate::state::TriggerSpec;
+use crate::state::{oracle_source, TriggerSpec};
 use crate::types::{AutomationCtx, TriggerEvent};
 
 /// Polls Pyth Hermes for the live price of every AssetPrice-trigger feed
@@ -42,6 +43,10 @@ pub async fn run(
     // Set by `main.rs` when `KEEPER_STREAM_MODE=on` so the SSE consumer
     // is the sole writer to the live price cache.
     suppress_poll: bool,
+    // Jupiter mint price cache. Written by mints::probe at 1s cadence.
+    // Used by the cache-driven evaluator for Jup-involved ratio triggers
+    // (Jup/Pyth, Jup/Jup, Pyth/Jup, Jup-absolute) in all stream modes.
+    mint_cache: MintPriceCache,
 ) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -73,6 +78,11 @@ pub async fn run(
     // including those from Lazer and Hermes SSE. The evaluator loop below
     // uses this to react immediately instead of waiting for the next poll tick.
     let notify = price_cache.notifier();
+    // Notify handle wired to MintPriceCache: fires every time the Jupiter
+    // probe writes a new mint price (1s cadence + backoff). The evaluator
+    // loop wakes on either notify so Jup-involved triggers fire at full
+    // probe cadence without waiting for the Pyth notify.
+    let mint_notify = mint_cache.notifier();
 
     // Heartbeat: fires every 30s so triggers evaluate even if the cache
     // goes silent (network outage between poll ticks).
@@ -254,11 +264,13 @@ pub async fn run(
     });
 
     // Evaluator loop: wakes on PriceCache notify (sub-second when Lazer is
-    // active, or ~12s from the Hermes poll above) plus a 30s heartbeat so
-    // triggers fire even if the cache goes silent.
+    // active, or ~12s from the Hermes poll above), MintPriceCache notify
+    // (~1s from the Jupiter probe), or a 30s heartbeat so triggers fire
+    // even if the cache goes silent.
     loop {
         tokio::select! {
             _ = notify.notified() => {},
+            _ = mint_notify.notified() => {},
             _ = heartbeat.tick() => {},
         }
 
@@ -364,32 +376,24 @@ pub async fn run(
         }
 
         // -----------------------------------------------------------------------
-        // Cache-driven path (StreamMode::On): when the 12s poll is suppressed,
-        // local_prices is always empty. Read absolute-price and Pyth-quoted ratio
-        // triggers from PriceCache, which the SSE / Lazer paths write into.
+        // Cache-driven path: reads from PriceCache (written by Lazer/SSE/Hermes
+        // poll) and MintPriceCache (written by the 1s Jupiter probe). Handles all
+        // four source combinations for ratio triggers.
         //
-        // Precision note: PriceSnapshot.price is f64, which has ~15 significant
-        // digits. For Pyth's typical exponent of -8, crypto prices fit comfortably.
-        // Ratio comparisons use the f64 price fields from both snapshots — adequate
-        // for all practical Pyth price ranges. Integer-precise ratio comparison via
-        // raw_price+expo is available in both snapshots (when source is Pyth) and
-        // could replace the f64 path in a future optimization if a regression shows
-        // precision matters. For now, f64 is used for simplicity.
+        // In StreamMode::On, local_prices is always empty (poll suppressed) so
+        // the poll-path loop above does nothing — this path is the sole evaluator.
+        // In Off/Shadow modes both paths run; the `already` set deduplicates.
         //
-        // SPL-quoted ratios (quote_mint is an SPL mint, catalog miss) are NOT
-        // handled here: they require a Jupiter probe which is a blocking async call
-        // unsuitable for this tight evaluation loop. Those triggers continue to fire
-        // only in Off/Shadow mode via the poll path's local_mint_quotes map.
-        // TODO(task-next): pipe SPL-quoted ratios through an async probe cache
-        // similar to local_mint_quotes so they also fire in StreamMode::On.
+        // PYTH base triggers (absolute and Pyth/Pyth ratio) — from PriceCache.
         // -----------------------------------------------------------------------
         let cache_snaps = price_cache.snapshot_all().await;
+        let mint_snaps = mint_cache.snapshot_all().await;
         for feed in &feeds {
             let feed_hex_id = pubkey_to_hex(feed);
             let Some(base_snap) = cache_snaps.get(&feed_hex_id) else {
                 continue;
             };
-            let ctxs = set.price_matches_for_source(feed, crate::state::oracle_source::PYTH);
+            let ctxs = set.price_matches_for_source(feed, oracle_source::PYTH);
             for ctx in &ctxs {
                 // Skip if already handled by the poll-path above (dedup).
                 if !already.insert(ctx.pubkey) {
@@ -408,8 +412,7 @@ pub async fn run(
 
                 let crossed = match quote_mint {
                     None => {
-                        // Absolute-price (USD-denominated) comparison.
-                        // f64 threshold: threshold * 10^expo.
+                        // Pyth absolute: USD-denominated comparison.
                         let threshold_f64 = (*threshold as f64) * 10f64.powi(*expo);
                         match *comparator {
                             0 => base_snap.price <= threshold_f64,
@@ -418,35 +421,33 @@ pub async fn run(
                         }
                     }
                     Some(quote_pk) => {
-                        // Ratio trigger: base_price / quote_price vs threshold.
-                        // Dispatch the quote leg via the Pyth catalog:
-                        //   Catalog hit  → read the quote snapshot from the cache
-                        //                  (Lazer/SSE wrote it as a Pyth feed).
-                        //   Catalog miss → SPL-quoted ratio; skip here — a Jupiter
-                        //                  probe is required (see TODO above).
-                        let quote_feed_hex = pubkey_to_hex(quote_pk);
-                        if !catalog.contains_key(&quote_pk.to_bytes()) {
-                            // SPL-quoted ratio: not supported in StreamMode::On.
-                            // Will fire via the 12s poll path in Off/Shadow mode.
-                            continue;
+                        if catalog.contains_key(&quote_pk.to_bytes()) {
+                            // Pyth/Pyth ratio: both legs from PriceCache.
+                            let quote_feed_hex = pubkey_to_hex(quote_pk);
+                            let Some(quote_snap) = cache_snaps.get(&quote_feed_hex) else {
+                                continue; // quote not yet in cache — skip this tick.
+                            };
+                            decide_ratio_cross(
+                                base_snap.price,
+                                quote_snap.price,
+                                *threshold,
+                                *expo,
+                                *comparator,
+                            )
+                        } else {
+                            // Pyth/Jup ratio: base from PriceCache, quote from
+                            // MintPriceCache (Jupiter probe). Skip if quote is stale.
+                            let Some(quote_mint_snap) = mint_snaps.get(quote_pk) else {
+                                continue;
+                            };
+                            decide_ratio_cross(
+                                base_snap.price,
+                                quote_mint_snap.price_usd,
+                                *threshold,
+                                *expo,
+                                *comparator,
+                            )
                         }
-                        let Some(quote_snap) = cache_snaps.get(&quote_feed_hex) else {
-                            // Quote snapshot not yet in the cache — skip this tick.
-                            continue;
-                        };
-
-                        // f64 ratio comparison. Both legs are Pyth-sourced so
-                        // f64's ~15 sig-digit precision is more than adequate for
-                        // normal Pyth price ranges. Integer-precise comparison via
-                        // raw_price+expo (both fields are Some for Pyth snapshots)
-                        // is available as a future optimization if needed.
-                        decide_pyth_quoted_ratio_cross(
-                            base_snap.price,
-                            quote_snap.price,
-                            *threshold,
-                            *expo,
-                            *comparator,
-                        )
                     }
                 };
 
@@ -455,6 +456,96 @@ pub async fn run(
                     let entry = to_fire
                         .entry(key)
                         .or_insert_with(|| (Vec::new(), base_snap.clone()));
+                    entry.0.push(ctx.clone());
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // JUPITER base triggers (absolute and Jup/Pyth, Jup/Jup ratios).
+        // Base price comes from MintPriceCache. For Jup absolute the snapshot's
+        // price_usd is already USD-denominated. For ratios, divide by the quote
+        // leg's USD price from the appropriate source.
+        // -----------------------------------------------------------------------
+        let jup_feeds = set.price_feeds_for_source(oracle_source::JUPITER);
+        for feed in &jup_feeds {
+            let Some(base_mint_snap) = mint_snaps.get(feed) else {
+                continue; // Jupiter probe hasn't populated this mint yet.
+            };
+            let ctxs = set.price_matches_for_source(feed, oracle_source::JUPITER);
+            for ctx in &ctxs {
+                if !already.insert(ctx.pubkey) {
+                    continue;
+                }
+                let TriggerSpec::AssetPrice {
+                    quote_mint,
+                    comparator,
+                    threshold,
+                    expo,
+                    ..
+                } = &ctx.trigger
+                else {
+                    continue;
+                };
+
+                let crossed = match quote_mint {
+                    None => {
+                        // Jup absolute: compare USD price directly.
+                        let threshold_f64 = (*threshold as f64) * 10f64.powi(*expo);
+                        match *comparator {
+                            0 => base_mint_snap.price_usd <= threshold_f64,
+                            1 => base_mint_snap.price_usd >= threshold_f64,
+                            _ => false,
+                        }
+                    }
+                    Some(quote_pk) => {
+                        if catalog.contains_key(&quote_pk.to_bytes()) {
+                            // Jup/Pyth ratio: base from MintPriceCache,
+                            // quote from PriceCache (Pyth feed).
+                            let quote_feed_hex = pubkey_to_hex(quote_pk);
+                            let Some(quote_snap) = cache_snaps.get(&quote_feed_hex) else {
+                                continue;
+                            };
+                            decide_ratio_cross(
+                                base_mint_snap.price_usd,
+                                quote_snap.price,
+                                *threshold,
+                                *expo,
+                                *comparator,
+                            )
+                        } else {
+                            // Jup/Jup ratio: both legs from MintPriceCache.
+                            let Some(quote_mint_snap) = mint_snaps.get(quote_pk) else {
+                                continue;
+                            };
+                            decide_ratio_cross(
+                                base_mint_snap.price_usd,
+                                quote_mint_snap.price_usd,
+                                *threshold,
+                                *expo,
+                                *comparator,
+                            )
+                        }
+                    }
+                };
+
+                if crossed {
+                    // Use the mint pubkey + snapshot instant as correlation key.
+                    let now_unix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let key = format!("cache_jup:{}:{}", feed, now_unix);
+                    let snap = PriceSnapshot {
+                        price: base_mint_snap.price_usd,
+                        conf: 0.0,
+                        publish_time: now_unix,
+                        fetched_at: base_mint_snap.fetched_at,
+                        source: SourceLayer::HermesPoll, // closest analogue for REST poll
+                        raw_price: None,
+                        expo: None,
+                    };
+                    let entry = to_fire.entry(key).or_insert_with(|| (Vec::new(), snap));
                     entry.0.push(ctx.clone());
                 }
             }
@@ -713,21 +804,20 @@ fn align(a_raw: i64, a_expo: i32, b_raw: i64, b_expo: i32) -> (i128, i128) {
     (a, b)
 }
 
-/// Determine whether a Pyth-quoted ratio trigger crosses its threshold.
+/// Determine whether a ratio trigger crosses its threshold.
 ///
-/// Used by the cache-driven evaluator path (`StreamMode::On`) to evaluate
-/// triggers of the form "fire when base_price / quote_price crosses threshold".
-/// Both legs must come from Pyth (Lazer or Hermes SSE/poll) — SPL-quoted
-/// ratios using Jupiter prices are out of scope for this helper.
+/// Used by the cache-driven evaluator path to evaluate triggers of the form
+/// "fire when base_price / quote_price crosses threshold". Both `base_price`
+/// and `quote_price` are USD-denominated f64 values (from either PriceCache
+/// or MintPriceCache), so the helper is source-agnostic and covers all four
+/// combinations: Pyth/Pyth, Pyth/Jup, Jup/Pyth, Jup/Jup.
 ///
 /// Precision: f64 has ~15 significant digits. For Pyth's typical exponent of
 /// -8 crypto pairs, the integer mantissa fits ~7 digits before the decimal
-/// and up to 8 after, well within f64's precision. Integer-precise comparison
-/// using raw_price+expo fields on the snapshots is available as a future
-/// optimization if a regression shows precision matters for tight thresholds.
+/// and up to 8 after, well within f64's precision.
 ///
 /// `comparator` semantics: 0 = crossed_below (<=), 1 = crossed_above (>=).
-pub(crate) fn decide_pyth_quoted_ratio_cross(
+pub(crate) fn decide_ratio_cross(
     base_price: f64,
     quote_price: f64,
     threshold: i64,
@@ -838,7 +928,7 @@ mod tests {
     fn pyth_ratio_above_threshold_crosses() {
         // base: SOL/USD = $200.00, quote: EUR/USD = $1.10 → ratio ≈ 181.8
         // threshold: 180 (threshold=180, expo=0 → 180 * 10^0 = 180)
-        let crossed = decide_pyth_quoted_ratio_cross(
+        let crossed = decide_ratio_cross(
             200.0, // SOL/USD
             1.10,  // EUR/USD
             180,   // threshold mantissa
@@ -851,7 +941,7 @@ mod tests {
     /// SOL/EUR > 190 should NOT fire when ratio is only 181.8.
     #[test]
     fn pyth_ratio_above_threshold_does_not_cross() {
-        let crossed = decide_pyth_quoted_ratio_cross(
+        let crossed = decide_ratio_cross(
             200.0, // SOL/USD = $200
             1.10,  // EUR/USD = $1.10 → SOL/EUR ≈ 181.8
             190,   // threshold = 190
@@ -866,7 +956,7 @@ mod tests {
     fn pyth_ratio_below_threshold_crosses() {
         // base: SOL/USD = $80, quote: EUR/USD = $1.0 → ratio = 80.0
         // threshold: 100, crossed_below (<=)
-        let crossed = decide_pyth_quoted_ratio_cross(
+        let crossed = decide_ratio_cross(
             80.0, 1.0, 100, 0, 0,
         );
         assert!(crossed, "SOL/EUR = 80 should cross below 100");
@@ -875,14 +965,14 @@ mod tests {
     /// Zero or negative quote price must return false (guard against bogus data).
     #[test]
     fn pyth_ratio_zero_quote_price_returns_false() {
-        assert!(!decide_pyth_quoted_ratio_cross(200.0, 0.0, 180, 0, 1));
-        assert!(!decide_pyth_quoted_ratio_cross(200.0, -1.0, 180, 0, 1));
+        assert!(!decide_ratio_cross(200.0, 0.0, 180, 0, 1));
+        assert!(!decide_ratio_cross(200.0, -1.0, 180, 0, 1));
     }
 
     /// Invalid comparator byte returns false without panicking.
     #[test]
     fn pyth_ratio_invalid_comparator_returns_false() {
-        assert!(!decide_pyth_quoted_ratio_cross(200.0, 1.1, 180, 0, 99));
+        assert!(!decide_ratio_cross(200.0, 1.1, 180, 0, 99));
     }
 
     /// Threshold with negative exponent: threshold = 1_800_000 * 10^-4 = 180.0.
@@ -890,7 +980,7 @@ mod tests {
     fn pyth_ratio_threshold_with_negative_expo() {
         // SOL/EUR ≈ 181.8 vs threshold 180.0 expressed with expo=-4
         // threshold_f64 = 1_800_000 * 10^-4 = 180.0
-        let crossed = decide_pyth_quoted_ratio_cross(
+        let crossed = decide_ratio_cross(
             200.0, 1.10, 1_800_000, -4, 1,
         );
         assert!(crossed, "SOL/EUR ≈ 181.8 should cross above 180.0 (expo=-4)");
@@ -899,7 +989,7 @@ mod tests {
     /// Integration-style test: build a WatchedSet with a Pyth-quoted ratio
     /// trigger and two PriceSnapshots in a PriceCache; verify the cache-driven
     /// evaluator logic produces the correct `crossed` decision using the
-    /// `decide_pyth_quoted_ratio_cross` helper that is wired into the evaluator.
+    /// `decide_ratio_cross` helper that is wired into the evaluator.
     ///
     /// This mirrors what the evaluator does for StreamMode::On without needing
     /// to mock the async catalog lookup or spawn the full price_watcher::run.
@@ -914,15 +1004,66 @@ mod tests {
         let expo: i32 = 0;
         let comparator: u8 = 1; // crossed_above
 
-        let result = decide_pyth_quoted_ratio_cross(
+        let result = decide_ratio_cross(
             base_price, quote_price, threshold, expo, comparator,
         );
         assert!(result, "ratio 181.8 should cross above threshold 180");
 
         // Confirm the inverse does not fire.
-        let result_below = decide_pyth_quoted_ratio_cross(
+        let result_below = decide_ratio_cross(
             base_price, quote_price, 182, expo, comparator,
         );
         assert!(!result_below, "ratio 181.8 should not cross above threshold 182");
+    }
+
+    // -----------------------------------------------------------------------
+    // New cross-source ratio tests: Jup/Pyth and Pyth/Jup.
+    // Both use the same decide_ratio_cross helper — the math is identical
+    // regardless of which source provided each leg's USD price.
+    // -----------------------------------------------------------------------
+
+    /// Jup/Pyth ratio: Jupiter-sourced base (e.g. BONK), Pyth-sourced quote (SOL).
+    /// BONK = $0.00002, SOL = $180 → BONK/SOL ≈ 0.000000111. Trigger: BONK/SOL < 0.0000002.
+    #[test]
+    fn jup_pyth_ratio_below_threshold_crosses() {
+        let bonk_usd = 0.00002_f64;
+        let sol_usd = 180.0_f64;
+        // ratio = 0.00002 / 180 ≈ 1.11e-7
+        // threshold: 0.0000002 = 2 * 10^-7 (threshold=2, expo=-7)
+        let crossed = decide_ratio_cross(bonk_usd, sol_usd, 2, -7, 0); // crossed_below
+        assert!(crossed, "BONK/SOL ≈ 1.11e-7 should cross below 2e-7");
+    }
+
+    /// Jup/Pyth ratio above threshold should NOT fire when ratio is smaller.
+    #[test]
+    fn jup_pyth_ratio_above_threshold_does_not_cross() {
+        let bonk_usd = 0.00002_f64;
+        let sol_usd = 180.0_f64;
+        // ratio ≈ 1.11e-7; threshold: 5e-8 = 0 crossed_above — ratio is above threshold.
+        // We test the "crossed_above 2e-7" case — ratio is below so should NOT cross.
+        let crossed = decide_ratio_cross(bonk_usd, sol_usd, 2, -7, 1); // crossed_above
+        assert!(!crossed, "BONK/SOL ≈ 1.11e-7 should not cross above 2e-7");
+    }
+
+    /// Pyth/Jup ratio: Pyth-sourced base (EUR/USD Pyth feed), Jupiter-sourced
+    /// quote (USDC SPL mint price in USD ≈ 1.0). EUR/USD = $1.10 / $1.0 = 1.10.
+    /// Trigger: EUR/USDC >= 1.05.
+    #[test]
+    fn pyth_jup_ratio_above_threshold_crosses() {
+        let eur_usd = 1.10_f64; // from Pyth PriceCache
+        let usdc_usd = 1.0_f64; // from MintPriceCache (Jupiter probe)
+        // ratio = 1.10 / 1.0 = 1.10; threshold = 1.05 (threshold=105, expo=-2)
+        let crossed = decide_ratio_cross(eur_usd, usdc_usd, 105, -2, 1); // crossed_above
+        assert!(crossed, "EUR/USDC = 1.10 should cross above 1.05");
+    }
+
+    /// Pyth/Jup ratio: EUR/USDC < threshold should NOT cross above.
+    #[test]
+    fn pyth_jup_ratio_below_threshold_does_not_cross_above() {
+        let eur_usd = 1.02_f64;
+        let usdc_usd = 1.0_f64;
+        // ratio = 1.02; threshold = 1.05 — not crossed above
+        let crossed = decide_ratio_cross(eur_usd, usdc_usd, 105, -2, 1);
+        assert!(!crossed, "EUR/USDC = 1.02 should not cross above 1.05");
     }
 }

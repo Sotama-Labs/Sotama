@@ -240,6 +240,44 @@ impl WatchedSet {
             .map(|pk| hex::encode(pk.to_bytes()))
             .collect()
     }
+
+    /// All SPL mints that need Jupiter price coverage for the cache-driven
+    /// evaluator. This is the union of:
+    ///
+    /// - Mints where `oracle_source == JUPITER` is the BASE of any trigger
+    ///   (`feed` field stores the SPL mint for Jupiter-sourced triggers).
+    /// - Mints used as `quote_mint` in any AssetPrice trigger where the
+    ///   mint is NOT in the Pyth catalog (i.e. SPL-quoted ratios that need
+    ///   a Jupiter probe for the quote leg — covers Pyth/Jup and Jup/Jup).
+    ///
+    /// Used by `main.rs` to drive the mint probe's watch channel.
+    pub fn active_jupiter_mints(
+        &self,
+        pyth_catalog: &crate::pyth_catalog::PythCatalog,
+    ) -> Vec<solana_sdk::pubkey::Pubkey> {
+        let mut s: HashSet<solana_sdk::pubkey::Pubkey> = HashSet::new();
+        for ctx in self.by_pubkey.values() {
+            if let crate::state::TriggerSpec::AssetPrice {
+                feed,
+                source,
+                quote_mint,
+                ..
+            } = &ctx.trigger
+            {
+                // Base leg: Jupiter-sourced triggers store the SPL mint in `feed`.
+                if *source == crate::state::oracle_source::JUPITER {
+                    s.insert(*feed);
+                }
+                // Quote leg: any SPL mint not in the Pyth catalog needs a Jupiter probe.
+                if let Some(qm) = quote_mint {
+                    if !pyth_catalog.contains_key(&qm.to_bytes()) {
+                        s.insert(*qm);
+                    }
+                }
+            }
+        }
+        s.into_iter().collect()
+    }
 }
 
 pub async fn seed_initial(cfg: &KeeperConfig) -> Result<Vec<AutomationCtx>> {

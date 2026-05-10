@@ -14,6 +14,7 @@ mod indexer;
 mod jupiter;
 mod jupiter_watcher;
 mod lazer_watcher;
+mod mints;
 mod price_watcher;
 mod program;
 mod pyth_catalog;
@@ -166,6 +167,58 @@ async fn main() -> Result<()> {
     }
 
     // -----------------------------------------------------------------------
+    // Jupiter mint probe: polls Jupiter /price/v3 at 1s cadence for all
+    // SPL mints needed by Jup-involved ratio triggers (Jup/Pyth, Pyth/Jup,
+    // Jup/Jup) and Jupiter absolute-price triggers. Runs in all stream modes.
+    // In On mode this is the sole Jupiter source for the cache-driven evaluator.
+    // In Off/Shadow mode it coexists with the 12s jupiter_watcher poll.
+    // -----------------------------------------------------------------------
+    let mint_cache = mints::cache::MintPriceCache::new();
+
+    // Load the Pyth catalog for the mint probe's active-mints derivation.
+    // Best-effort: failure here means non-Pyth quote mints may also be
+    // probed (harmless — the probe just fetches more mints than needed).
+    let pyth_catalog_for_mints: crate::pyth_catalog::PythCatalog =
+        match crate::pyth_catalog::fetch().await {
+            Ok(c) => {
+                info!(feeds = c.len(), "main: loaded Pyth catalog for mint probe");
+                c
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "main: Pyth catalog load failed for mint probe; catalog treated as empty");
+                crate::pyth_catalog::PythCatalog::new()
+            }
+        };
+
+    // Watch channel that carries the current active Jupiter mint set to the probe.
+    let (mints_tx, mints_rx) = tokio::sync::watch::channel::<Vec<solana_sdk::pubkey::Pubkey>>(vec![]);
+
+    // Spawn the probe (1s base, exponential backoff on errors).
+    mints::probe::spawn(
+        http_client.clone(),
+        cfg.jupiter_price_url.clone(),
+        cfg.jupiter_api_key.clone(),
+        mints_rx,
+        mint_cache.clone(),
+    );
+
+    // Republish active mints every 2s so the probe tracks new automations.
+    {
+        let watched_set_for_mints = set_rx.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(std::time::Duration::from_secs(2));
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                iv.tick().await;
+                let mints = watched_set_for_mints
+                    .borrow()
+                    .active_jupiter_mints(&pyth_catalog_for_mints);
+                let _ = mints_tx.send(mints);
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Events subscriber (Task 9): logsSubscribe → AutomationLifecycle →
     // WatchedSet delta-apply.
     //
@@ -263,9 +316,10 @@ async fn main() -> Result<()> {
         let trigger_tx = trigger_tx.clone();
         let lazer_active_feeds_rx = lazer_active_feeds_rx.clone();
         let price_cache_for_watcher = price_cache.clone();
+        let mint_cache_for_watcher = mint_cache.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll).await
+                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll, mint_cache_for_watcher).await
             {
                 error!(error = %e, "price_watcher task exited");
             }
