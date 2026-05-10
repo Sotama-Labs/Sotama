@@ -67,6 +67,12 @@ impl PriceCache {
     /// a new snapshot is written via `put`. Price-watcher uses this to drive
     /// its evaluation loop.
     pub fn notifier(&self) -> Arc<Notify> { self.notify.clone() }
+
+    /// Returns a deep clone of every snapshot currently in the cache.
+    /// Used by the Task 22 shadow comparator — observation only, no side effects.
+    pub async fn snapshot_all(&self) -> std::collections::HashMap<String, PriceSnapshot> {
+        self.inner.read().await.clone()
+    }
 }
 
 #[cfg(test)]

@@ -141,6 +141,30 @@ async fn main() -> Result<()> {
         feed_ids_rx,
     );
 
+    // Shadow comparator (Task 22): every 5s, diff shadow_cache (SSE-fed) against
+    // price_cache (Hermes-poll-fed, authoritative) and warn on divergence > 1s.
+    // Only spawned in Shadow mode (shadow_cache is Some). Observation only.
+    if let Some(shadow) = shadow_cache.clone() {
+        let live = price_cache.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(std::time::Duration::from_secs(5));
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                iv.tick().await;
+                let s = shadow.snapshot_all().await;
+                let l = live.snapshot_all().await;
+                for (feed, ssnap) in &s {
+                    if let Some(lsnap) = l.get(feed) {
+                        let dt = (ssnap.publish_time - lsnap.publish_time).abs();
+                        if dt > 1 {
+                            tracing::warn!(target: "shadow", %feed, dt, "divergence > 1s");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // -----------------------------------------------------------------------
     // Events subscriber (Task 9): logsSubscribe → AutomationLifecycle →
     // WatchedSet delta-apply.
