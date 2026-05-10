@@ -129,6 +129,17 @@ export function renderTriggerContent(t: DraftTrigger): ReactNode {
         </>
       );
     }
+    case "price_relative_to_fill":
+      return (
+        <>
+          {muted("price")}{" "}
+          {muted(t.direction === "grow" ? "grew" : "dropped")}{" "}
+          <span style={{ fontFeatureSettings: '"tnum"' }}>
+            {t.pctBps != null ? `${t.pctBps / 100}%` : muted("…")}
+          </span>{" "}
+          {muted("from upstream fill")}
+        </>
+      );
   }
 }
 
@@ -155,7 +166,11 @@ export function renderActionContent(a: DraftAction): ReactNode {
         <>
           {muted("swap")}{" "}
           <span style={{ fontFeatureSettings: '"tnum"' }}>
-            {a.amount != null ? formatTokenAmount(a.amount, a.inputToken) : "…"}
+            {a.consumeUpstreamOutput
+              ? muted("upstream output")
+              : a.amount != null
+                ? formatTokenAmount(a.amount, a.inputToken)
+                : "…"}
           </span>{" "}
           {a.inputToken ? <TokenPill token={a.inputToken} /> : muted("input")}{" "}
           {muted("for")}{" "}

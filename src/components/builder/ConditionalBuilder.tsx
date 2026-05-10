@@ -63,6 +63,7 @@ import { AssetPriceEditor } from "./triggers/AssetPriceEditor";
 import { AccountTransferEditor } from "./triggers/AccountTransferEditor";
 import { AccountSwapEditor } from "./triggers/AccountSwapEditor";
 import { TimeElapsedEditor } from "./triggers/TimeElapsedEditor";
+import { PriceRelativeToFillEditor } from "./triggers/PriceRelativeToFillEditor";
 import { TransferEditor } from "./actions/TransferEditor";
 import { SwapEditor } from "./actions/SwapEditor";
 
@@ -118,6 +119,8 @@ function triggerReady(t: DraftTrigger): boolean {
       );
     case "time_elapsed":
       return t.value != null && t.value > 0;
+    case "price_relative_to_fill":
+      return t.upstream != null && t.pctBps != null && t.pctBps > 0;
   }
 }
 
@@ -148,6 +151,7 @@ export function ConditionalBuilder({
   hideSaveButton,
   onClose,
   linkClassUpstream,
+  chainCtx,
 }: {
   initialState?: Automation | null;
   onSave: (data: BuilderResult) => void;
@@ -178,6 +182,12 @@ export function ConditionalBuilder({
    *  upstream-aware options — e.g. the "Use upstream output" chip in
    *  SwapEditor when the upstream link is an inverted pair. */
   linkClassUpstream?: ChainLinkClass;
+  /** Chain context forwarded to trigger editors so they can reveal
+   *  upstream-aware options (e.g. PriceRelativeToFill). Only set when
+   *  this card is a downstream node in a multi-rule chain AND its action
+   *  consumes upstream output. When absent the trigger editors fall back
+   *  to standalone (absolute-price only) mode. */
+  chainCtx?: { upstreamIndex: number; consumeUpstream: boolean };
 }) {
   const [triggers, setTriggers] = useState<DraftTrigger[]>(() => seedTriggers(initialState));
   const [actions, setActions] = useState<DraftAction[]>(() => seedActions(initialState));
@@ -269,7 +279,15 @@ export function ConditionalBuilder({
 
   const pickTriggerCategory = (idx: number, category: TriggerCategoryMeta) => {
     if (!isTriggerCategorySupported(category)) return;
-    const supportedKinds = category.kinds.filter((k) => isTriggerSupported(k.kind));
+    const chainQualified =
+      chainCtx != null &&
+      chainCtx.upstreamIndex >= 0 &&
+      chainCtx.consumeUpstream;
+    const supportedKinds = category.kinds.filter(
+      (k) =>
+        isTriggerSupported(k.kind) &&
+        (k.kind !== "price_relative_to_fill" || chainQualified),
+    );
     // If only one supported kind exists in this category (regardless of how
     // many disabled siblings sit next to it), skip the sub-list and jump
     // straight to its editor.
@@ -441,6 +459,15 @@ export function ConditionalBuilder({
               onConfirm={onConfirm}
             />
           );
+        case "price_relative_to_fill":
+          return (
+            <PriceRelativeToFillEditor
+              draft={t}
+              onChange={(next) => updateTriggerAt(open.index, next)}
+              onBack={onBack}
+              onConfirm={onConfirm}
+            />
+          );
         case null:
           return null;
       }
@@ -488,10 +515,20 @@ export function ConditionalBuilder({
         // the once-cadence shape, so every kind in the category is
         // allowed; the only filter is whether the kind is supported
         // by the current build of the program.
+        // The PriceRelativeToFill sub-kind is only valid for downstream
+        // consume-upstream-output rules. Hide it entirely (not just disabled)
+        // unless the chain context says this card qualifies.
+        const chainQualified =
+          chainCtx != null &&
+          chainCtx.upstreamIndex >= 0 &&
+          chainCtx.consumeUpstream;
+        const filteredKinds = browsingCategory.kinds.filter(
+          (k) => k.kind !== "price_relative_to_fill" || chainQualified,
+        );
         body = (
           <PopoverList
             title={browsingCategory.label}
-            options={browsingCategory.kinds.map((k) => ({
+            options={filteredKinds.map((k) => ({
               kind: k.kind,
               label: k.label,
               description: k.description,

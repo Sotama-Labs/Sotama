@@ -149,7 +149,9 @@ export function classifyChainLink(
  *  tokens — so the validator is strict. */
 export type ChainValidationError =
   | { kind: "non_swap_action"; nodeIndex: number }
-  | { kind: "head_must_have_seed_amount"; nodeIndex: number };
+  | { kind: "head_must_have_seed_amount"; nodeIndex: number }
+  | { kind: "price_relative_to_fill_requires_chain_position"; nodeIndex: number }
+  | { kind: "price_relative_to_fill_requires_consume_upstream"; nodeIndex: number };
 
 export function validateChainDraft(
   nodes: ChainNodeDraft[],
@@ -181,6 +183,22 @@ export function validateChainDraft(
     // input ATA from the wrong-mint output ATA, so the rule keeps firing.
     // sendChainCreate sets bridge_enabled accordingly.
   }
+
+  // PriceRelativeToFill validation: only valid on downstream rules that
+  // consume upstream output (i >= 1 AND consumeUpstreamOutput === true).
+  for (let i = 0; i < nodes.length; i++) {
+    const trigger = nodes[i].result.triggers[0];
+    if (!trigger || trigger.kind !== "price_relative_to_fill") continue;
+    if (i === 0) {
+      return { kind: "price_relative_to_fill_requires_chain_position", nodeIndex: i };
+    }
+    const action = nodes[i].result.actions[0];
+    const consumesUpstream = action?.kind === "swap" && action.consumeUpstreamOutput === true;
+    if (!consumesUpstream) {
+      return { kind: "price_relative_to_fill_requires_consume_upstream", nodeIndex: i };
+    }
+  }
+
   return null;
 }
 
@@ -355,6 +373,16 @@ async function buildTriggerSpec(t: Trigger): Promise<OnChainTriggerSpec | null> 
       if (!(secs > 0) || secs > MAX_TIME_ELAPSED_SECS) return null;
       return { timeElapsed: { durationSecs: secs } };
     }
+    case "price_relative_to_fill": {
+      if (!t.upstream || !(t.pctBps > 0)) return null;
+      return {
+        priceRelativeToFill: {
+          upstream: t.upstream,
+          direction: t.direction === "grow" ? 1 : 0,
+          pctBps: t.pctBps,
+        },
+      };
+    }
   }
 }
 
@@ -499,7 +527,14 @@ export async function sendChainCreate(params: {
       throw new Error(`node ${i + 1}: chain rules must be Swap actions`);
     }
 
-    const onChainTrigger = await buildTriggerSpec(trigger);
+    // For PriceRelativeToFill triggers the upstream PDA is the previous
+    // node's PDA (forward chain: i - 1). The draft leaves `upstream: null`
+    // while editing; we inject the resolved pubkey here before encoding.
+    let resolvedTrigger = trigger;
+    if (trigger.kind === "price_relative_to_fill" && i > 0) {
+      resolvedTrigger = { ...trigger, upstream: nodePdas[i - 1] };
+    }
+    const onChainTrigger = await buildTriggerSpec(resolvedTrigger);
     if (!onChainTrigger) {
       throw new Error(`node ${i + 1}: trigger could not be encoded`);
     }
@@ -785,6 +820,9 @@ export function summarizeChain(
         triggerSummary = `${trigger.asset.symbol} ${trigger.comparator} ${trigger.threshold}`;
       } else if (trigger.kind === "time_elapsed") {
         triggerSummary = `after ${trigger.value} ${trigger.unit}`;
+      } else if (trigger.kind === "price_relative_to_fill") {
+        const pct = trigger.pctBps / 100;
+        triggerSummary = `${trigger.direction === "grow" ? "grew" : "dropped"} ${pct}% from fill`;
       } else {
         triggerSummary = trigger.kind.replace("_", " ");
       }

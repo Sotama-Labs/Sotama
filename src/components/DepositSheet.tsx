@@ -253,6 +253,21 @@ async function buildTriggerSpec(t: Trigger): Promise<OnChainTriggerSpec | null> 
       if (!(secs > 0) || secs > MAX_TIME_ELAPSED_SECS) return null;
       return { timeElapsed: { durationSecs: secs } };
     }
+    case "price_relative_to_fill": {
+      // This trigger variant is only valid for linked-chain rules and is
+      // built via sendChainCreate in linked-chains.ts (which injects the
+      // upstream PDA). Standalone DepositSheet doesn't route here in
+      // practice, but must handle the case to satisfy the exhaustive
+      // switch. Return null to block accidental standalone submission.
+      if (!t.upstream || !(t.pctBps > 0)) return null;
+      return {
+        priceRelativeToFill: {
+          upstream: t.upstream,
+          direction: t.direction === "grow" ? 1 : 0,
+          pctBps: t.pctBps,
+        },
+      };
+    }
   }
 }
 

@@ -2937,6 +2937,38 @@ export type SotamaAutomations = {
                 "type": "u32"
               }
             ]
+          },
+          {
+            "name": "priceRelativeToFill",
+            "docs": [
+              "Fires when the rule's input-token USD price has moved by `pctBps`",
+              "basis points relative to the effective fill price recorded when the",
+              "upstream automation at `upstream` last executed.",
+              "Only valid on downstream consume-upstream-output chain rules."
+            ],
+            "fields": [
+              {
+                "name": "upstream",
+                "docs": [
+                  "Upstream automation PDA — the rule whose fill price is the cost basis."
+                ],
+                "type": "pubkey"
+              },
+              {
+                "name": "direction",
+                "docs": [
+                  "`0` = drop_below_fill, `1` = grow_above_fill."
+                ],
+                "type": "u8"
+              },
+              {
+                "name": "pctBps",
+                "docs": [
+                  "Movement threshold in basis points (100 = 1%, 500 = 5%, 1000 = 10%)."
+                ],
+                "type": "u32"
+              }
+            ]
           }
         ]
       }

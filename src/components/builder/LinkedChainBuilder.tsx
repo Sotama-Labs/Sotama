@@ -501,6 +501,19 @@ export function LinkedChainBuilder({
               onSave={handleSaveSingle}
               cardLabel={cardLabel}
               linkClassUpstream={i > 0 ? linkClasses[i - 1] : undefined}
+              chainCtx={
+                // Expose chain context to the trigger editor so it can
+                // reveal PriceRelativeToFill when this card is a
+                // downstream consume-upstream-output rule.
+                i > 0 && cards.length > 1
+                  ? {
+                      upstreamIndex: i - 1,
+                      consumeUpstream:
+                        card.result?.actions[0]?.kind === "swap" &&
+                        card.result.actions[0].consumeUpstreamOutput === true,
+                    }
+                  : undefined
+              }
               bottomAccessory={
                 <LinkSlot
                   index={i}
@@ -1498,5 +1511,9 @@ function humanizeChainError(err: ChainValidationError): string {
       return `Rule ${err.nodeIndex + 1}: chain rules must be Swap actions.`;
     case "head_must_have_seed_amount":
       return `Rule ${err.nodeIndex + 1}: head rule needs a positive amount.`;
+    case "price_relative_to_fill_requires_chain_position":
+      return `Rule ${err.nodeIndex + 1}: "Relative to fill" trigger requires a downstream rule (not the chain head).`;
+    case "price_relative_to_fill_requires_consume_upstream":
+      return `Rule ${err.nodeIndex + 1}: "Relative to fill" trigger requires "Use upstream output" to be enabled on the swap action.`;
   }
 }

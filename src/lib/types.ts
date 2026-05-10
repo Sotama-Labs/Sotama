@@ -4,6 +4,10 @@
    editors and the keeper wire format.
    ───────────────────────────────────────────────────────────────────── */
 
+import { PublicKey } from "@solana/web3.js";
+
+export { PublicKey };
+
 /** Where the metadata for a TokenRef came from, surfaced in the UI as a caption. */
 export type TokenMetadataSource = "canonical" | "devnet" | "mainnet" | "manual";
 
@@ -118,11 +122,27 @@ export type TimeElapsedTrigger = {
   unit: TimeElapsedUnit;
 };
 
+/** Fires when the rule's input token price has moved a given percentage
+ *  relative to the effective fill price recorded when the upstream rule
+ *  executed. Only valid on downstream, consume-upstream-output chain rules.
+ *
+ *  `upstream` — the upstream automation PDA (populated at chain-build time
+ *  from `nodePdas[upstreamIndex]`; null while editing the draft).
+ *  `direction` — "grow" = price grew above fill, "drop" = dropped below fill.
+ *  `pctBps`   — movement threshold in basis points (100 = 1%, 500 = 5%). */
+export type PriceRelativeToFillTrigger = {
+  kind: "price_relative_to_fill";
+  upstream: PublicKey;
+  direction: "grow" | "drop";
+  pctBps: number;
+};
+
 export type Trigger =
   | AssetPriceTrigger
   | AccountTransferTrigger
   | AccountSwapTrigger
-  | TimeElapsedTrigger;
+  | TimeElapsedTrigger
+  | PriceRelativeToFillTrigger;
 
 export type TriggerKind = Trigger["kind"];
 
@@ -205,12 +225,23 @@ export type DraftTimeElapsed = {
   unit: TimeElapsedUnit;
 };
 
+/** In-flight draft for PriceRelativeToFill. `upstream` is null while
+ *  editing (it's resolved at chain-build time from nodePdas[i-1]);
+ *  `pctBps` is null while the percent input is empty. */
+export type DraftPriceRelativeToFill = {
+  kind: "price_relative_to_fill";
+  upstream: PublicKey | null;
+  direction: "grow" | "drop";
+  pctBps: number | null;
+};
+
 export type DraftTrigger =
   | { kind: null }
   | DraftAssetPrice
   | DraftAccountTransfer
   | DraftAccountSwap
-  | DraftTimeElapsed;
+  | DraftTimeElapsed
+  | DraftPriceRelativeToFill;
 
 export type DraftTransfer = {
   kind: "transfer";
@@ -462,6 +493,8 @@ export function isTriggerComplete(draft: DraftTrigger): draft is Trigger {
       const secs = timeElapsedToSecs(draft.value, draft.unit);
       return secs > 0 && secs <= MAX_TIME_ELAPSED_SECS;
     }
+    case "price_relative_to_fill":
+      return draft.upstream != null && draft.pctBps != null && draft.pctBps > 0;
   }
 }
 

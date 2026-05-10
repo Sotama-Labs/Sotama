@@ -113,6 +113,16 @@ export type OnChainTriggerSpec =
         /** Seconds (u32 on-chain) since `Automation.created_at`. */
         durationSecs: number;
       };
+    }
+  | {
+      priceRelativeToFill: {
+        /** Upstream automation PDA — the rule whose fill price we compare against. */
+        upstream: PublicKey;
+        /** 0 = drop_below_fill, 1 = grow_above_fill. */
+        direction: number;
+        /** Movement threshold in basis points (100 = 1%, 500 = 5%). */
+        pctBps: number;
+      };
     };
 
 export type OnChainActionSpec =

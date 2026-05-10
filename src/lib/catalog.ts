@@ -134,12 +134,25 @@ const TIME_ELAPSED: TriggerKindMeta = {
   }),
 };
 
+const PRICE_RELATIVE_TO_FILL: TriggerKindMeta = {
+  kind: "price_relative_to_fill",
+  label: "Relative to upstream fill",
+  description: "Fires when the token has moved a % from the upstream rule's effective fill price. Only valid on downstream consume-upstream-output chain rules.",
+  compatibleActions: ["swap"],
+  empty: () => ({
+    kind: "price_relative_to_fill",
+    upstream: null,
+    direction: "grow",
+    pctBps: null,
+  }),
+};
+
 export const TRIGGER_CATEGORIES: TriggerCategoryMeta[] = [
   {
     id: "asset_price",
     label: "Asset Price",
     description: "Track any asset (crypto, equity, FX, commodity, metal) against USD or a quote asset",
-    kinds: [ASSET_PRICE],
+    kinds: [ASSET_PRICE, PRICE_RELATIVE_TO_FILL],
   },
   {
     id: "track_account",
