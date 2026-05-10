@@ -6,6 +6,39 @@ use std::time::Duration;
 
 use crate::signer::{load_signer, KeeperSigner};
 
+/// Controls whether the streaming price paths (Hermes SSE, Lazer) are
+/// authoritative or run in parallel for comparison only.
+///
+/// - `Off` (default): only the legacy 12s Hermes poll drives the live
+///   price cache. Streaming SSE subscriber runs but writes to a separate
+///   shadow cache that nothing reads (prepared for Task 22's comparator).
+/// - `Shadow`: same as Off — legacy poll is authoritative — but the
+///   comparator (Task 22) is active and diffs the two caches.
+/// - `On`: streaming SSE is authoritative; the legacy 12s Hermes poll
+///   task is suppressed. Lazer always writes to the live cache regardless
+///   of mode (sub-second source, no conflict with poll suppression).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamMode {
+    Off,
+    Shadow,
+    On,
+}
+
+impl StreamMode {
+    pub fn from_env() -> Self {
+        match std::env::var("KEEPER_STREAM_MODE")
+            .ok()
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("on") => Self::On,
+            Some("shadow") => Self::Shadow,
+            _ => Self::Off,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cluster {
     Devnet,
@@ -96,6 +129,9 @@ pub struct KeeperConfig {
     /// the baseline for p95 escalation on retryable send failures.
     /// Env: KEEPER_PRIORITY_FEE_FLOOR. Default 50_000.
     pub priority_fee_floor: u64,
+    /// Streaming price path mode. See [`StreamMode`] for semantics.
+    /// Env: KEEPER_STREAM_MODE (off | shadow | on). Default: off.
+    pub stream_mode: StreamMode,
 }
 
 impl KeeperConfig {
@@ -169,6 +205,7 @@ impl KeeperConfig {
             .filter(|s| !s.trim().is_empty());
 
         let priority_fee_floor = parse_or::<u64>("KEEPER_PRIORITY_FEE_FLOOR", 50_000)?;
+        let stream_mode = StreamMode::from_env();
 
         Ok(Self {
             cluster,
@@ -198,6 +235,7 @@ impl KeeperConfig {
             jupiter_price_url,
             jupiter_api_key,
             priority_fee_floor,
+            stream_mode,
         })
     }
 }

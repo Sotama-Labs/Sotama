@@ -37,6 +37,10 @@ pub async fn run(
     trigger_tx: mpsc::Sender<TriggerEvent>,
     lazer_active_feeds_rx: watch::Receiver<HashSet<Pubkey>>,
     price_cache: PriceCache,
+    // When true, the inner 12s Hermes polling task is not spawned.
+    // Set by `main.rs` when `KEEPER_STREAM_MODE=on` so the SSE consumer
+    // is the sole writer to the live price cache.
+    suppress_poll: bool,
 ) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -92,6 +96,9 @@ pub async fn run(
     // configured interval (default 12s), writes each result into the shared
     // PriceCache (triggering the notify channel), and also updates the local
     // raw-price maps used by the evaluator for integer-precise comparisons.
+    //
+    // Suppressed when `suppress_poll` is true (i.e. KEEPER_STREAM_MODE=on):
+    // in that mode the Hermes SSE consumer is the sole writer to live_cache.
     let poll_cfg = cfg.clone();
     let poll_http = http.clone();
     let poll_set_rx = set_rx.clone();
@@ -103,7 +110,17 @@ pub async fn run(
     let poll_local_mint_quotes = local_mint_quotes.clone();
     let poll_local_hermes_quote_prices = local_hermes_quote_prices.clone();
 
+    if suppress_poll {
+        info!("price_watcher: 12s Hermes poll suppressed (KEEPER_STREAM_MODE=on; SSE is authoritative)");
+    }
+
     tokio::spawn(async move {
+        if suppress_poll {
+            // In On mode the SSE consumer drives the cache; the poll task
+            // sits idle. The evaluator loop still runs below, driven by
+            // the PriceCache notify that the SSE/Lazer paths fire.
+            return;
+        }
         let mut tick = poll_tick;
         loop {
             tick.tick().await;

@@ -26,7 +26,7 @@ mod time_watcher;
 mod types;
 mod vaults;
 
-use crate::config::KeeperConfig;
+use crate::config::{KeeperConfig, StreamMode};
 use crate::indexer::WatchedSet;
 
 #[tokio::main]
@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
         ws = %cfg.ws_url,
         sender = %cfg.sender_url,
         jupiter = %cfg.jupiter_base_url,
+        stream_mode = ?cfg.stream_mode,
         "sotama-keeper starting"
     );
 
@@ -83,7 +84,32 @@ async fn main() -> Result<()> {
         watch::channel::<HashSet<solana_sdk::pubkey::Pubkey>>(HashSet::new());
 
     // Shared PriceCache threaded through both Lazer and Hermes SSE paths.
+    // In all modes this is the cache the evaluator (price_watcher) reads.
     let price_cache = prices::cache::PriceCache::new();
+
+    // Shadow cache: populated by the SSE stream orchestrator in Off and
+    // Shadow modes. The evaluator does NOT read this cache — it exists
+    // solely for the Task 22 comparator to diff against live_cache.
+    // In On mode the SSE orchestrator writes directly to price_cache
+    // (live_cache), so shadow_cache is not needed.
+    let shadow_cache: Option<prices::cache::PriceCache> = match cfg.stream_mode {
+        StreamMode::Off | StreamMode::Shadow => Some(prices::cache::PriceCache::new()),
+        StreamMode::On => None,
+    };
+
+    // Choose which cache the SSE stream orchestrator writes into:
+    //   Off / Shadow → shadow_cache (observation only; Task 22 comparator reads it)
+    //   On           → price_cache  (live; the evaluator reads this)
+    let sse_target_cache = match &shadow_cache {
+        Some(sc) => sc.clone(),
+        None => price_cache.clone(),
+    };
+
+    info!(
+        mode = ?cfg.stream_mode,
+        sse_target = if shadow_cache.is_some() { "shadow_cache" } else { "live_cache" },
+        "stream mode configured"
+    );
 
     // Feed-ids broadcaster: every 2s, derive the active hex feed-id set
     // from the WatchedSet and publish it on a watch channel so the stream
@@ -104,11 +130,14 @@ async fn main() -> Result<()> {
     }
 
     // Stream orchestrator: manages the Hermes SSE subscription, restarting it
-    // whenever the feed-id set changes. Lazer writes to the same cache directly.
+    // whenever the feed-id set changes. In Off/Shadow modes it writes to the
+    // shadow_cache (observation only). In On mode it writes to price_cache
+    // (live; the evaluator reads this). Lazer always writes to price_cache
+    // regardless of mode — sub-second source, no conflict with poll.
     prices::stream::spawn(
         http_client.clone(),
         cfg.hermes_url.clone(),
-        price_cache.clone(),
+        sse_target_cache,
         feed_ids_rx,
     );
 
@@ -199,6 +228,11 @@ async fn main() -> Result<()> {
         })
     };
 
+    // In On mode the 12s Hermes poll is suppressed — the SSE consumer
+    // is writing to live_cache directly, so the poll would be redundant.
+    // In Off and Shadow modes the poll is the authoritative price source.
+    let suppress_hermes_poll = cfg.stream_mode == StreamMode::On;
+
     let price_handle = {
         let cfg = cfg.clone();
         let set_rx = set_rx.clone();
@@ -207,7 +241,7 @@ async fn main() -> Result<()> {
         let price_cache_for_watcher = price_cache.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher).await
+                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll).await
             {
                 error!(error = %e, "price_watcher task exited");
             }
