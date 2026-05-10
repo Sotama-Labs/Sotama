@@ -221,50 +221,63 @@ pub async fn seed_initial(cfg: &KeeperConfig) -> Result<Vec<AutomationCtx>> {
     fetch_active(&client, &cfg.program_id).await
 }
 
+/// Perform a single full reconcile: fetch all active automations via
+/// `getProgramAccounts`, build a fresh `WatchedSet`, and publish it via
+/// `set_tx.send_if_modified` when the fingerprint has changed.
+///
+/// Called by both the 60s periodic loop (`run`) and the reconnect handler
+/// in main.rs whenever a WS reconnect sentinel is received.
+pub async fn reconcile_once(
+    client: &RpcClient,
+    set_tx: &watch::Sender<WatchedSet>,
+    program_id: &Pubkey,
+) -> Result<()> {
+    let active = fetch_active(client, program_id).await?;
+    let new_set = WatchedSet::from_index(active);
+    let changed = set_tx.send_if_modified(|current| {
+        let prev_fp = current.fingerprint();
+        let next_fp = new_set.fingerprint();
+        if prev_fp == next_fp {
+            false
+        } else {
+            let prev_keys = current.account_set();
+            let next_keys = new_set.account_set();
+            let added: Vec<_> = next_keys.difference(&prev_keys).copied().collect();
+            let removed: Vec<_> = prev_keys.difference(&next_keys).copied().collect();
+            info!(
+                added = added.len(),
+                removed = removed.len(),
+                total = next_keys.len(),
+                account_targets = new_set.account_triggers.len(),
+                price_targets = new_set.price_triggers.len(),
+                "indexer: watched-set changed"
+            );
+            for p in &added {
+                debug!(pubkey = %p, "added");
+            }
+            for p in &removed {
+                debug!(pubkey = %p, "removed");
+            }
+            *current = new_set;
+            true
+        }
+    });
+    if !changed {
+        debug!(active = set_tx.borrow().len(), "indexer: reconcile (no change)");
+    }
+    Ok(())
+}
+
 pub async fn run(cfg: Arc<KeeperConfig>, set_tx: watch::Sender<WatchedSet>) -> Result<()> {
-    let client = Arc::new(make_client(&cfg));
+    let client = make_client(&cfg);
     let mut tick = interval(cfg.reconcile_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     tick.tick().await; // burn the immediate first tick — main already seeded.
 
     loop {
         tick.tick().await;
-        match fetch_active(&client, &cfg.program_id).await {
-            Ok(active) => {
-                let new_set = WatchedSet::from_index(active);
-                let changed = set_tx.send_if_modified(|current| {
-                    let prev_fp = current.fingerprint();
-                    let next_fp = new_set.fingerprint();
-                    if prev_fp == next_fp {
-                        false
-                    } else {
-                        let prev_keys = current.account_set();
-                        let next_keys = new_set.account_set();
-                        let added: Vec<_> = next_keys.difference(&prev_keys).copied().collect();
-                        let removed: Vec<_> = prev_keys.difference(&next_keys).copied().collect();
-                        info!(
-                            added = added.len(),
-                            removed = removed.len(),
-                            total = next_keys.len(),
-                            account_targets = new_set.account_triggers.len(),
-                            price_targets = new_set.price_triggers.len(),
-                            "indexer: watched-set changed"
-                        );
-                        for p in &added {
-                            debug!(pubkey = %p, "added");
-                        }
-                        for p in &removed {
-                            debug!(pubkey = %p, "removed");
-                        }
-                        *current = new_set;
-                        true
-                    }
-                });
-                if !changed {
-                    debug!(active = set_tx.borrow().len(), "indexer: reconcile (no change)");
-                }
-            }
-            Err(e) => warn!(error = %e, "indexer: reconcile failed (will retry)"),
+        if let Err(e) = reconcile_once(&client, &set_tx, &cfg.program_id).await {
+            warn!(error = %e, "indexer: reconcile failed (will retry)");
         }
     }
 }

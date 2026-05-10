@@ -127,12 +127,24 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Reconcile-on-reconnect stub. Task 10 will replace this with a real
-    // call into the indexer's reconcile API; for now we drain the channel
-    // so it never fills up and blocks the subscriber.
+    // Reconcile-on-reconnect: every WS reconnect sentinel drains into a
+    // real getProgramAccounts rescan so no automations are missed during
+    // the disconnect window.
+    let rpc_for_reconcile = rpc.clone();
+    let set_tx_for_reconcile = set_tx.clone();
+    let program_id_for_reconcile = cfg.program_id;
     let reconcile_drain_handle = tokio::spawn(async move {
-        while let Some(()) = reconcile_rx.recv().await {
-            tracing::debug!(target: "main", "reconcile signal received (handler in Task 10)");
+        while reconcile_rx.recv().await.is_some() {
+            tracing::info!(target: "main", "reconcile triggered by reconnect");
+            if let Err(e) = indexer::reconcile_once(
+                &rpc_for_reconcile,
+                &set_tx_for_reconcile,
+                &program_id_for_reconcile,
+            )
+            .await
+            {
+                tracing::warn!(target: "main", error = %e, "reconcile_once failed");
+            }
         }
     });
 
