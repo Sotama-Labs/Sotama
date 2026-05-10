@@ -434,23 +434,19 @@ pub async fn run(
                             // Quote snapshot not yet in the cache — skip this tick.
                             continue;
                         };
-                        if quote_snap.price <= 0.0 {
-                            // Guard against a bogus or zero quote price.
-                            continue;
-                        }
 
                         // f64 ratio comparison. Both legs are Pyth-sourced so
                         // f64's ~15 sig-digit precision is more than adequate for
                         // normal Pyth price ranges. Integer-precise comparison via
                         // raw_price+expo (both fields are Some for Pyth snapshots)
                         // is available as a future optimization if needed.
-                        let ratio = base_snap.price / quote_snap.price;
-                        let threshold_f64 = (*threshold as f64) * 10f64.powi(*expo);
-                        match *comparator {
-                            0 => ratio <= threshold_f64,
-                            1 => ratio >= threshold_f64,
-                            _ => false,
-                        }
+                        decide_pyth_quoted_ratio_cross(
+                            base_snap.price,
+                            quote_snap.price,
+                            *threshold,
+                            *expo,
+                            *comparator,
+                        )
                     }
                 };
 
