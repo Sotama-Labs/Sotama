@@ -394,13 +394,15 @@ export function LinkedChainBuilder({
         targetRect.top + targetRect.height / 2 - containerRect.top;
       let path: string;
       if (backLinkTarget.sourceIdx === backLinkTarget.targetIdx) {
-        // Self-link: leaf-shaped curl on the right side. Start and end
-        // are the same midpoint, control points offset above/below to
-        // form a teardrop. Tangent at the end approaches horizontally
-        // so the arrowhead reads as "pointing back into the card."
-        const offset = 60;
-        const tangent = 32;
-        path = `M ${sourceMidRightX} ${sourceMidRightY} C ${sourceMidRightX + offset} ${sourceMidRightY - tangent}, ${sourceMidRightX + offset} ${sourceMidRightY + tangent}, ${sourceMidRightX} ${sourceMidRightY}`;
+        // Self-link: open C-curve on the right side. The arrow leaves
+        // from above the card's mid-right and arrives at a separate
+        // point below, so start and end are visually distinct rather
+        // than collapsed onto a single coordinate.
+        const verticalSpread = 28;
+        const horizontalOffset = 56;
+        const startY = sourceMidRightY - verticalSpread;
+        const endY = sourceMidRightY + verticalSpread;
+        path = `M ${sourceMidRightX} ${startY} C ${sourceMidRightX + horizontalOffset} ${startY}, ${sourceMidRightX + horizontalOffset} ${endY}, ${sourceMidRightX} ${endY}`;
       } else {
         // Multi-card back-link: arc from source mid-right to target
         // mid-right. Control points sit horizontally to the right of
@@ -666,14 +668,11 @@ function LinkSlot({
   const closeMenu = () => setMenuOpen(false);
 
   // Build the list of valid back-link targets for this last card.
-  // Multi-card chain: any earlier rule (index 0..index-1).
-  // Single-card chain: only itself (index 0 == index).
+  // Any rule from the chain head up to and including this card itself
+  // is a legal target — the bridge dispatcher handles mismatched-mint
+  // self-loops by refilling the input ATA between fires.
   const backLinkTargets: number[] = [];
-  if (totalCards === 1) {
-    backLinkTargets.push(0);
-  } else {
-    for (let t = 0; t < index; t++) backLinkTargets.push(t);
-  }
+  for (let t = 0; t <= index; t++) backLinkTargets.push(t);
 
   const showKill = link != null;
   return (
@@ -1497,8 +1496,6 @@ function humanizeChainError(err: ChainValidationError): string {
   switch (err.kind) {
     case "non_swap_action":
       return `Rule ${err.nodeIndex + 1}: chain rules must be Swap actions.`;
-    case "loop_with_distinct_input_output":
-      return `Rule ${err.nodeIndex + 1}: self-link requires input and output tokens to match.`;
     case "head_must_have_seed_amount":
       return `Rule ${err.nodeIndex + 1}: head rule needs a positive amount.`;
   }

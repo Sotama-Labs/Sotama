@@ -69,4 +69,14 @@ describe("validateChainDraft (post-bridge)", () => {
     const err = validateChainDraft([{ result: nonSwap, next: null }]);
     assert.equal(err?.kind, "non_swap_action");
   });
+
+  it("accepts multi-card self-link with mismatched mints (bridge will refill)", () => {
+    // Rule 1 USDC→TKN feeds Rule 2 TKN→USDC, and Rule 2 self-links so
+    // its USDC output is bridged back into TKN before the next fire.
+    const nodes = [
+      { result: swap(USDC, TKN), next: { kind: "rule" as const, ruleIndex: 1 } },
+      { result: swap(TKN, USDC), next: { kind: "rule" as const, ruleIndex: 1 } },
+    ];
+    assert.equal(validateChainDraft(nodes), null);
+  });
 });

@@ -148,7 +148,6 @@ export function classifyChainLink(
  *  tokens — so the validator is strict. */
 export type ChainValidationError =
   | { kind: "non_swap_action"; nodeIndex: number }
-  | { kind: "loop_with_distinct_input_output"; nodeIndex: number }
   | { kind: "head_must_have_seed_amount"; nodeIndex: number };
 
 export function validateChainDraft(
@@ -176,18 +175,10 @@ export function validateChainDraft(
     if (!link) continue;
     const targetIdx = link.ruleIndex;
     if (targetIdx < 0 || targetIdx >= nodes.length) continue;
-    if (targetIdx === i) {
-      // Self-link only works on a 1-card chain where the swap output
-      // is routed back to owner (cadence-driven loop). For multi-card
-      // chains a self-link would require input mint = output mint —
-      // degenerate — so we reject it here. Single-card self-loops use
-      // `next: null` semantically (the loop is cadence-only), but the
-      // LoopModal can also produce ruleIndex=0 for clarity; treat that
-      // as valid only when it's the only node.
-      if (nodes.length > 1) {
-        return { kind: "loop_with_distinct_input_output", nodeIndex: i };
-      }
-    }
+    // Self-links and back-links are both valid in any chain shape now.
+    // For mismatched-mint self-links the bridge dispatcher refills the
+    // input ATA from the wrong-mint output ATA, so the rule keeps firing.
+    // sendChainCreate sets bridge_enabled accordingly.
   }
   return null;
 }
@@ -612,7 +603,14 @@ export async function sendChainCreate(params: {
         : result.cadence;
 
     const upstreamLinkClass = i === 0 ? null : linkClasses[i - 1];
-    const bridgeEnabled = upstreamLinkClass === "bridge_required";
+    // Self-link with mismatched mints needs the bridge too — the rule's
+    // own swap output lands in the wrong ATA, and the dispatcher refills
+    // the input ATA before the next fire.
+    const isSelfLink = node.next != null && node.next.ruleIndex === i;
+    const selfLinkNeedsBridge =
+      isSelfLink && classifyChainLink(node.result, node.result) === "bridge_required";
+    const bridgeEnabled =
+      upstreamLinkClass === "bridge_required" || selfLinkNeedsBridge;
 
     const built = await buildCreateAutomationSwapLinkedIx({
       program,
