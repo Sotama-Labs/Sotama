@@ -52,7 +52,7 @@ export const POPULAR_ASSETS: Record<AssetClass, AssetRef[]> = {
     asset("USDC", "USDC", "USD Coin", "Crypto", { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6, metadataSource: "canonical" }),
     asset("JUP", "JUP", "Jupiter", "Crypto", { mint: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", decimals: 6, metadataSource: "canonical" }),
     asset("BONK", "BONK", "Bonk", "Crypto", { mint: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", decimals: 5, metadataSource: "canonical" }),
-    asset("WIF", "WIF", "dogwifhat", "Crypto"),
+    asset("WIF", "WIF", "dogwifhat", "Crypto", { mint: "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", decimals: 6, metadataSource: "canonical" }),
     asset("PYTH", "PYTH", "Pyth Network", "Crypto", { mint: "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", decimals: 6, metadataSource: "canonical" }),
   ],
   Equity: [

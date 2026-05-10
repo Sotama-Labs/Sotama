@@ -18,7 +18,7 @@
    ───────────────────────────────────────────────────────────────────── */
 
 import type { AssetClass, AssetRef, OracleSource, QuoteRef } from "./types";
-import { displaySymbolFromBase, parsePythSymbol } from "./assets";
+import { displaySymbolFromBase, parsePythSymbol, POPULAR_ASSETS } from "./assets";
 import { fetchJupiterPriceUSD } from "./jupiter";
 
 const HERMES =
@@ -126,9 +126,22 @@ export async function searchFeedsByClass(
       })();
       if (better) byTicker.set(cand.ticker, cand);
     }
+    // Pre-index POPULAR_ASSETS for this class so Hermes-found tickers
+    // can inherit the canonical SPL `mint`/`decimals` metadata. Without
+    // this, a typed-search hit ("SOL") returns a mintless AssetRef —
+    // and using that as a quote for a Jupiter-base trigger silently
+    // fails resolveJupiter's `quote.asset.mint` requirement, leaving
+    // the editor stuck on switchboard_pending with no live preview.
+    const popular = POPULAR_ASSETS[assetClass] ?? [];
+    const popularBySymbol = new Map(popular.map((p) => [p.symbol.toUpperCase(), p]));
     for (const [ticker, cand] of byTicker) {
       if (seen.has(ticker)) continue;
       seen.add(ticker);
+      const popularMatch = popularBySymbol.get(ticker.toUpperCase());
+      if (popularMatch) {
+        out.push(popularMatch);
+        continue;
+      }
       // Hermes serves human-readable names in `attributes.description`
       // (e.g. "NVIDIA Corp", "Japanese Yen"). Falling back to the empty
       // string used to render "<TICKER>\n" with no second line in
