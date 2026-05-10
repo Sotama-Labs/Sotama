@@ -19,6 +19,7 @@ mod revalidate;
 mod shard;
 mod signer;
 mod state;
+mod streaming;
 mod subscriber;
 mod time_watcher;
 mod types;
