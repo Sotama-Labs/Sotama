@@ -1,4 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 use solana_sdk::pubkey::Pubkey;
 
 use crate::program::automation_discriminator;
@@ -170,4 +171,75 @@ pub enum Monitor {
     Time {
         duration_secs: u32,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Anchor event mirrors — must match programs/sotama_automations/src/events.rs
+// byte-for-byte. Used by the keeper's log decoder (Task 8).
+// ---------------------------------------------------------------------------
+
+/// Mirror of `AutomationCreated` event.
+/// Field order mirrors the on-chain layout in events.rs exactly.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AutomationCreatedEvent {
+    pub automation: Pubkey,
+    pub owner: Pubkey,
+    pub nonce: u64,
+    pub trigger_kind: u8,
+    pub action_kind: u8,
+    pub trigger_pubkey: Pubkey,
+    pub cadence_kind: u8,
+}
+
+/// Mirror of `AutomationUpdated` event.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AutomationUpdatedEvent {
+    pub automation: Pubkey,
+    pub change_kind: u8,
+}
+
+/// Mirror of `AutomationFinished` event.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AutomationFinishedEvent {
+    pub automation: Pubkey,
+    pub reason: u8,
+}
+
+/// Compute the Anchor event discriminator: `sha256("event:<EventName>")[..8]`.
+pub fn anchor_event_discriminator(name: &str) -> [u8; 8] {
+    let mut h = Sha256::new();
+    h.update(format!("event:{}", name).as_bytes());
+    let out = h.finalize();
+    let mut d = [0u8; 8];
+    d.copy_from_slice(&out[..8]);
+    d
+}
+
+#[cfg(test)]
+mod tests_events {
+    use super::*;
+
+    #[test]
+    fn discriminator_matches_anchor_format() {
+        let d = anchor_event_discriminator("AutomationCreated");
+        assert_eq!(d.len(), 8);
+        assert_eq!(d, anchor_event_discriminator("AutomationCreated"));
+        assert_ne!(d, anchor_event_discriminator("AutomationUpdated"));
+    }
+
+    #[test]
+    fn round_trips_created_event() {
+        let ev = AutomationCreatedEvent {
+            automation: Pubkey::new_unique(),
+            owner: Pubkey::new_unique(),
+            nonce: 42,
+            trigger_kind: 1,
+            action_kind: 4,
+            trigger_pubkey: Pubkey::new_unique(),
+            cadence_kind: 2,
+        };
+        let bytes = borsh::to_vec(&ev).unwrap();
+        let back = AutomationCreatedEvent::try_from_slice(&bytes).unwrap();
+        assert_eq!(ev, back);
+    }
 }
