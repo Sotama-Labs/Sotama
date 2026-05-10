@@ -1,6 +1,11 @@
 "use client";
 
-import type { DraftTimeElapsed, TimeElapsedUnit } from "@/lib/types";
+import {
+  UI_MAX_TIME_ELAPSED_BY_UNIT,
+  clampTimeElapsed,
+  type DraftTimeElapsed,
+  type TimeElapsedUnit,
+} from "@/lib/types";
 import { AmountInput } from "../AmountInput";
 import { EditorShell, FieldRow } from "../EditorShell";
 
@@ -50,7 +55,7 @@ export function TimeElapsedEditor({
           presets={PRESETS_BY_UNIT[draft.unit]}
           unit={draft.unit}
           unitSingular={SINGULAR[draft.unit]}
-          onChange={(v) => onChange({ ...draft, value: v })}
+          onChange={(v) => onChange({ ...draft, value: clampTimeElapsed(v, draft.unit) })}
           onCommit={ready ? onConfirm : undefined}
           placeholder="0"
         />
@@ -72,7 +77,11 @@ export function TimeElapsedEditor({
             return (
               <button
                 key={opt.value}
-                onClick={() => onChange({ ...draft, unit: opt.value })}
+                onClick={() => onChange({
+                  ...draft,
+                  unit: opt.value,
+                  value: clampTimeElapsed(draft.value, opt.value),
+                })}
                 className="hig-footnote"
                 style={{
                   flex: 1,
@@ -90,6 +99,15 @@ export function TimeElapsedEditor({
           })}
         </div>
       </FieldRow>
+
+      {draft.value != null && draft.value === UI_MAX_TIME_ELAPSED_BY_UNIT[draft.unit] && (
+        <div
+          className="hig-caption-1"
+          style={{ color: "var(--label-tertiary)", padding: "0.25rem 0.125rem" }}
+        >
+          Capped at 30 days. Use a longer cadence by chaining rules.
+        </div>
+      )}
     </EditorShell>
   );
 }

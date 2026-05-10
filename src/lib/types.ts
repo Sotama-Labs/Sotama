@@ -99,6 +99,24 @@ export type TimeElapsedUnit = "minutes" | "hours" | "days";
  *  `MAX_TIME_ELAPSED_SECS` constant (~366 days). */
 export const MAX_TIME_ELAPSED_SECS = 366 * 24 * 60 * 60;
 
+/** UI-level cap on TimeElapsed durations: 30 days. Tighter than the
+ *  on-chain limit; longer cadences should be expressed as chained rules
+ *  rather than a single very long sleep. Applied as both a value clamp
+ *  per unit and a re-clamp when the user switches units. */
+export const UI_MAX_TIME_ELAPSED_BY_UNIT: Record<TimeElapsedUnit, number> = {
+  minutes: 30 * 24 * 60, // 43200
+  hours: 30 * 24,        // 720
+  days: 30,
+};
+
+export function clampTimeElapsed(
+  value: number | null,
+  unit: TimeElapsedUnit,
+): number | null {
+  if (value == null) return null;
+  return Math.min(Math.max(value, 1), UI_MAX_TIME_ELAPSED_BY_UNIT[unit]);
+}
+
 /** Convert a (value, unit) pair to seconds. Floors to integer because
  *  the on-chain field is u32. */
 export function timeElapsedToSecs(value: number, unit: TimeElapsedUnit): number {
