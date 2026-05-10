@@ -339,17 +339,39 @@ impl Automation {
         }
     }
 
+    /// Returns `true` if this automation's `Until`-cadence deadline has
+    /// passed and it has not yet been marked finished. When this returns
+    /// `true`, the caller **must** set `self.finished = true` and emit
+    /// `AutomationFinished` before returning `Ok(())` — the automation is
+    /// terminal but no action should fire.
+    ///
+    /// Returns `false` for any non-`Until` cadence, or for an automation
+    /// that is already finished, or for an `Until` whose deadline has not
+    /// yet elapsed.
+    pub fn is_until_expired(&self, now: i64) -> bool {
+        if self.finished {
+            return false;
+        }
+        match self.cadence {
+            Cadence::Until { unix_deadline } => now > unix_deadline,
+            _ => false,
+        }
+    }
+
     /// Pre-flight check before executing an action. Run by every
     /// `execute_*` handler so the gating logic stays in one place.
     /// Returns `Err` if the automation must not fire right now;
     /// otherwise returns `Ok(())` and the caller proceeds with the CPI.
     ///
-    /// Three things are enforced:
+    /// Two things are enforced:
     ///   1. The automation isn't already finished.
     ///   2. `min_interval_secs` has elapsed since the last fire.
-    ///   3. For `Cadence::Until`, the deadline hasn't passed. (Past the
-    ///      deadline, we mark `finished = true` and return
-    ///      `DeadlineExpired` so the keeper learns to stop polling it.)
+    ///
+    /// Note: `Until`-cadence deadline expiry is handled *before* this call
+    /// in each execute handler (via `is_until_expired`), so this function
+    /// never sees an expired-deadline `Until` automation. `DeadlineExpired`
+    /// is kept for any future cadence that carries a hard deadline and
+    /// should still surface as an error rather than a silent terminal fire.
     pub fn check_can_fire(&mut self, now: i64) -> Result<()> {
         require!(!self.finished, SotamaError::AutomationFinished);
 
@@ -358,13 +380,6 @@ impl Automation {
                 .executed_at
                 .saturating_add(self.min_interval_secs as i64);
             require!(now >= earliest, SotamaError::MinIntervalNotElapsed);
-        }
-
-        if let Cadence::Until { unix_deadline } = self.cadence {
-            if now > unix_deadline {
-                self.finished = true;
-                return err!(SotamaError::DeadlineExpired);
-            }
         }
 
         Ok(())

@@ -54,6 +54,7 @@ const action = {
 
 const cadence = {
   once: () => ({ once: {} }),
+  until: (unixDeadline: BN) => ({ until: { unixDeadline } }),
 };
 
 // ── suite ────────────────────────────────────────────────────────────────────
@@ -289,6 +290,87 @@ describe("lifecycle events", () => {
       finishedEvents[0].automation.toBase58(),
       auto.toBase58(),
       "automation pubkey matches"
+    );
+  });
+
+  // ── Test 4: AutomationFinished on Until-deadline expiry ───────────────────
+
+  it("emits AutomationFinished (reason=0) and sets finished when Until deadline has passed", async () => {
+    const finishedEvents: any[] = [];
+    const listenerF = program.addEventListener("automationFinished", (ev) => {
+      finishedEvents.push(ev);
+    });
+
+    // Create an Until automation with a deadline 1 second in the future.
+    const cfg = await program.account.config.fetch(configPda);
+    const nonce = BigInt(cfg.automationCount.toString());
+    const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    const amount = new BN(0.05 * LAMPORTS_PER_SOL);
+
+    // Set deadline 2 seconds in the future. At 400 ms / slot, 2 s is ~5 slots,
+    // which is enough for the on-chain unix_timestamp to advance past it.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const deadline = new BN(nowSec + 2);
+
+    await program.methods
+      .createAutomation(
+        trigger.accountTransfer(watched.publicKey),
+        action.transferSol(destination.publicKey, amount),
+        cadence.until(deadline),
+        0
+      )
+      .accountsStrict({
+        owner: owner.publicKey,
+        config: configPda,
+        automation: auto,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner])
+      .rpc();
+
+    // Wait long enough for the on-chain clock to advance past the deadline.
+    // solana-test-validator ticks ~1 slot per 400 ms; we wait 6 seconds
+    // (~15 slots) to be well clear of the 2-second deadline.
+    await new Promise((r) => setTimeout(r, 6000));
+
+    // Execute — deadline has passed so the handler should terminate without
+    // firing the action and emit AutomationFinished(reason=0).
+    await program.methods
+      .executeAutomation()
+      .accountsStrict({
+        keeper: adminAndKeeper.publicKey,
+        config: configPda,
+        automation: auto,
+        destination: destination.publicKey,
+      })
+      .rpc();
+
+    await new Promise((r) => setTimeout(r, 1500));
+    await program.removeEventListener(listenerF);
+
+    // AutomationFinished with reason=0 must have been emitted.
+    assert.equal(
+      finishedEvents.length,
+      1,
+      "one AutomationFinished event for Until-deadline expiry"
+    );
+    assert.equal(
+      finishedEvents[0].reason,
+      0,
+      "reason = 0 (terminal — Until deadline reached)"
+    );
+    assert.equal(
+      finishedEvents[0].automation.toBase58(),
+      auto.toBase58(),
+      "automation pubkey matches"
+    );
+
+    // The on-chain account must have finished = true.
+    const acct = await program.account.automation.fetch(auto);
+    assert.equal(
+      acct.finished,
+      true,
+      "automation.finished is true after Until deadline expiry"
     );
   });
 });

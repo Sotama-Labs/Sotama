@@ -58,6 +58,16 @@ pub fn handler(ctx: Context<ExecuteAutomationSpl>) -> Result<()> {
 
     let automation = &mut ctx.accounts.automation;
     let now = Clock::get()?.unix_timestamp;
+
+    if automation.is_until_expired(now) {
+        automation.finished = true;
+        emit!(AutomationFinished {
+            automation: automation.key(),
+            reason: 0, // terminal — Until deadline reached
+        });
+        return Ok(());
+    }
+
     automation.check_can_fire(now)?;
 
     let (destination_wallet, mint_key, amount) = match &automation.action {
