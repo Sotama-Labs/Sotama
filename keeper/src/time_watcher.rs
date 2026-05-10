@@ -84,6 +84,7 @@ pub async fn run(
             correlation: format!("time:{now}"),
             matches: due,
             depth: 0,
+            snapshot: None,
         };
         if trigger_tx.send(evt).await.is_err() {
             // Executor channel closed — shutdown in progress.

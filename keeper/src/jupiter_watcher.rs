@@ -31,6 +31,7 @@ use crate::price_watcher::{
     crossed_above, crossed_below, fetch_prices as fetch_pyth_prices, pubkey_to_hex, ratio_compare,
     LatestPrice,
 };
+use crate::prices::cache::{PriceSnapshot, SourceLayer};
 use crate::pyth_catalog::{self, PythCatalog};
 use crate::state::{oracle_source, TriggerSpec};
 use crate::types::{AutomationCtx, TriggerEvent};
@@ -187,7 +188,8 @@ pub async fn run(
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let mut to_fire: HashMap<String, Vec<AutomationCtx>> = HashMap::new();
+        // Map: correlation_key → (matches, snapshot_for_this_mint).
+        let mut to_fire: HashMap<String, (Vec<AutomationCtx>, PriceSnapshot)> = HashMap::new();
         let mut already: HashSet<Pubkey> = HashSet::new();
 
         for mint in &base_mints {
@@ -245,12 +247,23 @@ pub async fn run(
                 };
                 if crossed {
                     let key = format!("jupiter:{}:{now_unix}", mint);
-                    to_fire.entry(key).or_default().push(ctx.clone());
+                    // Jupiter REST doesn't carry a conf value; publish_time
+                    // approximated with now_unix. SourceLayer::HermesPoll is
+                    // the closest analogue for a REST poll path.
+                    let snap = PriceSnapshot {
+                        price: *price as f64 * 10f64.powi(JUPITER_PRICE_EXPO),
+                        conf: 0.0,
+                        publish_time: now_unix,
+                        fetched_at: std::time::Instant::now(),
+                        source: SourceLayer::HermesPoll,
+                    };
+                    let entry = to_fire.entry(key).or_insert_with(|| (Vec::new(), snap));
+                    entry.0.push(ctx.clone());
                 }
             }
         }
 
-        for (correlation, matches) in to_fire {
+        for (correlation, (matches, snap)) in to_fire {
             info!(
                 count = matches.len(),
                 correlation,
@@ -261,6 +274,7 @@ pub async fn run(
                 correlation,
                 matches,
                 depth: 0,
+                snapshot: Some(snap),
             };
             if let Err(e) = trigger_tx.send(evt).await {
                 return Err(anyhow!("jupiter_watcher: trigger channel closed: {e}"));

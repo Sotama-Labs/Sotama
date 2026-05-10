@@ -511,16 +511,14 @@ async fn process_feed_update(
     // additional Hermes round-trip. The feed_id key is the hex-encoded
     // Hermes bytes, matching the format used by hermes_sse and active_feed_ids.
     let scale = 10f64.powi(expo);
-    price_cache.put(
-        hex::encode(hermes_bytes),
-        PriceSnapshot {
-            price: raw as f64 * scale,
-            conf: 0.0, // Lazer parsed feed doesn't carry a separate conf field
-            publish_time,
-            fetched_at: std::time::Instant::now(),
-            source: SourceLayer::Lazer,
-        },
-    ).await;
+    let snap = PriceSnapshot {
+        price: raw as f64 * scale,
+        conf: 0.0, // Lazer parsed feed doesn't carry a separate conf field
+        publish_time,
+        fetched_at: std::time::Instant::now(),
+        source: SourceLayer::Lazer,
+    };
+    price_cache.put(hex::encode(hermes_bytes), snap.clone()).await;
 
     let latest = LatestPrice {
         raw,
@@ -563,6 +561,7 @@ async fn process_feed_update(
         correlation,
         matches: to_fire,
         depth: 0,
+        snapshot: Some(snap),
     };
     if let Err(e) = trigger_tx.send(evt).await {
         warn!(error = %e, "lazer_watcher: trigger channel closed");

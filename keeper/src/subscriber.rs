@@ -195,6 +195,7 @@ async fn shard_loop(
                 correlation: signature.clone(),
                 matches: filtered,
                 depth: 0,
+                snapshot: None,
             };
             if let Err(e) = trigger_tx.send(evt).await {
                 error!(error = %e, "shard: trigger channel closed");

@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::JupiterClient;
+use crate::prices::cache::{PriceSnapshot, SourceLayer};
 use crate::pyth_catalog::{self, PythCatalog};
 use crate::state::TriggerSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
@@ -141,7 +142,8 @@ pub async fn run(
             }
         }
 
-        let mut to_fire: HashMap<String, Vec<AutomationCtx>> = HashMap::new();
+        // Map: correlation_key → (matches, snapshot_for_this_feed).
+        let mut to_fire: HashMap<String, (Vec<AutomationCtx>, PriceSnapshot)> = HashMap::new();
         let mut already: HashSet<Pubkey> = HashSet::new();
 
         for feed in &feeds {
@@ -203,12 +205,20 @@ pub async fn run(
                 };
                 if crossed {
                     let key = format!("{}:{}", feed_str, price.publish_time);
-                    to_fire.entry(key).or_default().push(ctx.clone());
+                    let snap = PriceSnapshot {
+                        price: price.raw as f64 * 10f64.powi(price.expo),
+                        conf: 0.0,
+                        publish_time: price.publish_time,
+                        fetched_at: std::time::Instant::now(),
+                        source: SourceLayer::HermesPoll,
+                    };
+                    let entry = to_fire.entry(key).or_insert_with(|| (Vec::new(), snap));
+                    entry.0.push(ctx.clone());
                 }
             }
         }
 
-        for (correlation, matches) in to_fire {
+        for (correlation, (matches, snap)) in to_fire {
             info!(
                 count = matches.len(),
                 correlation,
@@ -219,6 +229,7 @@ pub async fn run(
                 correlation,
                 matches,
                 depth: 0,
+                snapshot: Some(snap),
             };
             if let Err(e) = trigger_tx.send(evt).await {
                 return Err(anyhow!("price_watcher: trigger channel closed: {e}"));

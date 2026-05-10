@@ -176,4 +176,10 @@ pub struct TriggerEvent {
     /// The executor uses this to bundle `execute_link_fee_debit` (only
     /// when depth > 0) and to enforce a depth cap (drops past 3).
     pub depth: u8,
+    /// Price snapshot the watcher used when it decided to fire. `Some`
+    /// for price-driven triggers (AssetPrice / PriceRatio crossings from
+    /// price_watcher, lazer_watcher, jupiter_watcher). `None` for
+    /// non-price triggers (TimeElapsed, AccountActivity). Task 19 will
+    /// wire this into the executor to replace the revalidate re-fetch.
+    pub snapshot: Option<crate::prices::cache::PriceSnapshot>,
 }
