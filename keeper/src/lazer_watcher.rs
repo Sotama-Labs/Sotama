@@ -34,7 +34,7 @@ use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use pyth_lazer_protocol::api::{
     Channel, DeliveryFormat, Format, JsonBinaryEncoding, ParsedFeedPayload, SubscribeRequest,
-    SubscriptionId, SubscriptionParams, SubscriptionParamsRepr, WsResponse,
+    SubscriptionId, SubscriptionParams, SubscriptionParamsRepr, WsRequest, WsResponse,
 };
 use pyth_lazer_protocol::time::FixedRate;
 use pyth_lazer_protocol::{PriceFeedId, PriceFeedProperty};
@@ -357,7 +357,11 @@ async fn send_subscribe(
     // for everything since we only ever have one subscription per
     // connection (we delta-subscribe by adding ids to the same
     // subscription rather than creating a new one).
-    let req = SubscribeRequest {
+    // Lazer's WS protocol uses a tagged-enum request envelope
+    // (`WsRequest` with `#[serde(tag = "type")]`); sending a bare
+    // SubscribeRequest produces a JSON with no `type` field and the
+    // server rejects it as "invalid request: missing field `type`".
+    let req = WsRequest::Subscribe(SubscribeRequest {
         subscription_id: SubscriptionId(1),
         params: SubscriptionParams::new(SubscriptionParamsRepr {
             price_feed_ids: Some(feeds.iter().copied().map(PriceFeedId).collect()),
@@ -375,7 +379,7 @@ async fn send_subscribe(
             ignore_invalid_feeds: true,
         })
         .map_err(|e| anyhow!("invalid subscribe params: {e}"))?,
-    };
+    });
     let json = serde_json::to_string(&req).context("serialize subscribe")?;
     ws.send(Message::Text(json.into())).await.context("ws send subscribe")?;
     Ok(())
