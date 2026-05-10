@@ -510,6 +510,9 @@ async fn process_feed_update(
     // consumers (e.g. the stream orchestrator) can read it without an
     // additional Hermes round-trip. The feed_id key is the hex-encoded
     // Hermes bytes, matching the format used by hermes_sse and active_feed_ids.
+    // raw_price + expo are populated so the cache-driven evaluator in
+    // price_watcher can perform Pyth-quoted ratio comparisons without
+    // falling back to the slower 12s poll path.
     let scale = 10f64.powi(expo);
     let snap = PriceSnapshot {
         price: raw as f64 * scale,
@@ -517,6 +520,8 @@ async fn process_feed_update(
         publish_time,
         fetched_at: std::time::Instant::now(),
         source: SourceLayer::Lazer,
+        raw_price: Some(raw),
+        expo: Some(expo),
     };
     price_cache.put(hex::encode(hermes_bytes), snap.clone()).await;
 

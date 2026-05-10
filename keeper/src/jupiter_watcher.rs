@@ -250,12 +250,20 @@ pub async fn run(
                     // Jupiter REST doesn't carry a conf value; publish_time
                     // approximated with now_unix. SourceLayer::HermesPoll is
                     // the closest analogue for a REST poll path.
+                    // raw_price + expo are None: Jupiter returns f64 prices
+                    // only and has no Pyth integer-wire format, so there is
+                    // no integer mantissa to preserve here. Pyth-quoted ratio
+                    // triggers via the cache-driven evaluator require both legs
+                    // to be Pyth-sourced; Jupiter-based snapshots cannot
+                    // participate in that path.
                     let snap = PriceSnapshot {
                         price: *price as f64 * 10f64.powi(JUPITER_PRICE_EXPO),
                         conf: 0.0,
                         publish_time: now_unix,
                         fetched_at: std::time::Instant::now(),
                         source: SourceLayer::HermesPoll,
+                        raw_price: None,
+                        expo: None,
                     };
                     let entry = to_fire.entry(key).or_insert_with(|| (Vec::new(), snap));
                     entry.0.push(ctx.clone());

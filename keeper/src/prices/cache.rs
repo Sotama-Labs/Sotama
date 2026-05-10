@@ -29,6 +29,13 @@ pub struct PriceSnapshot {
     pub publish_time: i64,
     pub fetched_at: Instant,
     pub source: SourceLayer,
+    /// Integer mantissa from the Pyth payload (Lazer or Hermes). `Some` when
+    /// the snapshot originates from a Pyth wire format (Lazer or Hermes SSE/poll);
+    /// `None` for Jupiter-derived snapshots, which don't carry integer prices.
+    pub raw_price: Option<i64>,
+    /// Exponent that scales `raw_price` to a real price (`price = raw_price * 10^expo`).
+    /// Always `Some` when `raw_price` is `Some`, and `None` otherwise.
+    pub expo: Option<i32>,
 }
 
 #[derive(Clone, Default)]
@@ -85,11 +92,13 @@ mod tests {
         c.put("BTC".into(), PriceSnapshot {
             price: 100.0, conf: 1.0, publish_time: 0,
             fetched_at: Instant::now(), source: SourceLayer::Lazer,
+            raw_price: Some(10_000_000_000i64), expo: Some(-8),
         }).await;
         // Try to overwrite with HermesPoll — should be rejected.
         c.put("BTC".into(), PriceSnapshot {
             price: 999.0, conf: 1.0, publish_time: 0,
             fetched_at: Instant::now(), source: SourceLayer::HermesPoll,
+            raw_price: Some(99_900_000_000i64), expo: Some(-8),
         }).await;
         let got = c.get_fresh("BTC").await.unwrap();
         assert_eq!(got.price, 100.0);
@@ -102,6 +111,7 @@ mod tests {
         c.put("ETH".into(), PriceSnapshot {
             price: 5.0, conf: 0.1, publish_time: 0,
             fetched_at: too_old, source: SourceLayer::Lazer,
+            raw_price: Some(500_000_000i64), expo: Some(-8),
         }).await;
         assert!(c.get_fresh("ETH").await.is_none());
     }

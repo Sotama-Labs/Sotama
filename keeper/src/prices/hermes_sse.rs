@@ -64,12 +64,17 @@ async fn handle_payload(payload: &str, cache: &PriceCache) {
         let conf_raw: i64 = price_obj.get("conf").and_then(|x| x.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
         let publish_time = price_obj.get("publish_time").and_then(|x| x.as_i64()).unwrap_or(0);
         let scale = 10f64.powi(expo as i32);
+        // raw_price + expo preserved so the cache-driven evaluator in
+        // price_watcher can compute Pyth-quoted ratio triggers (e.g. SOL/EUR)
+        // without a fallback to the 12s Hermes poll path.
         let snap = PriceSnapshot {
             price: price_raw as f64 * scale,
             conf: conf_raw as f64 * scale,
             publish_time,
             fetched_at: Instant::now(),
             source: SourceLayer::HermesSse,
+            raw_price: Some(price_raw),
+            expo: Some(expo as i32),
         };
         cache.put(id.to_string(), snap).await;
     }
