@@ -173,7 +173,7 @@ impl KeeperConfig {
         let program_id = Pubkey::from_str(&program_id_str)
             .with_context(|| format!("invalid PROGRAM_ID `{program_id_str}`"))?;
 
-        let reconcile_interval = Duration::from_secs(parse_or("RECONCILE_INTERVAL_SECS", 60)?);
+        let reconcile_interval = Duration::from_secs(parse_or("RECONCILE_INTERVAL_SECS", 300)?);
         let price_poll_interval = Duration::from_secs(parse_or("PRICE_POLL_INTERVAL_SECS", 12)?);
         let fee_topup_scan_interval =
             Duration::from_secs(parse_or("FEE_TOPUP_SCAN_INTERVAL_SECS", 300)?);
