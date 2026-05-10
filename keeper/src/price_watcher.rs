@@ -5,12 +5,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::JupiterClient;
+use crate::prices::adaptive_poll;
 use crate::prices::cache::{PriceCache, PriceSnapshot, SourceLayer};
 use crate::pyth_catalog::{self, PythCatalog};
 use crate::state::TriggerSpec;
@@ -45,8 +46,6 @@ pub async fn run(
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .build()?;
-    let mut poll_tick = interval(cfg.price_poll_interval);
-    poll_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let jupiter = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
 
@@ -121,9 +120,7 @@ pub async fn run(
             // the PriceCache notify that the SSE/Lazer paths fire.
             return;
         }
-        let mut tick = poll_tick;
         loop {
-            tick.tick().await;
             let set = poll_set_rx.borrow().clone();
             let lazer_active: HashSet<Pubkey> = poll_lazer_rx.borrow().clone();
 
@@ -228,6 +225,27 @@ pub async fn run(
                 let mut g = poll_local_mint_quotes.write().await;
                 *g = mq;
             }
+
+            // Compute the next sleep duration based on how close any active
+            // absolute-price trigger is to its threshold. Ratio and
+            // quote_mint triggers are skipped here (distance metric differs);
+            // the loop falls back to cfg.price_poll_interval when no
+            // absolute triggers are active so the cache stays warm.
+            let distances = {
+                let lp = poll_local_prices.read().await;
+                compute_active_distances(&set, &lp)
+            };
+            let next_sleep = if distances.is_empty() {
+                poll_cfg.price_poll_interval
+            } else {
+                adaptive_poll::min_interval(&distances)
+            };
+            debug!(
+                next_sleep_ms = next_sleep.as_millis(),
+                active_triggers = distances.len(),
+                "price_watcher: adaptive sleep before next Hermes poll"
+            );
+            tokio::time::sleep(next_sleep).await;
         }
     });
 
@@ -578,6 +596,54 @@ pub fn pubkey_to_hex(p: &Pubkey) -> String {
     s
 }
 
+/// Compute the per-trigger distance to threshold for all absolute-price
+/// (non-ratio, non-quote_mint) PYTH triggers that have a current price in
+/// `local_prices`. Distance is `|price - threshold| / |threshold|`.
+///
+/// Ratio and quote_mint triggers are skipped — their distance metric is
+/// more complex and they'll be covered by the fallback cadence
+/// (`cfg.price_poll_interval`) when they dominate.
+///
+/// Returns an empty Vec when there are no absolute-price triggers with a
+/// known current price, which causes the caller to fall back to the
+/// configured baseline poll interval.
+pub(crate) fn compute_active_distances(
+    set: &WatchedSet,
+    local_prices: &HashMap<String, LatestPrice>,
+) -> Vec<f64> {
+    let mut out = Vec::new();
+    for (feed, ctxs) in &set.price_triggers {
+        let feed_hex = pubkey_to_hex(feed);
+        let Some(price) = local_prices.get(&feed_hex) else {
+            continue;
+        };
+        for ctx in ctxs {
+            let TriggerSpec::AssetPrice {
+                quote_mint: None, // skip ratio/quote_mint triggers
+                threshold,
+                expo,
+                source,
+                ..
+            } = &ctx.trigger
+            else {
+                continue;
+            };
+            // Only compute distance for PYTH-sourced absolute triggers.
+            if *source != crate::state::oracle_source::PYTH {
+                continue;
+            }
+            if *threshold == 0 {
+                continue;
+            }
+            let threshold_f64 = (*threshold as f64) * 10f64.powi(*expo);
+            let price_f64 = price.raw as f64 * 10f64.powi(price.expo);
+            let distance = (price_f64 - threshold_f64).abs() / threshold_f64.abs();
+            out.push(distance);
+        }
+    }
+    out
+}
+
 /// Compare normalized prices. We match exponents by left-shifting the
 /// lower-precision value to the higher precision, then comparing as i128.
 /// This avoids floating-point drift around the threshold.
@@ -605,6 +671,9 @@ fn align(a_raw: i64, a_expo: i32, b_raw: i64, b_expo: i32) -> (i128, i128) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::oracle_source;
+    use crate::types::AutomationCtx;
+    use crate::state::{ActionSpec, TriggerSpec};
 
     fn px(raw: i64, expo: i32) -> LatestPrice {
         LatestPrice {
@@ -628,5 +697,57 @@ mod tests {
         assert!(crossed_above(&px(20_000, -2), 150, 0));
         // SOL at $100 vs threshold $150 — not crossed
         assert!(!crossed_above(&px(10_000, -2), 150, 0));
+    }
+
+    /// Helper: build a minimal AutomationCtx with an absolute-price AssetPrice
+    /// trigger (no quote_mint) using PYTH as source.
+    fn price_ctx(feed: Pubkey, threshold: i64, expo: i32) -> AutomationCtx {
+        AutomationCtx {
+            pubkey: Pubkey::new_unique(),
+            owner: Pubkey::new_unique(),
+            nonce: 0,
+            created_at: 0,
+            trigger: TriggerSpec::AssetPrice {
+                feed,
+                quote_mint: None,
+                comparator: 1,
+                threshold,
+                expo,
+                source: oracle_source::PYTH,
+            },
+            action: ActionSpec::TransferSol {
+                destination: Pubkey::new_unique(),
+                amount: 1_000_000,
+            },
+            bridge_enabled: false,
+        }
+    }
+
+    #[test]
+    fn compute_distances_empty_watched_set() {
+        let set = WatchedSet::default();
+        let local: HashMap<String, LatestPrice> = HashMap::new();
+        let distances = compute_active_distances(&set, &local);
+        assert!(distances.is_empty());
+    }
+
+    #[test]
+    fn compute_distances_single_trigger_one_percent_away() {
+        // Threshold: $100.00 (threshold=10000, expo=-2 → 10000 * 10^-2 = 100)
+        // Current price: $101.00 (raw=10100, expo=-2)
+        // Expected distance: (101 - 100).abs() / 100 = 0.01
+        let feed = Pubkey::new_unique();
+        let ctx = price_ctx(feed, 10_000, -2);
+        let set = WatchedSet::from_index(vec![ctx]);
+
+        let feed_hex = pubkey_to_hex(&feed);
+        let mut local: HashMap<String, LatestPrice> = HashMap::new();
+        local.insert(feed_hex, LatestPrice { raw: 10_100, expo: -2, publish_time: 0 });
+
+        let distances = compute_active_distances(&set, &local);
+        assert_eq!(distances.len(), 1);
+        let d = distances[0];
+        // Allow small floating-point tolerance.
+        assert!((d - 0.01).abs() < 1e-9, "distance was {d}, expected 0.01");
     }
 }
