@@ -12,6 +12,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
+use crate::events::AutomationLifecycle;
 use crate::program::automation_discriminator;
 use crate::state::Automation;
 use crate::types::AutomationCtx;
@@ -34,20 +35,65 @@ impl WatchedSet {
     pub fn from_index(items: Vec<AutomationCtx>) -> Self {
         let mut s = Self::default();
         for ctx in items {
-            s.by_pubkey.insert(ctx.pubkey, ctx.clone());
-            match &ctx.trigger {
-                crate::state::TriggerSpec::AccountActivity { account, .. } => {
-                    s.account_triggers.entry(*account).or_default().push(ctx);
-                }
-                crate::state::TriggerSpec::AssetPrice { feed, .. } => {
-                    s.price_triggers.entry(*feed).or_default().push(ctx);
-                }
-                crate::state::TriggerSpec::TimeElapsed { .. } => {
-                    s.time_triggers.push(ctx);
-                }
-            }
+            s.insert_ctx(ctx);
         }
         s
+    }
+
+    /// Insert a single `AutomationCtx` into every relevant index.
+    /// Idempotent only if the caller has already called `remove_by_pubkey`
+    /// for updated entries (to avoid duplicates in the trigger vecs).
+    fn insert_ctx(&mut self, ctx: AutomationCtx) {
+        self.by_pubkey.insert(ctx.pubkey, ctx.clone());
+        match &ctx.trigger {
+            crate::state::TriggerSpec::AccountActivity { account, .. } => {
+                self.account_triggers.entry(*account).or_default().push(ctx);
+            }
+            crate::state::TriggerSpec::AssetPrice { feed, .. } => {
+                self.price_triggers.entry(*feed).or_default().push(ctx);
+            }
+            crate::state::TriggerSpec::TimeElapsed { .. } => {
+                self.time_triggers.push(ctx);
+            }
+        }
+    }
+
+    /// Remove every index entry associated with `pubkey`.
+    /// Returns `true` if any entry was found and removed.
+    fn remove_by_pubkey(&mut self, pubkey: &Pubkey) -> bool {
+        let removed = self.by_pubkey.remove(pubkey).is_some();
+        // account_triggers: remove ctx from vec; drop empty vecs.
+        self.account_triggers.retain(|_, ctxs| {
+            ctxs.retain(|c| &c.pubkey != pubkey);
+            !ctxs.is_empty()
+        });
+        // price_triggers: same pattern.
+        self.price_triggers.retain(|_, ctxs| {
+            ctxs.retain(|c| &c.pubkey != pubkey);
+            !ctxs.is_empty()
+        });
+        // time_triggers is a flat Vec.
+        let before = self.time_triggers.len();
+        self.time_triggers.retain(|c| &c.pubkey != pubkey);
+        removed || self.time_triggers.len() < before
+    }
+
+    /// Async delta-apply: handles a single lifecycle event by fetching the
+    /// on-chain account when needed (Created/Updated) or removing it from
+    /// every index (Finished) without an RPC call.
+    ///
+    /// The caller holds `&mut self` obtained via `watch::Sender::send_if_modified`
+    /// or equivalent. The async fetch happens *before* the mutable borrow — see
+    /// `apply_lifecycle_event` free function which orchestrates this correctly.
+    pub fn apply_delta(&mut self, ev: DeltaApply) -> bool {
+        match ev {
+            DeltaApply::Upsert(ctx) => {
+                self.remove_by_pubkey(&ctx.pubkey);
+                self.insert_ctx(ctx);
+                true
+            }
+            DeltaApply::Remove(pubkey) => self.remove_by_pubkey(&pubkey),
+        }
     }
 
     pub fn account_watch_keys(&self) -> Vec<Pubkey> {
@@ -276,4 +322,76 @@ fn _decode_b64(s: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .map_err(|e| anyhow!("base64 decode failed: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Delta-apply helpers for the events subscriber (Task 9)
+// ---------------------------------------------------------------------------
+
+/// Resolved action for `WatchedSet::apply_delta`. Produced by the async
+/// fetch path (`apply_lifecycle_event`) and consumed synchronously inside
+/// `watch::Sender::send_if_modified`.
+pub enum DeltaApply {
+    /// Insert or replace an automation (Created / Updated event).
+    Upsert(AutomationCtx),
+    /// Remove an automation without fetching (Finished event).
+    Remove(Pubkey),
+}
+
+/// Decode a single account blob (including the 8-byte discriminator) into
+/// an `AutomationCtx`. Returns `None` when the account is finished or
+/// can't be parsed — the caller should skip/warn rather than crash.
+fn decode_automation_to_ctx(pubkey: Pubkey, data: &[u8]) -> Option<AutomationCtx> {
+    match Automation::from_account_data(data) {
+        Ok(a) if !a.finished => Some(AutomationCtx {
+            pubkey,
+            owner: a.owner,
+            nonce: a.nonce,
+            created_at: a.created_at,
+            trigger: a.trigger,
+            action: a.action,
+            bridge_enabled: a.bridge_enabled,
+        }),
+        Ok(_) => None, // account exists but is marked finished — treat as removal
+        Err(e) => {
+            warn!(pubkey = %pubkey, error = %e, "events: skipping unparseable account");
+            None
+        }
+    }
+}
+
+/// Async half of lifecycle processing. Fetches the account (for Created /
+/// Updated) and returns a `DeltaApply` ready for synchronous mutation of
+/// the `WatchedSet` via `send_if_modified`.
+///
+/// The two-phase design (async fetch → sync mutate) avoids holding an async
+/// lock while making RPC calls: `watch::Sender::send_if_modified` is
+/// synchronous, so all awaits must complete before entering the closure.
+pub async fn resolve_lifecycle(
+    rpc: &RpcClient,
+    ev: &AutomationLifecycle,
+) -> Result<Option<DeltaApply>> {
+    match ev {
+        AutomationLifecycle::Created(e) => {
+            let pubkey = e.automation;
+            fetch_and_resolve(rpc, pubkey).await
+        }
+        AutomationLifecycle::Updated(e) => {
+            let pubkey = e.automation;
+            fetch_and_resolve(rpc, pubkey).await
+        }
+        AutomationLifecycle::Finished(e) => Ok(Some(DeltaApply::Remove(e.automation))),
+    }
+}
+
+async fn fetch_and_resolve(rpc: &RpcClient, pubkey: Pubkey) -> Result<Option<DeltaApply>> {
+    let account = rpc
+        .get_account(&pubkey)
+        .await
+        .map_err(|e| anyhow!("getAccount({pubkey}) failed: {e}"))?;
+    match decode_automation_to_ctx(pubkey, &account.data) {
+        Some(ctx) => Ok(Some(DeltaApply::Upsert(ctx))),
+        // Account is finished — treat as removal so our index stays clean.
+        None => Ok(Some(DeltaApply::Remove(pubkey))),
+    }
 }

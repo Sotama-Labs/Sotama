@@ -81,6 +81,61 @@ async fn main() -> Result<()> {
     let (lazer_active_feeds_tx, lazer_active_feeds_rx) =
         watch::channel::<HashSet<solana_sdk::pubkey::Pubkey>>(HashSet::new());
 
+    // -----------------------------------------------------------------------
+    // Events subscriber (Task 9): logsSubscribe → AutomationLifecycle →
+    // WatchedSet delta-apply.
+    //
+    // Design note: `watch::Sender` is Clone (tokio 1.x wraps an Arc), so we
+    // can give one copy to the indexer's 60s reconcile task and keep another
+    // for the lifecycle apply task below. Both call `send_if_modified`, which
+    // is the correct mutation API for a watch channel.
+    // -----------------------------------------------------------------------
+    let set_tx_for_lifecycle = set_tx.clone();
+
+    let (lifecycle_tx, mut lifecycle_rx) = mpsc::channel::<events::AutomationLifecycle>(1024);
+    let (reconcile_tx, mut reconcile_rx) = mpsc::channel::<()>(8);
+
+    let source: std::sync::Arc<dyn streaming::StreamSource> = std::sync::Arc::new(
+        streaming::ws_source::WsStreamSource::new(cfg.ws_url.clone()),
+    );
+    events::subscriber::spawn(
+        source.clone(),
+        cfg.program_id,
+        lifecycle_tx,
+        reconcile_tx,
+    );
+
+    // Lifecycle apply task: for each decoded event, fetch the account (if
+    // needed) then mutate the WatchedSet in-place via send_if_modified so
+    // all watchers see the delta without waiting for the next 60s reconcile.
+    let rpc_for_lifecycle = rpc.clone();
+    let lifecycle_handle = tokio::spawn(async move {
+        while let Some(ev) = lifecycle_rx.recv().await {
+            match indexer::resolve_lifecycle(&rpc_for_lifecycle, &ev).await {
+                Ok(Some(delta)) => {
+                    set_tx_for_lifecycle.send_if_modified(|ws| ws.apply_delta(delta));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target: "events::subscriber",
+                        error = %e,
+                        "apply_lifecycle failed; will be caught by next reconcile"
+                    );
+                }
+            }
+        }
+    });
+
+    // Reconcile-on-reconnect stub. Task 10 will replace this with a real
+    // call into the indexer's reconcile API; for now we drain the channel
+    // so it never fills up and blocks the subscriber.
+    let reconcile_drain_handle = tokio::spawn(async move {
+        while let Some(()) = reconcile_rx.recv().await {
+            tracing::debug!(target: "main", "reconcile signal received (handler in Task 10)");
+        }
+    });
+
     let indexer_handle = {
         let cfg = cfg.clone();
         tokio::spawn(async move {
@@ -195,6 +250,8 @@ async fn main() -> Result<()> {
             info!("shutdown signal received");
         }
         _ = indexer_handle => error!("indexer task ended unexpectedly"),
+        _ = lifecycle_handle => error!("lifecycle apply task ended unexpectedly"),
+        _ = reconcile_drain_handle => error!("reconcile drain task ended unexpectedly"),
         _ = subscriber_handle => error!("subscriber task ended unexpectedly"),
         _ = price_handle => error!("price_watcher task ended unexpectedly"),
         _ = lazer_handle => error!("lazer_watcher task ended unexpectedly"),
