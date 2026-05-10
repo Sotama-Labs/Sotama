@@ -305,7 +305,23 @@ export function ConditionalBuilder({
     }
     const cur = triggers[idx];
     const cat = cur.kind != null ? findTriggerCategoryForKind(cur.kind) : null;
-    if (cat && cat.kinds.length > 1) {
+    // Only show the category sub-list on back-nav when MORE THAN ONE kind in
+    // the category is actually selectable for this rule. Apply the same
+    // chain-qualification filter that `pickTriggerCategory` uses so the back
+    // path matches the forward path — otherwise users land on a redundant
+    // one-row "sub-list" with only Asset Price in it.
+    const chainQualified =
+      chainCtx != null &&
+      chainCtx.upstreamIndex >= 0 &&
+      chainCtx.consumeUpstream;
+    const supportedCount = cat
+      ? cat.kinds.filter(
+          (k) =>
+            isTriggerSupported(k.kind) &&
+            (k.kind !== "price_relative_to_fill" || chainQualified),
+        ).length
+      : 0;
+    if (cat && supportedCount > 1) {
       setBrowsingCategory(cat);
     } else {
       setBrowsingCategory(null);
