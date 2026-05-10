@@ -1,7 +1,11 @@
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::hash::Hash;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+use tracing::{debug, warn};
 
+#[derive(Clone)]
 pub struct BlockhashCache {
     inner: Arc<RwLock<Option<CachedBlockhash>>>,
 }
@@ -25,12 +29,11 @@ impl BlockhashCache {
     }
 }
 
-use solana_client::nonblocking::rpc_client::RpcClient;
-use std::sync::Arc as StdArc;
-use std::time::Duration;
-use tracing::{debug, warn};
+impl Default for BlockhashCache {
+    fn default() -> Self { Self::new() }
+}
 
-pub fn spawn_refresher(rpc: StdArc<RpcClient>, cache: BlockhashCache) {
+pub fn spawn_refresher(rpc: Arc<RpcClient>, cache: BlockhashCache) {
     tokio::spawn(async move {
         let mut iv = tokio::time::interval(Duration::from_secs(1));
         iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
