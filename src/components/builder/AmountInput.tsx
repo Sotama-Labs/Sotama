@@ -39,7 +39,20 @@ export function AmountInput({
   const [inputWidth, setInputWidth] = useState(48);
 
   useEffect(() => {
-    setLocal(value != null ? String(value) : "");
+    // Sync only when the parent's numeric value differs from what `local`
+    // already represents. Without this guard, typing "1." or "1.0" or "1.01"
+    // would clobber: parseFloat normalizes those to 1, the parent re-renders
+    // with value=1, and a blind setLocal(String(1)) drops the trailing dot/zero
+    // mid-typing.
+    if (value == null) {
+      if (local !== "") setLocal("");
+      return;
+    }
+    const localNum = parseFloat(local);
+    if (isNaN(localNum) || localNum !== value) {
+      setLocal(String(value));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   useEffect(() => {
@@ -115,12 +128,19 @@ export function AmountInput({
         >
           <input
             ref={ref}
-            type="number"
+            type="text"
             inputMode="decimal"
             value={local}
             onChange={(e) => {
-              setLocal(e.target.value);
-              commit(e.target.value);
+              const raw = e.target.value;
+              // Allow digits, optional leading minus, and at most one decimal
+              // point. Preserve in-progress strings like "1.", "1.0", "0.01"
+              // exactly as typed — without this, `type="number"` browsers would
+              // normalize trailing zeros and the controlled value would clobber
+              // the user mid-keystroke.
+              if (raw !== "" && !/^-?\d*\.?\d*$/.test(raw)) return;
+              setLocal(raw);
+              commit(raw);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") onCommit?.();
@@ -135,9 +155,6 @@ export function AmountInput({
               fontWeight: 500,
               color: "var(--label-primary)",
               padding: 0,
-              MozAppearance: "textfield",
-              WebkitAppearance: "none",
-              appearance: "textfield",
               fontFeatureSettings: '"tnum"',
             }}
           />
