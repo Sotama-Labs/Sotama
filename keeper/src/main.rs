@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info};
 
 mod bridge_dispatcher;
+mod events;
 mod caches;
 mod config;
 mod executor;
