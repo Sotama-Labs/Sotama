@@ -1,82 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { AssetRef, Automation, Execution } from "@/lib/types";
+import type { Automation, Execution } from "@/lib/types";
 import { isCompleted, isTerminal } from "@/lib/types";
-import { POPULAR_ASSETS } from "@/lib/assets";
-import { CANONICAL_MINTS } from "@/lib/tokens";
 import { fmt } from "@/lib/format";
 import { AutomationRow } from "./SavedList";
-import { ArrowRight, InfoCircle } from "./icons";
-
-const SOL_TOKEN = CANONICAL_MINTS["So11111111111111111111111111111111111111112"];
-const USDC_TOKEN = CANONICAL_MINTS["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"];
-const SOL_ASSET: AssetRef = POPULAR_ASSETS.Crypto.find((a) => a.symbol === "SOL")!;
-const USDC_ASSET: AssetRef = POPULAR_ASSETS.Crypto.find((a) => a.symbol === "USDC")!;
-
-const SAMPLE_AUTOMATIONS: Automation[] = [
-  {
-    id: "demo_1",
-    schemaVersion: 3,
-    triggers: [
-      {
-        kind: "asset_price",
-        asset: SOL_ASSET,
-        quote: { kind: "usd" },
-        comparator: "below",
-        threshold: 180,
-        oracle: {
-          kind: "pyth",
-          feedId: "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
-          symbol: "Crypto.SOL/USD",
-        },
-      },
-    ],
-    triggerOperators: [],
-    actions: [{ kind: "swap", inputToken: USDC_TOKEN, outputToken: SOL_TOKEN, amount: 250 }],
-    actionOperators: [],
-    cadence: { kind: "once" },
-    minIntervalSecs: 0,
-    running: true,
-    runs: 3,
-    lastCheck: "just now",
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "demo_2",
-    schemaVersion: 3,
-    triggers: [
-      {
-        kind: "asset_price",
-        asset: SOL_ASSET,
-        quote: { kind: "usd" },
-        comparator: "above",
-        threshold: 240,
-        oracle: {
-          kind: "pyth",
-          feedId: "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
-          symbol: "Crypto.SOL/USD",
-        },
-      },
-    ],
-    triggerOperators: [],
-    actions: [{ kind: "swap", inputToken: SOL_TOKEN, outputToken: USDC_TOKEN, amount: 1.5 }],
-    actionOperators: [],
-    cadence: { kind: "once" },
-    minIntervalSecs: 0,
-    running: true,
-    runs: 0,
-    lastCheck: "12s ago",
-    createdAt: new Date().toISOString(),
-  },
-];
-
-const SAMPLE_EXECUTIONS: Execution[] = [
-  { id: "x_001", strategyId: "demo_1", from: { token: "USDC", amount: 250 }, to: { token: "SOL", amount: 1.387 }, price: 180.24, when: "2h ago", txShort: "5g3K…hP9L" },
-  { id: "x_002", strategyId: "demo_3", from: { token: "USDC", amount: 500 }, to: { token: "SOL", amount: 3.355 }, price: 149.02, when: "1d ago", txShort: "Bm7R…4xW2" },
-  { id: "x_003", strategyId: "demo_1", from: { token: "USDC", amount: 250 }, to: { token: "SOL", amount: 1.401 }, price: 178.42, when: "3d ago", txShort: "9pQ2…tNc1" },
-  { id: "x_004", strategyId: "demo_1", from: { token: "USDC", amount: 250 }, to: { token: "SOL", amount: 1.420 }, price: 176.05, when: "5d ago", txShort: "Hf8E…RdV6" },
-];
+import { ArrowRight } from "./icons";
 
 function SectionHeader({ title, count, trailing }: { title: string; count?: number; trailing?: React.ReactNode }) {
   return (
@@ -242,8 +171,6 @@ function ExecutionRow({ e, isLast }: { e: Execution; isLast: boolean }) {
   );
 }
 
-const NOOP = () => {};
-
 export function ActiveStrategiesPage({
   automations,
   onToggle,
@@ -253,9 +180,8 @@ export function ActiveStrategiesPage({
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const isDemo = automations.length === 0;
-  const items = isDemo ? SAMPLE_AUTOMATIONS : automations;
-  const exec = isDemo ? SAMPLE_EXECUTIONS : [];
+  const items = automations;
+  const exec: Execution[] = [];
 
   const running = useMemo(
     () => items.filter((a) => a.running && !isTerminal(a)),
@@ -266,8 +192,43 @@ export function ActiveStrategiesPage({
     () => items.filter((a) => !a.running && !isTerminal(a)),
     [items],
   );
-  const toggle = isDemo ? NOOP : onToggle;
-  const del = isDemo ? NOOP : onDelete;
+
+  if (items.length === 0) {
+    return (
+      <div
+        className="fade-slide"
+        style={{
+          width: "100%",
+          maxWidth: "45rem",
+          marginTop: "1.25rem",
+          padding: "3rem 1.5rem",
+          background: "var(--bg-system)",
+          border: "0.5px solid var(--separator)",
+          borderRadius: "var(--radius-card)",
+          boxShadow: "var(--shadow-1)",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: "0.5rem",
+          textAlign: "center",
+        }}
+      >
+        <div
+          className="hig-headline"
+          style={{ color: "var(--label-primary)", fontWeight: 600 }}
+        >
+          No automations yet
+        </div>
+        <div
+          className="hig-subheadline"
+          style={{ color: "var(--label-secondary)", maxWidth: "28rem" }}
+        >
+          Compose an automation first — saved strategies will appear here once
+          they&rsquo;re funded on-chain.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -281,27 +242,6 @@ export function ActiveStrategiesPage({
         marginTop: "1.25rem",
       }}
     >
-      {isDemo && (
-        <div
-          style={{
-            width: "100%",
-            marginBottom: "1rem",
-            padding: "0.625rem 0.875rem",
-            background: "var(--accent-fill)",
-            color: "var(--accent)",
-            borderRadius: "0.625rem",
-            display: "flex",
-            alignItems: "center",
-            gap: "0.5rem",
-          }}
-        >
-          <InfoCircle />
-          <span className="hig-footnote" style={{ fontWeight: 500 }}>
-            Showing sample data. Compose a strategy to replace this view.
-          </span>
-        </div>
-      )}
-
       <StatsStrip runningCount={running.length} executions={exec} allCount={items.length} />
 
       {running.length > 0 && (
@@ -320,8 +260,8 @@ export function ActiveStrategiesPage({
               <AutomationRow
                 key={a.id}
                 a={a}
-                onToggle={toggle}
-                onDelete={del}
+                onToggle={onToggle}
+                onDelete={onDelete}
                 isLast={i === running.length - 1}
               />
             ))}
@@ -345,8 +285,8 @@ export function ActiveStrategiesPage({
               <AutomationRow
                 key={a.id}
                 a={a}
-                onToggle={toggle}
-                onDelete={del}
+                onToggle={onToggle}
+                onDelete={onDelete}
                 isLast={i === completed.length - 1}
               />
             ))}
@@ -370,8 +310,8 @@ export function ActiveStrategiesPage({
               <AutomationRow
                 key={a.id}
                 a={a}
-                onToggle={toggle}
-                onDelete={del}
+                onToggle={onToggle}
+                onDelete={onDelete}
                 isLast={i === paused.length - 1}
               />
             ))}
@@ -379,22 +319,24 @@ export function ActiveStrategiesPage({
         </section>
       )}
 
-      <section style={{ width: "100%" }}>
-        <SectionHeader title="Recent executions" count={exec.length} />
-        <div
-          style={{
-            background: "var(--bg-system)",
-            border: "0.5px solid var(--separator)",
-            borderRadius: "var(--radius-card)",
-            boxShadow: "var(--shadow-1)",
-            overflow: "hidden",
-          }}
-        >
-          {exec.map((e, i) => (
-            <ExecutionRow key={e.id} e={e} isLast={i === exec.length - 1} />
-          ))}
-        </div>
-      </section>
+      {exec.length > 0 && (
+        <section style={{ width: "100%" }}>
+          <SectionHeader title="Recent executions" count={exec.length} />
+          <div
+            style={{
+              background: "var(--bg-system)",
+              border: "0.5px solid var(--separator)",
+              borderRadius: "var(--radius-card)",
+              boxShadow: "var(--shadow-1)",
+              overflow: "hidden",
+            }}
+          >
+            {exec.map((e, i) => (
+              <ExecutionRow key={e.id} e={e} isLast={i === exec.length - 1} />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
