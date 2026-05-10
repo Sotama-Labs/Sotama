@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::JupiterClient;
-use crate::prices::cache::{PriceSnapshot, SourceLayer};
+use crate::prices::cache::{PriceCache, PriceSnapshot, SourceLayer};
 use crate::pyth_catalog::{self, PythCatalog};
 use crate::state::TriggerSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
@@ -36,12 +36,13 @@ pub async fn run(
     set_rx: watch::Receiver<WatchedSet>,
     trigger_tx: mpsc::Sender<TriggerEvent>,
     lazer_active_feeds_rx: watch::Receiver<HashSet<Pubkey>>,
+    price_cache: PriceCache,
 ) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .build()?;
-    let mut tick = interval(cfg.price_poll_interval);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut poll_tick = interval(cfg.price_poll_interval);
+    poll_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let jupiter = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
 
@@ -65,14 +66,165 @@ pub async fn run(
         }
     };
 
+    // Notify handle wired to PriceCache: fires on every successful put(),
+    // including those from Lazer and Hermes SSE. The evaluator loop below
+    // uses this to react immediately instead of waiting for the next poll tick.
+    let notify = price_cache.notifier();
+
+    // Heartbeat: fires every 30s so triggers evaluate even if the cache
+    // goes silent (network outage between poll ticks).
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    // Local price map populated by the Hermes poll; used by the evaluator
+    // for integer-precise threshold comparisons (raw + expo). Keyed by
+    // lowercase hex feed ID.
+    let local_prices: Arc<tokio::sync::RwLock<HashMap<String, LatestPrice>>> =
+        Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+    // Same for per-tick Jupiter mint quotes.
+    let local_mint_quotes: Arc<tokio::sync::RwLock<HashMap<Pubkey, MintQuote>>> =
+        Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+    // Hermes-sourced quote prices (Pyth catalog hits).
+    let local_hermes_quote_prices: Arc<tokio::sync::RwLock<HashMap<Pubkey, LatestPrice>>> =
+        Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+
+    // Spawn the Layer-4 Hermes polling task. It fetches prices on the
+    // configured interval (default 12s), writes each result into the shared
+    // PriceCache (triggering the notify channel), and also updates the local
+    // raw-price maps used by the evaluator for integer-precise comparisons.
+    let poll_cfg = cfg.clone();
+    let poll_http = http.clone();
+    let poll_set_rx = set_rx.clone();
+    let poll_lazer_rx = lazer_active_feeds_rx.clone();
+    let poll_cache = price_cache.clone();
+    let poll_catalog = catalog.clone();
+    let poll_jupiter = jupiter.clone();
+    let poll_local_prices = local_prices.clone();
+    let poll_local_mint_quotes = local_mint_quotes.clone();
+    let poll_local_hermes_quote_prices = local_hermes_quote_prices.clone();
+
+    tokio::spawn(async move {
+        let mut tick = poll_tick;
+        loop {
+            tick.tick().await;
+            let set = poll_set_rx.borrow().clone();
+            let lazer_active: HashSet<Pubkey> = poll_lazer_rx.borrow().clone();
+
+            // Hermes is a Pyth wire format. Filter to PYTH-sourced triggers
+            // only — JUPITER triggers are watched by jupiter_watcher.
+            // Within those, drop feeds Lazer is currently streaming so
+            // there's only one active source per feed.
+            let feeds: Vec<Pubkey> = set
+                .price_feeds_for_source(crate::state::oracle_source::PYTH)
+                .into_iter()
+                .filter(|f| !lazer_active.contains(f))
+                .collect();
+            if feeds.is_empty() {
+                continue;
+            }
+
+            // Pyth Hermes expects the 32-byte feed ID as hex (lowercase, no
+            // 0x), but on-chain we stored it as a Pubkey's raw bytes (base58
+            // when Display'd). Convert here for the HTTP query.
+            let mut feed_hex: Vec<String> = feeds.iter().map(pubkey_to_hex).collect();
+
+            // Partition quote_mints by dispatch (Pyth-catalog hit vs miss).
+            // Pyth-feed quotes get folded into the same Hermes batch; SPL
+            // mints stay on the Jupiter probe path.
+            let mut hermes_quote_pubkeys: Vec<Pubkey> = Vec::new();
+            let mut jupiter_quote_mints: Vec<Pubkey> = Vec::new();
+            for qm in set.asset_price_quote_mints() {
+                if poll_catalog.contains_key(&qm.to_bytes()) {
+                    hermes_quote_pubkeys.push(qm);
+                } else {
+                    jupiter_quote_mints.push(qm);
+                }
+            }
+            for qm in &hermes_quote_pubkeys {
+                feed_hex.push(pubkey_to_hex(qm));
+            }
+            debug!(
+                feeds = feeds.len(),
+                hermes_quotes = hermes_quote_pubkeys.len(),
+                jupiter_quotes = jupiter_quote_mints.len(),
+                "price_watcher: polling Pyth Hermes (+ Jupiter for SPL-mint quotes)"
+            );
+
+            let prices = match fetch_prices(&poll_http, &poll_cfg.hermes_url, &feed_hex).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(error = %e, "price_watcher: hermes fetch failed");
+                    continue;
+                }
+            };
+
+            // Write Hermes prices into PriceCache (fires notify, waking the
+            // evaluator task).
+            for feed in &feeds {
+                let hex = pubkey_to_hex(feed);
+                if let Some(p) = prices.get(&hex) {
+                    let snap = PriceSnapshot {
+                        price: p.raw as f64 * 10f64.powi(p.expo),
+                        conf: 0.0,
+                        publish_time: p.publish_time,
+                        fetched_at: std::time::Instant::now(),
+                        source: SourceLayer::HermesPoll,
+                    };
+                    poll_cache.put(hex, snap).await;
+                }
+            }
+
+            // Update local raw-price maps for integer-precise evaluation.
+            {
+                let mut lp = poll_local_prices.write().await;
+                for (k, v) in &prices {
+                    lp.insert(k.clone(), v.clone());
+                }
+            }
+
+            // Hermes-derived quote prices keyed by quote pubkey.
+            let mut hqp: HashMap<Pubkey, LatestPrice> = HashMap::new();
+            for qm in &hermes_quote_pubkeys {
+                let hex = pubkey_to_hex(qm).to_lowercase();
+                if let Some(p) = prices.get(&hex) {
+                    hqp.insert(*qm, p.clone());
+                }
+            }
+            {
+                let mut g = poll_local_hermes_quote_prices.write().await;
+                *g = hqp;
+            }
+
+            // Per-tick Jupiter `/quote` probes for SPL-mint quotes.
+            let mut mq: HashMap<Pubkey, MintQuote> = HashMap::new();
+            for mint in jupiter_quote_mints {
+                match probe_mint(&poll_jupiter, &mint, poll_cfg.swap_slippage_bps).await {
+                    Ok(q) => {
+                        mq.insert(mint, q);
+                    }
+                    Err(e) => {
+                        warn!(mint = %mint, error = %e, "price_watcher: quote-mint /quote failed");
+                    }
+                }
+            }
+            {
+                let mut g = poll_local_mint_quotes.write().await;
+                *g = mq;
+            }
+        }
+    });
+
+    // Evaluator loop: wakes on PriceCache notify (sub-second when Lazer is
+    // active, or ~12s from the Hermes poll above) plus a 30s heartbeat so
+    // triggers fire even if the cache goes silent.
     loop {
-        tick.tick().await;
+        tokio::select! {
+            _ = notify.notified() => {},
+            _ = heartbeat.tick() => {},
+        }
+
         let set = set_rx.borrow().clone();
         let lazer_active: HashSet<Pubkey> = lazer_active_feeds_rx.borrow().clone();
-        // Hermes is a Pyth wire format. Filter to PYTH-sourced triggers
-        // only — JUPITER triggers are watched by jupiter_watcher.
-        // Within those, drop feeds Lazer is currently streaming so
-        // there's only one active source per feed.
         let feeds: Vec<Pubkey> = set
             .price_feeds_for_source(crate::state::oracle_source::PYTH)
             .into_iter()
@@ -82,65 +234,9 @@ pub async fn run(
             continue;
         }
 
-        // Pyth Hermes expects the 32-byte feed ID as hex (lowercase, no
-        // 0x), but on-chain we stored it as a Pubkey's raw bytes (base58
-        // when Display'd). Convert here for the HTTP query.
-        let mut feed_hex: Vec<String> = feeds.iter().map(pubkey_to_hex).collect();
-
-        // Partition quote_mints by dispatch (Pyth-catalog hit vs miss).
-        // Pyth-feed quotes get folded into the same Hermes batch; SPL
-        // mints stay on the Jupiter probe path.
-        let mut hermes_quote_pubkeys: Vec<Pubkey> = Vec::new();
-        let mut jupiter_quote_mints: Vec<Pubkey> = Vec::new();
-        for qm in set.asset_price_quote_mints() {
-            if catalog.contains_key(&qm.to_bytes()) {
-                hermes_quote_pubkeys.push(qm);
-            } else {
-                jupiter_quote_mints.push(qm);
-            }
-        }
-        for qm in &hermes_quote_pubkeys {
-            feed_hex.push(pubkey_to_hex(qm));
-        }
-        debug!(
-            feeds = feeds.len(),
-            hermes_quotes = hermes_quote_pubkeys.len(),
-            jupiter_quotes = jupiter_quote_mints.len(),
-            "price_watcher: polling Pyth Hermes (+ Jupiter for SPL-mint quotes)"
-        );
-
-        let prices = match fetch_prices(&http, &cfg.hermes_url, &feed_hex).await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "price_watcher: hermes fetch failed");
-                continue;
-            }
-        };
-
-        // Hermes-derived quote prices keyed by quote pubkey for fast
-        // lookup in the comparator dispatch below.
-        let mut hermes_quote_prices: HashMap<Pubkey, LatestPrice> = HashMap::new();
-        for qm in &hermes_quote_pubkeys {
-            let hex = pubkey_to_hex(qm).to_lowercase();
-            if let Some(p) = prices.get(&hex) {
-                hermes_quote_prices.insert(*qm, p.clone());
-            }
-        }
-
-        // Per-tick cache of Jupiter `/quote` probes for SPL-mint quotes.
-        // Cached so a mint shared across many triggers (USDC most likely)
-        // isn't probed twice.
-        let mut mint_quotes: HashMap<Pubkey, MintQuote> = HashMap::new();
-        for mint in jupiter_quote_mints {
-            match probe_mint(&jupiter, &mint, cfg.swap_slippage_bps).await {
-                Ok(q) => {
-                    mint_quotes.insert(mint, q);
-                }
-                Err(e) => {
-                    warn!(mint = %mint, error = %e, "price_watcher: quote-mint /quote failed");
-                }
-            }
-        }
+        let prices = local_prices.read().await;
+        let hermes_quote_prices = local_hermes_quote_prices.read().await;
+        let mint_quotes = local_mint_quotes.read().await;
 
         // Map: correlation_key → (matches, snapshot_for_this_feed).
         let mut to_fire: HashMap<String, (Vec<AutomationCtx>, PriceSnapshot)> = HashMap::new();
@@ -217,6 +313,11 @@ pub async fn run(
                 }
             }
         }
+
+        // Drop the read guards before the async send below.
+        drop(prices);
+        drop(hermes_quote_prices);
+        drop(mint_quotes);
 
         for (correlation, (matches, snap)) in to_fire {
             info!(

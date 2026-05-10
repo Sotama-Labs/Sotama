@@ -205,9 +205,10 @@ async fn main() -> Result<()> {
         let set_rx = set_rx.clone();
         let trigger_tx = trigger_tx.clone();
         let lazer_active_feeds_rx = lazer_active_feeds_rx.clone();
+        let price_cache_for_watcher = price_cache.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx).await
+                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher).await
             {
                 error!(error = %e, "price_watcher task exited");
             }

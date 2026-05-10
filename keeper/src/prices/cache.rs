@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceLayer {
@@ -34,6 +34,7 @@ pub struct PriceSnapshot {
 #[derive(Clone, Default)]
 pub struct PriceCache {
     inner: Arc<RwLock<HashMap<String, PriceSnapshot>>>,
+    notify: Arc<Notify>,
 }
 
 impl PriceCache {
@@ -51,6 +52,9 @@ impl PriceCache {
             }
         }
         g.insert(feed_id, snap);
+        // Drop the write lock before notifying so waiters can immediately acquire a read lock.
+        drop(g);
+        self.notify.notify_waiters();
     }
 
     pub async fn get_fresh(&self, feed_id: &str) -> Option<PriceSnapshot> {
@@ -58,6 +62,11 @@ impl PriceCache {
         let snap = g.get(feed_id)?.clone();
         if snap.fetched_at.elapsed() <= snap.source.max_age() { Some(snap) } else { None }
     }
+
+    /// Returns a handle that wakes every `notify.notified()` caller whenever
+    /// a new snapshot is written via `put`. Price-watcher uses this to drive
+    /// its evaluation loop.
+    pub fn notifier(&self) -> Arc<Notify> { self.notify.clone() }
 }
 
 #[cfg(test)]
