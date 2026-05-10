@@ -43,6 +43,26 @@ async fn main() -> Result<()> {
         "sotama-keeper starting"
     );
 
+    let rpc = std::sync::Arc::new(solana_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
+        cfg.rpc_url.clone(),
+        solana_sdk::commitment_config::CommitmentConfig::confirmed(),
+    ));
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    let blockhash_cache = caches::blockhash::BlockhashCache::new();
+    caches::blockhash::spawn_refresher(rpc.clone(), blockhash_cache.clone());
+
+    let priority_fee_cache = caches::priority_fee::PriorityFeeCache::new();
+    let representative_accounts = vec![cfg.program_id.to_string()];
+    caches::priority_fee::spawn_refresher(
+        http_client.clone(),
+        cfg.rpc_url.clone(),
+        representative_accounts,
+        priority_fee_cache.clone(),
+    );
+
     let initial = indexer::seed_initial(&cfg).await?;
     info!(
         active = initial.len(),
@@ -158,8 +178,10 @@ async fn main() -> Result<()> {
 
     let executor_handle = {
         let cfg = cfg.clone();
+        let blockhash_cache = blockhash_cache.clone();
+        let priority_fee_cache = priority_fee_cache.clone();
         tokio::spawn(async move {
-            if let Err(e) = executor::run(cfg, trigger_rx).await {
+            if let Err(e) = executor::run(cfg, trigger_rx, blockhash_cache, priority_fee_cache).await {
                 error!(error = %e, "executor task exited");
             }
         })

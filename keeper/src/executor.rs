@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::caches::blockhash::{BlockhashCache, CachedBlockhash};
+use crate::caches::priority_fee::PriorityFeeCache;
 use crate::config::KeeperConfig;
 use crate::jupiter::{self, JupiterClient};
 use crate::program::{
@@ -27,7 +29,6 @@ use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
 
-const PRIORITY_FEE_DEFAULT_MICROLAMPORTS: u64 = 50_000;
 /// Default compute-unit limit for SOL/SPL transfers.
 const COMPUTE_UNIT_LIMIT_DEFAULT: u32 = 200_000;
 /// Compute-unit limit for Jupiter swap relays. Routes through 3-4 AMMs
@@ -100,7 +101,12 @@ impl Dedupe {
     }
 }
 
-pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -> Result<()> {
+pub async fn run(
+    cfg: Arc<KeeperConfig>,
+    mut rx: mpsc::Receiver<TriggerEvent>,
+    blockhash_cache: BlockhashCache,
+    priority_fee_cache: PriorityFeeCache,
+) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()?;
@@ -123,8 +129,19 @@ pub async fn run(cfg: Arc<KeeperConfig>, mut rx: mpsc::Receiver<TriggerEvent>) -
         let cfg_task = cfg.clone();
         let http_task = http.clone();
         let dedupe_task = dedupe.clone();
+        let blockhash_cache_task = blockhash_cache.clone();
+        let priority_fee_cache_task = priority_fee_cache.clone();
         tokio::spawn(async move {
-            process_event(cfg_task, http_task, config, evt, dedupe_task).await;
+            process_event(
+                cfg_task,
+                http_task,
+                config,
+                evt,
+                dedupe_task,
+                blockhash_cache_task,
+                priority_fee_cache_task,
+            )
+            .await;
         });
     }
     Ok(())
@@ -136,6 +153,8 @@ async fn process_event(
     config: Pubkey,
     evt: TriggerEvent,
     dedupe: Arc<Mutex<Dedupe>>,
+    blockhash_cache: BlockhashCache,
+    priority_fee_cache: PriorityFeeCache,
 ) {
     let depth = evt.depth;
     let mut matches = evt.matches;
@@ -202,7 +221,17 @@ async fn process_event(
             continue;
         }
 
-        let result = execute_one(&cfg, &http, &config, ctx, depth).await;
+        let result = execute_one(
+            &cfg,
+            &http,
+            &rpc,
+            &config,
+            ctx,
+            depth,
+            &blockhash_cache,
+            &priority_fee_cache,
+        )
+        .await;
         match result {
             Ok(sig) => {
                 dedupe
@@ -267,20 +296,37 @@ async fn process_event(
 async fn execute_one(
     cfg: &KeeperConfig,
     http: &reqwest::Client,
+    rpc: &RpcClient,
     config: &Pubkey,
     ctx: &AutomationCtx,
     depth: u8,
+    blockhash_cache: &BlockhashCache,
+    priority_fee_cache: &PriorityFeeCache,
 ) -> Result<String> {
-    let rpc =
-        RpcClient::new_with_commitment(cfg.rpc_url.clone(), CommitmentConfig::confirmed());
+    let exec_ix = build_action_ix(cfg, http, rpc, config, ctx).await?;
 
-    let exec_ix = build_action_ix(cfg, http, &rpc, config, ctx).await?;
-    let blockhash = rpc.get_latest_blockhash().await?;
+    // Resolve blockhash from cache; fall back to live RPC on cold start
+    // (cache empty) or if the cached entry is more than 5 s old.
+    let bh = match blockhash_cache.read().await {
+        Some(c) if c.fetched_at.elapsed() < Duration::from_secs(5) => c,
+        _ => {
+            let (hash, last_valid_block_height) = rpc
+                .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+                .await?;
+            CachedBlockhash {
+                hash,
+                last_valid_block_height,
+                fetched_at: std::time::Instant::now(),
+            }
+        }
+    };
+
+    let fee_microlamports_per_cu = priority_fee_cache.buffered(cfg.priority_fee_floor).await;
 
     let cu_limit = compute_unit_limit_for(&ctx.action);
     let mut ixs = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(cu_limit),
-        ComputeBudgetInstruction::set_compute_unit_price(PRIORITY_FEE_DEFAULT_MICROLAMPORTS),
+        ComputeBudgetInstruction::set_compute_unit_price(fee_microlamports_per_cu),
     ];
     // For linked fires (depth > 0), atomically debit the per-fire fee
     // from the PDA's lamport pool BEFORE running the action. Tx
@@ -297,29 +343,16 @@ async fn execute_one(
         ));
     }
     ixs.push(exec_ix);
-    let probe_tx =
-        sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, blockhash).await?;
-
-    let micro_lamports = match estimate_priority_fee(http, &cfg.rpc_url, &probe_tx).await {
-        Ok(m) => m.max(1_000),
-        Err(e) => {
-            debug!(error = %e, "priority fee estimate failed; using default");
-            PRIORITY_FEE_DEFAULT_MICROLAMPORTS
-        }
-    };
-
-    ixs[1] = ComputeBudgetInstruction::set_compute_unit_price(micro_lamports);
-    let final_tx =
-        sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, blockhash).await?;
 
     debug!(
         automation = %ctx.pubkey,
         action = ?ctx.action,
-        priority_fee = micro_lamports,
+        priority_fee = fee_microlamports_per_cu,
         "executor: sending tx via helius sender"
     );
 
-    send_via_helius(http, &cfg.sender_url, &final_tx).await
+    let sig = send_with_one_shot_escalation(cfg, http, &ixs, &bh, fee_microlamports_per_cu).await?;
+    Ok(sig)
 }
 
 /// Build, serialize, and sign a Transaction via the configured signer.
@@ -336,6 +369,80 @@ async fn sign_tx(
     let sig = signer.sign_message(&tx.message_data()).await?;
     tx.signatures = vec![sig];
     Ok(tx)
+}
+
+/// Build, sign, and send one transaction attempt. Thin wrapper so
+/// `send_with_one_shot_escalation` can call it twice with different fees.
+/// Returns the raw signature string (base58), matching the contract of
+/// `send_via_helius`.
+async fn send_one(
+    cfg: &KeeperConfig,
+    http: &reqwest::Client,
+    ixs: &[Instruction],
+    bh: &CachedBlockhash,
+    fee_microlamports_per_cu: u64,
+) -> Result<String> {
+    // Overwrite slot [1] with the caller-supplied fee. slot [0] is the
+    // CU-limit ix and is not fee-related.
+    let mut ixs_owned = ixs.to_vec();
+    ixs_owned[1] = ComputeBudgetInstruction::set_compute_unit_price(fee_microlamports_per_cu);
+    let tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs_owned, bh.hash).await?;
+    send_via_helius(http, &cfg.sender_url, &tx).await
+}
+
+/// Sends the transaction. On a retryable send error (blockhash not found,
+/// transaction expired) escalates the priority fee to p95 once and retries.
+/// No sustained escalation — the 5 s cache refresh raises the new baseline
+/// naturally on the next fire.
+async fn send_with_one_shot_escalation(
+    cfg: &KeeperConfig,
+    http: &reqwest::Client,
+    ixs: &[Instruction],
+    bh: &CachedBlockhash,
+    base_fee_micro: u64,
+) -> Result<String> {
+    match send_one(cfg, http, ixs, bh, base_fee_micro).await {
+        Ok(sig) => Ok(sig),
+        Err(e) if is_retryable_send_error(&e) => {
+            warn!(target: "executor", error = %e, "retrying with p95 priority fee");
+            let escalated = fetch_p95_once(http, &cfg.rpc_url, &cfg.program_id)
+                .await
+                .unwrap_or(base_fee_micro * 2);
+            send_one(cfg, http, ixs, bh, escalated).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn fetch_p95_once(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    program_id: &Pubkey,
+) -> Option<u64> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": "p95-escalation",
+        "method": "getPriorityFeeEstimate",
+        "params": [{ "accountKeys": [program_id.to_string()],
+                     "options": { "priorityLevel": "veryHigh" } }],
+    });
+    http.post(rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .ok()?
+        .json::<Value>()
+        .await
+        .ok()?
+        .get("result")
+        .and_then(|r| r.get("priorityFeeEstimate"))
+        .and_then(|f| f.as_f64())
+        .map(|f| f as u64)
+}
+
+fn is_retryable_send_error(e: &anyhow::Error) -> bool {
+    let s = format!("{e}").to_lowercase();
+    s.contains("blockhash not found") || s.contains("transaction expired")
 }
 
 async fn build_action_ix(
@@ -489,37 +596,6 @@ async fn build_action_ix(
     }
 }
 
-async fn estimate_priority_fee(
-    http: &reqwest::Client,
-    rpc_url: &str,
-    tx: &Transaction,
-) -> Result<u64> {
-    let serialized = bincode::serialize(tx).map_err(|e| anyhow!("bincode serialize: {e}"))?;
-    let b58 = bs58::encode(&serialized).into_string();
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getPriorityFeeEstimate",
-        "params": [{
-            "transaction": b58,
-            "options": { "priorityLevel": "Medium" }
-        }]
-    });
-    let resp: Value = http.post(rpc_url).json(&body).send().await?.json().await?;
-    let n = resp["result"]["priorityFeeEstimate"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("missing priorityFeeEstimate in {resp}"))?;
-    Ok(n.round() as u64)
-}
-
-/// Stable cross-user ordering used by `process_event`. Sorts by
-/// `created_at` ascending so the oldest rule fires first, with `nonce`
-/// as a tie-breaker for rules created in the same block. Pulled out
-/// as a named helper purely so the ordering invariant is unit-testable.
-pub(crate) fn sort_matches_for_queue(matches: &mut Vec<AutomationCtx>) {
-    matches.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.nonce.cmp(&b.nonce)));
-}
-
 async fn send_via_helius(
     http: &reqwest::Client,
     sender_url: &str,
@@ -547,9 +623,18 @@ async fn send_via_helius(
     Ok(sig)
 }
 
+/// Stable cross-user ordering used by `process_event`. Sorts by
+/// `created_at` ascending so the oldest rule fires first, with `nonce`
+/// as a tie-breaker for rules created in the same block. Pulled out
+/// as a named helper purely so the ordering invariant is unit-testable.
+pub(crate) fn sort_matches_for_queue(matches: &mut Vec<AutomationCtx>) {
+    matches.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.nonce.cmp(&b.nonce)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::caches::priority_fee::PriorityFeeCache;
     use crate::state::{ActionSpec, TriggerSpec};
 
     fn ctx(pubkey_seed: u8, owner_seed: u8, nonce: u64, created_at: i64) -> AutomationCtx {
@@ -596,5 +681,11 @@ mod tests {
         sort_matches_for_queue(&mut v);
         assert_eq!(v[0].pubkey, earlier.pubkey, "lower nonce wins on tie");
         assert_eq!(v[1].pubkey, later.pubkey);
+    }
+
+    #[tokio::test]
+    async fn buffered_fee_floor_used_when_cache_empty() {
+        let cache = PriorityFeeCache::new();
+        assert_eq!(cache.buffered(42).await, 42);
     }
 }

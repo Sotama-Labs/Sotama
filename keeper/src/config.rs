@@ -91,6 +91,11 @@ pub struct KeeperConfig {
     /// calls (price + swap). Free tier ignores it; Pro tier (api.jup.ag)
     /// requires it for higher rate limits.
     pub jupiter_api_key: Option<String>,
+    /// Floor priority fee in microlamports per compute unit, used by the
+    /// executor when the priority-fee cache is empty (cold start) and as
+    /// the baseline for p95 escalation on retryable send failures.
+    /// Env: KEEPER_PRIORITY_FEE_FLOOR. Default 50_000.
+    pub priority_fee_floor: u64,
 }
 
 impl KeeperConfig {
@@ -163,6 +168,8 @@ impl KeeperConfig {
             .ok()
             .filter(|s| !s.trim().is_empty());
 
+        let priority_fee_floor = parse_or::<u64>("KEEPER_PRIORITY_FEE_FLOOR", 50_000)?;
+
         Ok(Self {
             cluster,
             api_key,
@@ -190,6 +197,7 @@ impl KeeperConfig {
             jupiter_price_enabled,
             jupiter_price_url,
             jupiter_api_key,
+            priority_fee_floor,
         })
     }
 }
