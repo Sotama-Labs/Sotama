@@ -179,17 +179,21 @@ async fn main() -> Result<()> {
     // Load the Pyth catalog for the mint probe's active-mints derivation.
     // Best-effort: failure here means non-Pyth quote mints may also be
     // probed (harmless — the probe just fetches more mints than needed).
-    let pyth_catalog_for_mints: crate::pyth_catalog::PythCatalog =
-        match crate::pyth_catalog::fetch().await {
-            Ok(c) => {
-                info!(feeds = c.len(), "main: loaded Pyth catalog for mint probe");
-                c
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "main: Pyth catalog load failed for mint probe; catalog treated as empty");
-                crate::pyth_catalog::PythCatalog::new()
-            }
-        };
+    // The handle is shared with a background refresher that swaps in a
+    // fresh catalog every 5 minutes so newly-listed Pyth feeds become
+    // recognizable without a keeper restart.
+    let initial_catalog = match crate::pyth_catalog::fetch().await {
+        Ok(c) => {
+            info!(feeds = c.len(), "main: loaded Pyth catalog for mint probe");
+            c
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "main: Pyth catalog load failed for mint probe; catalog treated as empty");
+            crate::pyth_catalog::PythCatalog::new()
+        }
+    };
+    let pyth_catalog_handle = crate::pyth_catalog::PythCatalogHandle::new(initial_catalog);
+    crate::pyth_catalog::spawn_refresher(pyth_catalog_handle.clone());
 
     // Watch channel that carries the current active Jupiter mint set to the probe.
     let (mints_tx, mints_rx) = tokio::sync::watch::channel::<Vec<solana_sdk::pubkey::Pubkey>>(vec![]);
@@ -204,16 +208,20 @@ async fn main() -> Result<()> {
     );
 
     // Republish active mints every 2s so the probe tracks new automations.
+    // Takes a snapshot of the catalog each tick so it sees fresh feeds as
+    // the background refresher swaps them in.
     {
         let watched_set_for_mints = set_rx.clone();
+        let catalog_for_mints = pyth_catalog_handle.clone();
         tokio::spawn(async move {
             let mut iv = tokio::time::interval(std::time::Duration::from_secs(2));
             iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 iv.tick().await;
+                let catalog_snap = catalog_for_mints.snapshot().await;
                 let mints = watched_set_for_mints
                     .borrow()
-                    .active_jupiter_mints(&pyth_catalog_for_mints);
+                    .active_jupiter_mints(&catalog_snap);
                 let _ = mints_tx.send(mints);
             }
         });
@@ -381,9 +389,10 @@ async fn main() -> Result<()> {
         let price_cache_for_watcher = price_cache.clone();
         let mint_cache_for_watcher = mint_cache.clone();
         let fill_cache_for_watcher = fill_cache.clone();
+        let pyth_catalog_for_watcher = pyth_catalog_handle.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll, mint_cache_for_watcher, fill_cache_for_watcher).await
+                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll, mint_cache_for_watcher, fill_cache_for_watcher, pyth_catalog_for_watcher).await
             {
                 error!(error = %e, "price_watcher task exited");
             }
@@ -417,8 +426,9 @@ async fn main() -> Result<()> {
         let cfg = cfg.clone();
         let set_rx = set_rx.clone();
         let trigger_tx = trigger_tx.clone();
+        let pyth_catalog_for_jupiter = pyth_catalog_handle.clone();
         tokio::spawn(async move {
-            if let Err(e) = jupiter_watcher::run(cfg, set_rx, trigger_tx).await {
+            if let Err(e) = jupiter_watcher::run(cfg, set_rx, trigger_tx, pyth_catalog_for_jupiter).await {
                 error!(error = %e, "jupiter_watcher task exited");
             }
         })

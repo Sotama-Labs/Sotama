@@ -15,7 +15,7 @@ use crate::jupiter::JupiterClient;
 use crate::mints::cache::MintPriceCache;
 use crate::prices::adaptive_poll;
 use crate::prices::cache::{PriceCache, PriceSnapshot, SourceLayer};
-use crate::pyth_catalog::{self, PythCatalog};
+use crate::pyth_catalog::PythCatalogHandle;
 use crate::state::{oracle_source, TriggerSpec};
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -51,32 +51,16 @@ pub async fn run(
     // Fill record cache. Written by the lifecycle apply task on each
     // AutomationFilled event. Read by the PriceRelativeToFill evaluator branch.
     fill_cache: FillCache,
+    // Shared Pyth catalog handle. Refreshed every 5 minutes by a background
+    // task in main.rs; a snapshot is taken each evaluator tick so newly-listed
+    // Pyth feeds are picked up without restarting the keeper.
+    pyth_catalog: PythCatalogHandle,
 ) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .build()?;
 
     let jupiter = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
-
-    // Pyth catalog for cross-source quote dispatch. Pyth-feed quote_mints
-    // (Equity / FX / Metal / Commodity quotes that have no SPL mint) are
-    // fetched from Hermes alongside the base feeds; SPL-mint quotes use
-    // the existing Jupiter `/quote` probe. Best-effort load — failure
-    // here just means we lose cross-source quotes this session, SPL-mint
-    // quotes still work via the unchanged probe path.
-    let catalog: PythCatalog = match pyth_catalog::fetch().await {
-        Ok(c) => {
-            info!(
-                feeds = c.len(),
-                "price_watcher: loaded Pyth catalog for cross-source quote dispatch",
-            );
-            c
-        }
-        Err(e) => {
-            warn!(error = %e, "price_watcher: Pyth catalog load failed; cross-source quotes disabled");
-            PythCatalog::new()
-        }
-    };
 
     // Notify handle wired to PriceCache: fires on every successful put(),
     // including those from Lazer and Hermes SSE. The evaluator loop below
@@ -117,7 +101,7 @@ pub async fn run(
     let poll_set_rx = set_rx.clone();
     let poll_lazer_rx = lazer_active_feeds_rx.clone();
     let poll_cache = price_cache.clone();
-    let poll_catalog = catalog.clone();
+    let poll_catalog = pyth_catalog.clone();
     let poll_jupiter = jupiter.clone();
     let poll_local_prices = local_prices.clone();
     let poll_local_mint_quotes = local_mint_quotes.clone();
@@ -158,11 +142,14 @@ pub async fn run(
 
             // Partition quote_mints by dispatch (Pyth-catalog hit vs miss).
             // Pyth-feed quotes get folded into the same Hermes batch; SPL
-            // mints stay on the Jupiter probe path.
+            // mints stay on the Jupiter probe path. Snapshot the catalog
+            // once per tick so newly-listed feeds are picked up as soon as
+            // the background refresher swaps them in.
+            let poll_catalog_snap = poll_catalog.snapshot().await;
             let mut hermes_quote_pubkeys: Vec<Pubkey> = Vec::new();
             let mut jupiter_quote_mints: Vec<Pubkey> = Vec::new();
             for qm in set.asset_price_quote_mints() {
-                if poll_catalog.contains_key(&qm.to_bytes()) {
+                if poll_catalog_snap.contains_key(&qm.to_bytes()) {
                     hermes_quote_pubkeys.push(qm);
                 } else {
                     jupiter_quote_mints.push(qm);
@@ -289,6 +276,9 @@ pub async fn run(
             continue;
         }
 
+        // Snapshot the catalog once per evaluator tick. Newly-listed Pyth feeds
+        // become visible here as soon as the background refresher swaps them in.
+        let catalog = pyth_catalog.snapshot().await;
         let prices = local_prices.read().await;
         let hermes_quote_prices = local_hermes_quote_prices.read().await;
         let mint_quotes = local_mint_quotes.read().await;

@@ -32,7 +32,7 @@ use crate::price_watcher::{
     LatestPrice,
 };
 use crate::prices::cache::{PriceSnapshot, SourceLayer};
-use crate::pyth_catalog::{self, PythCatalog};
+use crate::pyth_catalog::{PythCatalog, PythCatalogHandle};
 use crate::state::{oracle_source, TriggerSpec};
 use crate::types::{AutomationCtx, TriggerEvent};
 
@@ -63,6 +63,10 @@ pub async fn run(
     cfg: Arc<KeeperConfig>,
     set_rx: watch::Receiver<WatchedSet>,
     trigger_tx: mpsc::Sender<TriggerEvent>,
+    // Shared Pyth catalog handle. Refreshed every 5 minutes by a background
+    // task in main.rs; a snapshot is taken each poll tick so newly-listed
+    // Pyth feeds are picked up without restarting the keeper.
+    pyth_catalog: PythCatalogHandle,
 ) -> Result<()> {
     if !cfg.jupiter_price_enabled {
         info!("jupiter_watcher: disabled by config; not polling");
@@ -73,25 +77,6 @@ pub async fn run(
         .build()?;
     let mut tick = interval(cfg.price_poll_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-    // Load the Pyth catalog so we can dispatch Pyth-feed `quote_mint`
-    // bytes (XAU, EUR, etc. — Pyth-listed quotes that have no Solana
-    // SPL mint) to Hermes instead of the Jupiter mint-probe path.
-    // Catalog load is best-effort: a failure here just means we lose
-    // cross-source quotes this session; SPL-mint quotes still work.
-    let catalog: PythCatalog = match pyth_catalog::fetch().await {
-        Ok(c) => {
-            info!(
-                feeds = c.len(),
-                "jupiter_watcher: loaded Pyth catalog for cross-source quote dispatch",
-            );
-            c
-        }
-        Err(e) => {
-            warn!(error = %e, "jupiter_watcher: Pyth catalog load failed; cross-source quotes disabled");
-            PythCatalog::new()
-        }
-    };
 
     info!(
         endpoint = %cfg.jupiter_price_url,
@@ -104,6 +89,9 @@ pub async fn run(
         tick.tick().await;
         let set = set_rx.borrow().clone();
         let base_mints: Vec<Pubkey> = set.price_feeds_for_source(oracle_source::JUPITER);
+        // Snapshot the catalog once per tick so newly-listed Pyth feeds are
+        // recognized as soon as the background refresher swaps them in.
+        let catalog: PythCatalog = pyth_catalog.snapshot().await;
         if base_mints.is_empty() {
             continue;
         }
