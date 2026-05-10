@@ -27,7 +27,7 @@ import {
 import { deleteAutomation, submitAutomation } from "@/lib/keeper";
 import { useOnChainAutomationSync } from "@/hooks/useOnChainAutomationSync";
 import { isTerminal } from "@/lib/types";
-import { closeAutomationOnChain } from "@/lib/close-automation";
+import { closeAutomationOnChain, OrphanedAutomationError } from "@/lib/close-automation";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 
 type View = "compose" | "active";
@@ -369,10 +369,26 @@ export default function Page() {
             target,
           );
         } catch (e) {
-          const msg = (e as Error).message || "close failed";
-          console.error("close_automation failed", id, e);
-          setToast(`Close tx failed: ${msg.slice(0, 80)}`);
-          return false;
+          if (e instanceof OrphanedAutomationError) {
+            // PDA belongs to a previous program ID (devnet rotation
+            // orphaned this record). Drop the local entry; deposit, if
+            // any, is recoverable only by closing against the prior
+            // program.
+            console.warn(
+              "automation orphaned by program rotation; removing locally",
+              id,
+              e.actualOwner,
+            );
+            setToast(
+              "Removed stale rule from prior program version — funds (if any) require manual recovery",
+            );
+            // fall through to local cleanup below
+          } else {
+            const msg = (e as Error).message || "close failed";
+            console.error("close_automation failed", id, e);
+            setToast(`Close tx failed: ${msg.slice(0, 80)}`);
+            return false;
+          }
         }
       }
       setAutomations((prev) => prev.filter((a) => a.id !== id));

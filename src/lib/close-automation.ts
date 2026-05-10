@@ -20,8 +20,36 @@ import {
   configPda,
   fetchConfig,
   getProgram,
+  SOTAMA_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
 } from "@/lib/program";
+
+/** Thrown when the on-chain account at `target.pubkey` exists but is
+ *  owned by a different program than the currently-configured Sotama
+ *  program ID. This happens after a devnet program rotation — automations
+ *  created against the previous program ID become unreachable from the
+ *  new program. The page-level handler should catch this, drop the
+ *  local record, and surface a clear message to the user. */
+export class OrphanedAutomationError extends Error {
+  readonly automationPubkey: string;
+  readonly actualOwner: string;
+  readonly expectedOwner: string;
+  constructor(args: {
+    automationPubkey: string;
+    actualOwner: string;
+    expectedOwner: string;
+  }) {
+    super(
+      `Automation ${args.automationPubkey} is owned by ${args.actualOwner}, ` +
+        `but the current program is ${args.expectedOwner}. The PDA is from a ` +
+        `prior program version and cannot be closed by this build.`,
+    );
+    this.name = "OrphanedAutomationError";
+    this.automationPubkey = args.automationPubkey;
+    this.actualOwner = args.actualOwner;
+    this.expectedOwner = args.expectedOwner;
+  }
+}
 
 /**
  * Submit the right `close_automation*` ix for `target`'s action kind.
@@ -64,6 +92,35 @@ export async function closeAutomationOnChain(
 
   const owner = wallet.publicKey;
   const automation = new PublicKey(target.pubkey);
+
+  // Pre-flight: confirm the on-chain account is still owned by the
+  // current program. After a devnet program rotation, PDAs created
+  // against the previous program ID are owned by the abandoned program
+  // and would fail with AccountOwnedByWrongProgram (Anchor 3007). Catch
+  // it here and surface a structured error so the caller can drop the
+  // local record gracefully instead of leaving the user stuck.
+  if (!SOTAMA_PROGRAM_ID) {
+    throw new Error("Sotama program ID is not configured");
+  }
+  const expectedOwner = SOTAMA_PROGRAM_ID;
+  const acctInfo = await connection.getAccountInfo(automation, "confirmed");
+  if (acctInfo == null) {
+    // Account doesn't exist on-chain — already closed via some other
+    // path. Treat as orphaned so the local record gets cleaned up.
+    throw new OrphanedAutomationError({
+      automationPubkey: target.pubkey,
+      actualOwner: "(account does not exist)",
+      expectedOwner: expectedOwner.toBase58(),
+    });
+  }
+  if (!acctInfo.owner.equals(expectedOwner)) {
+    throw new OrphanedAutomationError({
+      automationPubkey: target.pubkey,
+      actualOwner: acctInfo.owner.toBase58(),
+      expectedOwner: expectedOwner.toBase58(),
+    });
+  }
+
   const adapterWallet = {
     publicKey: owner,
     signTransaction: wallet.signTransaction,
