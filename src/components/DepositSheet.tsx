@@ -956,6 +956,18 @@ async function sendCreateAutomation(
         SPL_TOKEN_PROGRAM_ID,
       ),
     );
+    // Treasury's output ATA — receives the protocol swap fee at every
+    // execute_swap. Idempotent: pays ~0.002 SOL rent only when no one
+    // has used this output mint before, no-op after that.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        associatedTokenAddress(config.treasury, spec.outputMint),
+        config.treasury,
+        spec.outputMint,
+        SPL_TOKEN_PROGRAM_ID,
+      ),
+    );
     tx.add(builtBefore.ix);
     automation = builtBefore.automation;
   } else {

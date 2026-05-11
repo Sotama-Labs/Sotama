@@ -644,6 +644,18 @@ export async function sendChainCreate(params: {
         SPL_TOKEN_PROGRAM_ID,
       ),
     );
+    // Treasury's output ATA — receives the protocol swap fee on every
+    // execute_swap fire of this rule. Idempotent across chain links
+    // that share an output mint and across all users system-wide.
+    ixs.push(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        associatedTokenAddress(config.treasury, onChainAction.swap.outputMint),
+        config.treasury,
+        onChainAction.swap.outputMint,
+        SPL_TOKEN_PROGRAM_ID,
+      ),
+    );
 
     // Cadence resolution: when loopMode is set AND this node is in
     // the cycle, override the per-rule cadence with the loop template
