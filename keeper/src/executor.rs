@@ -701,7 +701,7 @@ async fn send_via_helius(
         "method": "sendTransaction",
         "params": [
             b64,
-            { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
+            { "encoding": "base64", "skipPreflight": false, "maxRetries": 3, "preflightCommitment": "processed" }
         ]
     });
     let resp: Value = http.post(sender_url).json(&body).send().await?.json().await?;
