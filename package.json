@@ -29,7 +29,7 @@
     "@solana/wallet-adapter-react-ui": "^0.9.39",
     "@solana/wallet-adapter-solflare": "^0.6.31",
     "@solana/web3.js": "^1.98.0",
-    "next": "15.1.6",
+    "next": "15.5.18",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
@@ -43,7 +43,7 @@
     "@types/react-dom": "18.3.5",
     "chai": "^4.5.0",
     "eslint": "^9.18.0",
-    "eslint-config-next": "15.1.6",
+    "eslint-config-next": "15.5.18",
     "mocha": "^10.8.2",
     "ts-mocha": "^11.1.0",
     "ts-node": "^10.9.2",
