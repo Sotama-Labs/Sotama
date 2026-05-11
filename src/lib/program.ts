@@ -484,9 +484,14 @@ export function parseAutomationCreated(
   const parser = new EventParser(program.programId, coder);
   for (const evt of parser.parseLogs(logs)) {
     if (evt.name === "AutomationCreated" || evt.name === "automationCreated") {
-      const data = evt.data as { pubkey: PublicKey; nonce: BN };
+      // IDL field is `automation` (the PDA address), not `pubkey`. The
+      // older name shipped before Anchor 0.30's IDL rewrite; preserve
+      // both lookups to survive a future IDL rename without crashing.
+      const data = evt.data as { automation?: PublicKey; pubkey?: PublicKey; nonce: BN };
+      const automationPk = data.automation ?? data.pubkey;
+      if (!automationPk) continue;
       return {
-        pubkey: data.pubkey.toBase58(),
+        pubkey: automationPk.toBase58(),
         nonce: data.nonce.toString(),
       };
     }
