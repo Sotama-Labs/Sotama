@@ -255,9 +255,20 @@ impl JupiterClient {
         amount: u64,
         slippage_bps: u16,
         taker: &Pubkey,
+        destination_token_account: Option<&Pubkey>,
     ) -> Result<BuildResponse> {
+        // Default route: Jupiter sends output to `taker`'s output-mint ATA.
+        // Sotama swaps run with taker=PDA but the on-chain `execute_swap`
+        // ix requires `output_ata.owner == destination` (a separate wallet).
+        // So we explicitly pass `destinationTokenAccount` to redirect
+        // Jupiter's CPI into the right ATA — otherwise locate_ata_indices()
+        // fails with "output ATA … missing from Jupiter accounts" and the
+        // executor bails before submission.
+        let dest_param = destination_token_account
+            .map(|ata| format!("&destinationTokenAccount={ata}"))
+            .unwrap_or_default();
         let url = format!(
-            "{base}/swap/v2/build?inputMint={input}&outputMint={output}&amount={amount}&slippageBps={bps}&taker={taker}&maxAccounts={max_accounts}",
+            "{base}/swap/v2/build?inputMint={input}&outputMint={output}&amount={amount}&slippageBps={bps}&taker={taker}&maxAccounts={max_accounts}{dest_param}",
             base = self.base_url.trim_end_matches('/'),
             input = input_mint,
             output = output_mint,

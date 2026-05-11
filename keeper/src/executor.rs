@@ -615,6 +615,7 @@ async fn build_action_ix(
                     effective_amount_in,
                     cfg.swap_slippage_bps,
                     &ctx.pubkey,
+                    Some(&destination_output_ata),
                 )
                 .await
                 .map_err(|e| anyhow!("jupiter /build: {e}"))?;

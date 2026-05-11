@@ -262,6 +262,9 @@ async fn bridge_one(
     // slip past on-chain. ALT-resident accounts are compressed into
     // table indices in the outer v0 tx — see `lookup_table_cache` below
     // and `executor::send_one` for the wire-size enforcement.
+    // Bridge sweeps tokens back to the PDA's own input ATA, so the
+    // default Jupiter destination (taker=PDA's own input-mint ATA) is
+    // exactly what we want — pass None to keep behavior unchanged.
     let build = jup
         .build_swap(
             &src.mint,
@@ -269,6 +272,7 @@ async fn bridge_one(
             src.amount,
             cfg.bridge_slippage_bps,
             &ctx.pubkey,
+            None,
         )
         .await
         .map_err(|e| anyhow!("jupiter /build: {e}"))?;
