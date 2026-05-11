@@ -31,7 +31,11 @@ mod vaults;
 use crate::config::{KeeperConfig, StreamMode};
 use crate::indexer::WatchedSet;
 
-#[tokio::main]
+// Force multiple worker threads even on shared-cpu-1x. Default would
+// pick `num_cpus = 1`, so any spawned task that doesn't yield often
+// (e.g. busy SSE consumer, polling loop) starves the others — observed
+// when the time_watcher task closure was never polled until launch.
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     init_tracing();

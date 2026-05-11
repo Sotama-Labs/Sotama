@@ -33,6 +33,10 @@ pub async fn run(
     set_rx: watch::Receiver<WatchedSet>,
     trigger_tx: mpsc::Sender<TriggerEvent>,
 ) -> Result<()> {
+    info!(
+        interval_secs = cfg.time_watcher_interval.as_secs(),
+        "time_watcher: starting"
+    );
     let mut tick = interval(cfg.time_watcher_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
