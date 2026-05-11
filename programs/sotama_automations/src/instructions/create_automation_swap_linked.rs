@@ -1,9 +1,10 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer};
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{ActionSpec, Automation, Cadence, Config, TriggerSpec};
+use crate::state::{compute_time_fee, ActionSpec, Automation, Cadence, Config, TriggerSpec};
 
 /// Create a chain-linked Swap automation.
 ///
@@ -76,6 +77,15 @@ pub struct CreateAutomationSwapLinked<'info> {
     )]
     pub automation_input_ata: Account<'info, TokenAccount>,
 
+    /// Recipient of the upfront time fee. Address-checked against
+    /// `config.keeper`.
+    /// CHECK: address-checked.
+    #[account(
+        mut,
+        address = config.keeper @ SotamaError::UnauthorizedKeeper,
+    )]
+    pub keeper: AccountInfo<'info>,
+
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -127,6 +137,12 @@ pub fn handler(
     let nonce = ctx.accounts.config.automation_count;
     let now = Clock::get()?.unix_timestamp;
 
+    let time_fee = compute_time_fee(
+        &cadence,
+        now,
+        ctx.accounts.config.time_fee_lamports_per_day,
+    );
+
     let automation = &mut ctx.accounts.automation;
     automation.owner = ctx.accounts.owner.key();
     automation.nonce = nonce;
@@ -160,6 +176,20 @@ pub fn handler(
                 },
             ),
             seed_amount,
+        )?;
+    }
+
+    // Upfront time fee → keeper.
+    if time_fee > 0 {
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.owner.to_account_info(),
+                    to: ctx.accounts.keeper.to_account_info(),
+                },
+            ),
+            time_fee,
         )?;
     }
 

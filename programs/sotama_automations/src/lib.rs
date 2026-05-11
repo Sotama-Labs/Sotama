@@ -34,17 +34,28 @@ pub mod sotama_automations {
         instructions::update_treasury::handler(ctx, new_treasury)
     }
 
-    /// Rotate `Config.close_fee_lamports` (per-close protocol fee).
-    /// Admin only. Capped at `MAX_CLOSE_FEE_LAMPORTS` (0.1 SOL) so a
-    /// misconfig can't make rules un-closable.
-    pub fn update_close_fee(ctx: Context<UpdateCloseFee>, new_fee_lamports: u64) -> Result<()> {
-        instructions::update_close_fee::handler(ctx, new_fee_lamports)
+    /// Rotate `Config.swap_fee_bps` — protocol fee in basis points on
+    /// every `execute_swap`. Admin only. Capped at `MAX_SWAP_FEE_BPS`
+    /// (100 = 1%). The launch rate is 10 bps (0.1%).
+    pub fn update_swap_fee_bps(ctx: Context<UpdateSwapFeeBps>, new_bps: u16) -> Result<()> {
+        instructions::update_swap_fee_bps::handler(ctx, new_bps)
     }
 
-    /// One-shot devnet migration: realloc the v4.0 Config PDA to the
-    /// v4.1 layout and initialize the new `treasury` + `close_fee_lamports`
-    /// fields. Mainnet doesn't need this — its first `initialize_config`
-    /// writes the v4.1 layout directly. Admin only.
+    /// Rotate `Config.time_fee_lamports_per_day` — protocol fee per day
+    /// of rule lifetime, charged upfront to the keeper at create time.
+    /// Admin only. Capped at `MAX_TIME_FEE_LAMPORTS_PER_DAY`
+    /// (0.01 SOL/day). The launch rate is 0.0003 SOL/day.
+    pub fn update_time_fee_per_day(
+        ctx: Context<UpdateTimeFeePerDay>,
+        new_lamports_per_day: u64,
+    ) -> Result<()> {
+        instructions::update_time_fee_per_day::handler(ctx, new_lamports_per_day)
+    }
+
+    /// One-shot devnet migration: realloc the predecessor Config PDA
+    /// to the current layout and initialize the new fee fields. Mainnet
+    /// doesn't need this — its first `initialize_config` writes the
+    /// current layout directly. Admin only.
     pub fn migrate_config(ctx: Context<MigrateConfig>) -> Result<()> {
         instructions::migrate_config::handler(ctx)
     }
@@ -58,10 +69,11 @@ pub mod sotama_automations {
     }
 
     /// One-way kill switch. Admin only. Sets `Config.shutdown = true`
-    /// and locks `update_treasury`, `update_close_fee`, `update_admin`,
-    /// `migrate_config`, all `execute_*`, and all `create_automation*`.
-    /// Enables `admin_close_automation*` for the wind-down. Reverts on
-    /// a second invocation (`ShutdownAlreadySet`).
+    /// and locks `update_treasury`, `update_swap_fee_bps`,
+    /// `update_time_fee_per_day`, `update_admin`, `migrate_config`,
+    /// all `execute_*`, and all `create_automation*`. Enables
+    /// `admin_close_automation*` for the wind-down. Reverts on a
+    /// second invocation (`ShutdownAlreadySet`).
     pub fn set_shutdown(ctx: Context<SetShutdown>) -> Result<()> {
         instructions::set_shutdown::handler(ctx)
     }
@@ -184,12 +196,14 @@ pub mod sotama_automations {
         inner_ix_data: Vec<u8>,
         inner_ix_account_metas: Vec<jupiter::SwapAccountMeta>,
         keeper_wsol_ata_index: u8,
+        min_amount_out: u64,
     ) -> Result<()> {
         instructions::execute_fee_topup::handler(
             ctx,
             inner_ix_data,
             inner_ix_account_metas,
             keeper_wsol_ata_index,
+            min_amount_out,
         )
     }
 

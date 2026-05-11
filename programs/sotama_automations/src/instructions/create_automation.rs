@@ -4,7 +4,7 @@ use anchor_lang::system_program;
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
 use crate::state::{
-    ActionSpec, Automation, Cadence, Config, TriggerSpec, MIN_AMOUNT_LAMPORTS,
+    compute_time_fee, ActionSpec, Automation, Cadence, Config, TriggerSpec, MIN_AMOUNT_LAMPORTS,
 };
 
 /// Create an automation whose action is `TransferSol`. The deposit is
@@ -35,6 +35,17 @@ pub struct CreateAutomation<'info> {
         bump,
     )]
     pub automation: Account<'info, Automation>,
+
+    /// Recipient of the time fee — must equal `config.keeper`. SOL is
+    /// transferred here from `owner` at create time so the keeper has
+    /// the budget to pay tx fees for this rule's future fires.
+    /// CHECK: address-checked against `config.keeper` so the owner
+    /// can't redirect the fee to an attacker-controlled address.
+    #[account(
+        mut,
+        address = config.keeper @ SotamaError::UnauthorizedKeeper,
+    )]
+    pub keeper: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
 }
@@ -73,6 +84,14 @@ pub fn handler(
         require!(*unix_deadline > now, SotamaError::BadCadence);
     }
 
+    // Compute the upfront time fee against the still-owned `cadence`
+    // parameter before it's moved into `automation.cadence` below.
+    let time_fee = compute_time_fee(
+        &cadence,
+        now,
+        ctx.accounts.config.time_fee_lamports_per_day,
+    );
+
     let automation = &mut ctx.accounts.automation;
     automation.owner = ctx.accounts.owner.key();
     automation.nonce = nonce;
@@ -96,6 +115,24 @@ pub fn handler(
         ),
         amount,
     )?;
+
+    // Upfront time fee → keeper (funds tx-fee budget). Computed above
+    // off the still-owned `cadence` parameter. Charging here (vs at
+    // execute time) keeps the user's commitment explicit at create and
+    // means an unfired rule that gets closed early still pays for
+    // having reserved keeper attention.
+    if time_fee > 0 {
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.owner.to_account_info(),
+                    to: ctx.accounts.keeper.to_account_info(),
+                },
+            ),
+            time_fee,
+        )?;
+    }
 
     ctx.accounts.config.automation_count = nonce
         .checked_add(1)

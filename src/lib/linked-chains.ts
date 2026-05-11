@@ -51,7 +51,7 @@ import {
   cadenceToOnChain,
   getProgram,
   isProgramConfigured,
-  nextNonce,
+  fetchConfig,
   SOTAMA_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
   type OnChainActionSpec,
@@ -470,7 +470,11 @@ export async function sendChainCreate(params: {
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const program = getProgram(connection, adapterWallet as any);
-  const startNonce = await nextNonce(program);
+  // Fetch Config once — we need `keeper` (time-fee recipient) and the
+  // starting `automation_count` for nonce sequencing.
+  const config = await fetchConfig(program);
+  const keeper = config.keeper;
+  const startNonce = BigInt(config.automationCount.toString());
 
   // Pre-compute every node's PDA so destination wiring + ATA creates
   // can be expressed before any ix is built. Nonces are sequential from
@@ -665,6 +669,7 @@ export async function sendChainCreate(params: {
     const built = await buildCreateAutomationSwapLinkedIx({
       program,
       owner,
+      keeper,
       trigger: onChainTrigger,
       action: onChainAction as OnChainActionSpec & {
         swap: {

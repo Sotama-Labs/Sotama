@@ -173,13 +173,16 @@ export function cadenceToOnChain(cadence: Cadence): OnChainCadence {
 export async function buildCreateAutomationIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
+  /** `Config.keeper` — recipient of the upfront time fee. Fetch via
+   *  `fetchConfig(program)` once and pass through. */
+  keeper: PublicKey;
   trigger: OnChainTriggerSpec;
   action: OnChainActionSpec & { transferSol: { destination: PublicKey; amount: BN } };
   cadence: OnChainCadence;
   minIntervalSecs: number;
   nextNonce: bigint;
 }): Promise<{ ix: TransactionInstruction; automation: PublicKey }> {
-  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
+  const { program, owner, keeper, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
   const automation = automationPda(owner, nextNonce, program.programId);
   const ix = await program.methods
     .createAutomation(trigger as never, action as never, cadence as never, minIntervalSecs)
@@ -187,6 +190,7 @@ export async function buildCreateAutomationIx(params: {
       owner,
       config: configPda(program.programId),
       automation,
+      keeper,
       systemProgram: new PublicKey("11111111111111111111111111111111"),
     })
     .instruction();
@@ -196,6 +200,7 @@ export async function buildCreateAutomationIx(params: {
 export async function buildCreateAutomationSplIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
+  keeper: PublicKey;
   trigger: OnChainTriggerSpec;
   action: OnChainActionSpec & {
     transferSpl: { destination: PublicKey; mint: PublicKey; amount: BN };
@@ -209,7 +214,7 @@ export async function buildCreateAutomationSplIx(params: {
   ownerAta: PublicKey;
   automationAta: PublicKey;
 }> {
-  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
+  const { program, owner, keeper, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
   const mint = action.transferSpl.mint;
   const automation = automationPda(owner, nextNonce, program.programId);
   const ownerAta = associatedTokenAddress(owner, mint);
@@ -223,6 +228,7 @@ export async function buildCreateAutomationSplIx(params: {
       mint,
       ownerAta,
       automationAta,
+      keeper,
       tokenProgram: SPL_TOKEN_PROGRAM_ID,
       systemProgram: new PublicKey("11111111111111111111111111111111"),
     })
@@ -233,6 +239,7 @@ export async function buildCreateAutomationSplIx(params: {
 export async function buildCreateAutomationSwapIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
+  keeper: PublicKey;
   trigger: OnChainTriggerSpec;
   action: OnChainActionSpec & {
     swap: {
@@ -252,7 +259,7 @@ export async function buildCreateAutomationSwapIx(params: {
   ownerInputAta: PublicKey;
   automationInputAta: PublicKey;
 }> {
-  const { program, owner, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
+  const { program, owner, keeper, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
   const inputMint = action.swap.inputMint;
   const automation = automationPda(owner, nextNonce, program.programId);
   const ownerInputAta = associatedTokenAddress(owner, inputMint);
@@ -272,6 +279,7 @@ export async function buildCreateAutomationSwapIx(params: {
       inputMint,
       ownerInputAta,
       automationInputAta,
+      keeper,
       tokenProgram: SPL_TOKEN_PROGRAM_ID,
       systemProgram: new PublicKey("11111111111111111111111111111111"),
     })
@@ -288,6 +296,7 @@ export async function buildCreateAutomationSwapIx(params: {
 export async function buildCreateAutomationSwapLinkedIx(params: {
   program: Program<SotamaAutomations>;
   owner: PublicKey;
+  keeper: PublicKey;
   trigger: OnChainTriggerSpec;
   action: OnChainActionSpec & {
     swap: {
@@ -313,6 +322,7 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
   const {
     program,
     owner,
+    keeper,
     trigger,
     action,
     cadence,
@@ -363,6 +373,7 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
       inputMint,
       ownerInputAta,
       automationInputAta,
+      keeper,
       tokenProgram: SPL_TOKEN_PROGRAM_ID,
       systemProgram: new PublicKey("11111111111111111111111111111111"),
     })

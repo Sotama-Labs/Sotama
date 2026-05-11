@@ -152,7 +152,13 @@ impl KeeperConfig {
             Cluster::MainnetBeta => (
                 "https://mainnet.helius-rpc.com",
                 "wss://atlas-mainnet.helius-rpc.com",
-                "https://mainnet-sender.helius-rpc.com/fast",
+                // Helius Sender — canonical hostname is `sender.helius-rpc.com`,
+                // NOT `mainnet-sender.helius-rpc.com` (the latter doesn't
+                // resolve; verified via dig 2026-05-11). Sender is
+                // global with automatic regional routing — there's no
+                // per-cluster hostname. Devnet has no Sender equivalent
+                // and falls back to the standard devnet RPC.
+                "https://sender.helius-rpc.com/fast",
             ),
         };
 

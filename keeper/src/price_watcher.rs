@@ -60,7 +60,8 @@ pub async fn run(
         .timeout(Duration::from_secs(8))
         .build()?;
 
-    let jupiter = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
+    let jupiter = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone())
+        .with_api_key(cfg.jupiter_api_key.clone());
 
     // Notify handle wired to PriceCache: fires on every successful put(),
     // including those from Lazer and Hermes SSE. The evaluator loop below

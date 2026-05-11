@@ -3,7 +3,7 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::invoke_signed,
 };
-use anchor_spl::token::TokenAccount;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer as SplTransfer};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationExecuted, AutomationFilled, AutomationFinished};
@@ -56,6 +56,19 @@ pub struct ExecuteSwap<'info> {
     /// CHECK: address-checked against the canonical Jupiter v6 program ID.
     #[account(address = jupiter::program::ID)]
     pub jupiter_program: UncheckedAccount<'info>,
+
+    /// Treasury's ATA for the swap's output mint. Receives the protocol
+    /// swap fee (`received * config.swap_fee_bps / 10_000`) after the
+    /// slippage check passes. The handler verifies mint = output_mint
+    /// and owner = config.treasury directly against the account data —
+    /// no `Account<TokenAccount>` constraint here because Anchor needs
+    /// the output mint to be known at IDL-derive time and it lives in
+    /// the action spec.
+    /// CHECK: validated in the handler.
+    #[account(mut)]
+    pub treasury_output_ata: UncheckedAccount<'info>,
+
+    pub token_program: Program<'info, Token>,
 }
 
 pub fn handler<'info>(
@@ -217,6 +230,51 @@ pub fn handler<'info>(
         .ok_or(error!(SotamaError::SlippageExceeded))?;
     require!(received >= min_amount_out, SotamaError::SlippageExceeded);
     let _ = amount_in; // amount_in is informational at this layer; Jupiter's ix bytes carry it
+    let _ = post_data;
+
+    // Protocol swap fee on the delivered amount. `swap_fee_bps / 10_000`
+    // of `received` is transferred from the output ATA to the treasury's
+    // output ATA. PDA signs the SPL transfer. Treasury ATA mint+owner
+    // are validated against `output_mint` and `Config.treasury` so a
+    // misconfigured keeper can't redirect the fee to a wallet it
+    // controls. When `swap_fee_bps == 0` we still touch the treasury
+    // ATA cheaply via the mint/owner read but skip the transfer.
+    let swap_fee_bps = ctx.accounts.config.swap_fee_bps;
+    let treasury_pubkey = ctx.accounts.config.treasury;
+    let swap_fee: u64 = ((received as u128).saturating_mul(swap_fee_bps as u128) / 10_000) as u64;
+    {
+        let treasury_ata_info = ctx.accounts.treasury_output_ata.to_account_info();
+        let mut treasury_data: &[u8] = &treasury_ata_info.try_borrow_data()?;
+        let treasury_ata = TokenAccount::try_deserialize(&mut treasury_data)?;
+        require_keys_eq!(
+            treasury_ata.mint,
+            output_mint,
+            SotamaError::BadTreasuryOutput
+        );
+        require_keys_eq!(
+            treasury_ata.owner,
+            treasury_pubkey,
+            SotamaError::BadTreasuryOwner
+        );
+    }
+    if swap_fee > 0 {
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                SplTransfer {
+                    from: output_ata_info.to_account_info(),
+                    to: ctx.accounts.treasury_output_ata.to_account_info(),
+                    authority: automation.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            swap_fee,
+        )?;
+    }
+    // `received` for the user-facing fill is what stays in the output
+    // ATA after the protocol fee debit. Anything downstream (linked
+    // rule, fill event) sees the net amount.
+    let received = received.saturating_sub(swap_fee);
 
     // Read the post-CPI input ATA balance to compute the actual amount consumed.
     let mut post_input_data: &[u8] = &input_ata_info.try_borrow_data()?;

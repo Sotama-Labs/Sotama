@@ -59,6 +59,7 @@ use crate::types::{AutomationCtx, TriggerEvent};
 const LAZER_ENDPOINTS: &[&str] = &[
     "wss://pyth-lazer-0.dourolabs.app/v1/stream",
     "wss://pyth-lazer-1.dourolabs.app/v1/stream",
+    "wss://pyth-lazer-2.dourolabs.app/v1/stream",
 ];
 
 const SYMBOLS_URL: &str = "https://history.pyth-lazer.dourolabs.app/v1/symbols";

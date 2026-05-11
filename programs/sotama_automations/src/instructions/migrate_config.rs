@@ -1,24 +1,25 @@
 use anchor_lang::prelude::*;
 
-use crate::state::Config;
+use crate::state::{Config, DEFAULT_SWAP_FEE_BPS, DEFAULT_TIME_FEE_LAMPORTS_PER_DAY};
 
-/// One-shot admin migration that grows the existing `Config` PDA to the
-/// current `Config::INIT_SPACE` and initializes the v4.1 fields
-/// (`treasury`, `close_fee_lamports`). Idempotent: running it twice is
-/// a no-op once the account is already at full size — Anchor's `realloc`
-/// constraint shrinks/grows to the requested size, and we explicitly set
-/// the new fields each time.
+/// One-shot admin migration that ensures the `Config` PDA matches the
+/// current `Config::INIT_SPACE` and seeds the fee-model fields
+/// (`swap_fee_bps`, `time_fee_lamports_per_day`) with their launch
+/// defaults. Idempotent: running it twice is a no-op once the account
+/// is already at full size — Anchor's `realloc` constraint
+/// shrinks/grows to the requested size and we re-assert the defaults.
 ///
-/// Required only on devnet (which has a v4.0 Config from a prior
-/// `initialize_config`). Mainnet's first `initialize_config` writes the
-/// full v4.1 layout directly, so this ix is unused there.
+/// Required only on devnet (which has a predecessor `Config` from an
+/// earlier ship). Mainnet's first `initialize_config` writes the
+/// current layout directly, so this ix is unused there.
 ///
-/// Defaults match `initialize_config`:
-///   * `treasury = admin`
-///   * `close_fee_lamports = 0`
-///
-/// Admin can rotate either field afterwards via `update_treasury` /
-/// `update_close_fee`.
+/// Note: this ix uses `Account<Config>` for the realloc constraint,
+/// which means Anchor has to be able to deserialize the existing bytes
+/// against the *current* `Config` struct layout. Across a layout change
+/// that removed a field and added two others (the v4.4 → v4.5 fee
+/// transition), the existing bytes won't parse — operators on devnet
+/// should re-initialize via the migrations/initialize script rather
+/// than relying on this ix for that specific transition.
 #[derive(Accounts)]
 pub struct MigrateConfig<'info> {
     #[account(mut)]
@@ -45,17 +46,11 @@ pub fn handler(ctx: Context<MigrateConfig>) -> Result<()> {
     );
     let admin = ctx.accounts.admin.key();
     let config = &mut ctx.accounts.config;
-    // After realloc, the newly-grown bytes are zero. We explicitly set
-    // the v4.1 fields so a freshly migrated config matches a freshly
-    // initialized one. Idempotent: running again with the same admin
-    // produces identical state (unless treasury/close_fee_lamports have
-    // already been rotated, in which case the second call would reset
-    // them — operators should run this exactly once after the upgrade).
+    // After realloc, the newly-grown bytes are zero. Seed the fee
+    // fields with launch defaults; the admin can rotate via
+    // `update_swap_fee_bps` and `update_time_fee_per_day` afterwards.
     config.treasury = admin;
-    config.close_fee_lamports = 0;
-    // `shutdown` defaults to false from the realloc zero-init; we
-    // explicitly leave it untouched here so a future migrate_config
-    // call (which is itself blocked when shutdown is true) cannot
-    // somehow reset the kill switch.
+    config.swap_fee_bps = DEFAULT_SWAP_FEE_BPS;
+    config.time_fee_lamports_per_day = DEFAULT_TIME_FEE_LAMPORTS_PER_DAY;
     Ok(())
 }

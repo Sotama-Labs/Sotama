@@ -20,12 +20,21 @@ use crate::state::{Automation, Config};
 /// Trust split: same as `execute_swap` — the keeper is a configured
 /// signer, so trusting it to format the inner Jupiter ix is fine. The
 /// on-chain invariants prevent the keeper from redirecting funds to
-/// somewhere it doesn't already control:
+/// somewhere it doesn't already control AND from extracting value at
+/// a poor exchange rate:
 ///
 ///   * The output ATA's mint MUST be wrapped SOL (`So111...11112`).
 ///   * The output ATA's owner MUST be the keeper signer (NOT the
 ///     destination, NOT the PDA — the keeper, who pays tx fees).
 ///   * The relayed inner ix MUST target the canonical Jupiter v6 ID.
+///   * The keeper's wSOL ATA MUST be credited at least `min_amount_out`
+///     lamports of wSOL between pre- and post-CPI snapshots. Without
+///     this guard, a compromised keeper key could swap the PDA's
+///     tokens at an arbitrarily bad rate (sandwich, low-liquidity
+///     pool, fee-on-transfer router) and skim the difference — the
+///     other checks would still pass because the output mint+owner
+///     match. Mirrors the `SlippageExceeded` guard in `execute_swap`
+///     and `execute_bridge`.
 ///
 /// Not gated by `check_can_fire` — fee topup is independent of firing
 /// and runs as a periodic maintenance ix from the keeper. Doesn't
@@ -60,6 +69,7 @@ pub fn handler<'info>(
     inner_ix_data: Vec<u8>,
     inner_ix_account_metas: Vec<SwapAccountMeta>,
     keeper_wsol_ata_index: u8,
+    min_amount_out: u64,
 ) -> Result<()> {
     require!(!ctx.accounts.config.paused, SotamaError::Paused);
     require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
@@ -76,6 +86,10 @@ pub fn handler<'info>(
         ctx.accounts.automation.fee_topup_enabled,
         SotamaError::FeeTopupNotEnabled
     );
+    // Even with the opt-in, the keeper must promise a non-zero output
+    // floor — `min_amount_out == 0` would be functionally equivalent
+    // to no slippage check and defeat the guard's purpose.
+    require!(min_amount_out > 0, SotamaError::SlippageExceeded);
 
     let remaining = ctx.remaining_accounts;
     require!(
@@ -88,24 +102,27 @@ pub fn handler<'info>(
     );
 
     // The keeper's wSOL ATA must have mint = native wSOL and owner =
-    // keeper signer. This is the only constraint distinguishing
-    // execute_fee_topup from execute_swap — output must come back to
-    // the keeper, not to a user wallet, so the keeper can convert it
-    // to operating SOL off-band.
+    // keeper signer. This is the only ownership-shape constraint
+    // distinguishing execute_fee_topup from execute_swap — output must
+    // come back to the keeper, not to a user wallet, so the keeper can
+    // convert it to operating SOL off-band. Snapshot the pre-CPI
+    // balance here so the post-CPI slippage check is provable.
     let keeper_wsol_ata_info = &remaining[keeper_wsol_ata_index as usize];
-    let mut data_buf: &[u8] = &keeper_wsol_ata_info.try_borrow_data()?;
-    let keeper_wsol_ata = TokenAccount::try_deserialize(&mut data_buf)?;
-    require_keys_eq!(
-        keeper_wsol_ata.mint,
-        anchor_spl::token::spl_token::native_mint::ID,
-        SotamaError::BadFeeTopupOutput
-    );
-    require_keys_eq!(
-        keeper_wsol_ata.owner,
-        ctx.accounts.keeper.key(),
-        SotamaError::BadFeeTopupOwner
-    );
-    let _ = data_buf; // release borrow before invoke
+    let wsol_before: u64 = {
+        let mut data_buf: &[u8] = &keeper_wsol_ata_info.try_borrow_data()?;
+        let keeper_wsol_ata = TokenAccount::try_deserialize(&mut data_buf)?;
+        require_keys_eq!(
+            keeper_wsol_ata.mint,
+            anchor_spl::token::spl_token::native_mint::ID,
+            SotamaError::BadFeeTopupOutput
+        );
+        require_keys_eq!(
+            keeper_wsol_ata.owner,
+            ctx.accounts.keeper.key(),
+            SotamaError::BadFeeTopupOwner
+        );
+        keeper_wsol_ata.amount
+    };
 
     // Reconstruct the inner-ix AccountMeta list, then invoke as the
     // automation PDA so Jupiter can move the input tokens out of the
@@ -139,6 +156,20 @@ pub fn handler<'info>(
     let signer_seeds: &[&[&[u8]]] = &[pda_seeds];
 
     invoke_signed(&ix, remaining, signer_seeds)?;
+
+    // Post-CPI slippage check. Re-deserialize the keeper's wSOL ATA
+    // (the CPI may have rewritten its data via the token program) and
+    // assert the credited amount cleared the floor the keeper
+    // committed to at submit time. `checked_sub` catches the
+    // pathological case where the CPI somehow decreased the balance
+    // (e.g. a malformed route that debits the keeper instead).
+    let mut post_data: &[u8] = &keeper_wsol_ata_info.try_borrow_data()?;
+    let keeper_wsol_ata_post = TokenAccount::try_deserialize(&mut post_data)?;
+    let received = keeper_wsol_ata_post
+        .amount
+        .checked_sub(wsol_before)
+        .ok_or(error!(SotamaError::SlippageExceeded))?;
+    require!(received >= min_amount_out, SotamaError::SlippageExceeded);
 
     Ok(())
 }

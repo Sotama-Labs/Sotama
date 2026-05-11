@@ -25,8 +25,14 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig, compute_budget::ComputeBudgetInstruction, hash::Hash,
-    instruction::Instruction, message::Message, pubkey::Pubkey, transaction::Transaction,
+    address_lookup_table::AddressLookupTableAccount,
+    commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
+    hash::Hash,
+    instruction::Instruction,
+    message::{v0::Message as MessageV0, VersionedMessage},
+    pubkey::Pubkey,
+    transaction::VersionedTransaction,
 };
 use std::str::FromStr;
 use std::sync::Arc;
@@ -36,6 +42,7 @@ use tracing::{debug, info, warn};
 
 use crate::caches;
 use crate::caches::blockhash::CachedBlockhash;
+use crate::caches::lookup_table::LookupTableCache;
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::{self, JupiterClient};
@@ -46,6 +53,10 @@ use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
 use crate::types::AutomationCtx;
 use crate::vaults::VaultCache;
+
+/// Wire-size cap on a serialized Solana v0 transaction. See the matching
+/// constant in `executor.rs` for the rationale.
+const TX_WIRE_SIZE_LIMIT: usize = 1232;
 
 /// Compute-unit ceiling for `execute_bridge`. Same as a normal swap —
 /// the relayed Jupiter route is the dominant cost and 1M is the same
@@ -58,6 +69,7 @@ pub async fn run(
     vault_cache: VaultCache,
     blockhash_cache: caches::blockhash::BlockhashCache,
     priority_fee_cache: caches::priority_fee::PriorityFeeCache,
+    lookup_table_cache: LookupTableCache,
 ) -> Result<()> {
     info!(
         scan_interval_secs = 2,
@@ -73,7 +85,8 @@ pub async fn run(
         cfg.rpc_url.clone(),
         CommitmentConfig::confirmed(),
     ));
-    let jup = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
+    let jup = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone())
+        .with_api_key(cfg.jupiter_api_key.clone());
     let config = config_pda(&cfg.program_id);
 
     // 2s cadence — each tick does only in-memory VaultCache reads (push-driven
@@ -100,7 +113,20 @@ pub async fn run(
 
         debug!(count = candidates.len(), "bridge_dispatcher: scanning cache");
         for ctx in candidates {
-            if let Err(e) = scan_pda_cached(&cfg, &http, &rpc, &jup, &config, &ctx, &vault_cache, &blockhash_cache, &priority_fee_cache).await {
+            if let Err(e) = scan_pda_cached(
+                &cfg,
+                &http,
+                &rpc,
+                &jup,
+                &config,
+                &ctx,
+                &vault_cache,
+                &blockhash_cache,
+                &priority_fee_cache,
+                &lookup_table_cache,
+            )
+            .await
+            {
                 warn!(automation = %ctx.pubkey, error = %e, "bridge_dispatcher: scan_pda failed");
             }
         }
@@ -124,6 +150,7 @@ async fn scan_pda_cached(
     vault_cache: &VaultCache,
     blockhash_cache: &caches::blockhash::BlockhashCache,
     priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
+    lookup_table_cache: &LookupTableCache,
 ) -> Result<()> {
     // Bridge only makes sense for Swap actions — that's where there's a
     // canonical "input mint" to converge on. A non-Swap automation with
@@ -179,7 +206,21 @@ async fn scan_pda_cached(
             continue;
         }
 
-        if let Err(e) = bridge_one(cfg, http, rpc, jup, config, ctx, &parsed, &input_mint, blockhash_cache, priority_fee_cache).await {
+        if let Err(e) = bridge_one(
+            cfg,
+            http,
+            rpc,
+            jup,
+            config,
+            ctx,
+            &parsed,
+            &input_mint,
+            blockhash_cache,
+            priority_fee_cache,
+            lookup_table_cache,
+        )
+        .await
+        {
             warn!(
                 automation = %ctx.pubkey,
                 in_mint = %parsed.mint,
@@ -203,6 +244,7 @@ async fn bridge_one(
     input_mint: &Pubkey,
     blockhash_cache: &caches::blockhash::BlockhashCache,
     priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
+    lookup_table_cache: &LookupTableCache,
 ) -> Result<()> {
     info!(
         automation = %ctx.pubkey,
@@ -212,14 +254,16 @@ async fn bridge_one(
         "bridge_attempt"
     );
 
-    // Resolve a CPI-safe Jupiter route. `taker = automation PDA` because
-    // Jupiter signs the inner ix's transfers as the input ATA owner, and
-    // the on-chain handler refuses any other taker. `slippage_bps` here
-    // is what Jupiter applies to its own quote internally; we ALSO
-    // enforce a tighter floor via `min_amount_out` below so a stale
-    // quote can't slip past on-chain.
+    // Resolve a Jupiter route. `taker = automation PDA` because Jupiter
+    // signs the inner ix's transfers as the input ATA owner, and the
+    // on-chain handler refuses any other taker. `slippage_bps` here is
+    // what Jupiter applies to its own quote internally; we ALSO enforce
+    // a tighter floor via `min_amount_out` below so a stale quote can't
+    // slip past on-chain. ALT-resident accounts are compressed into
+    // table indices in the outer v0 tx — see `lookup_table_cache` below
+    // and `executor::send_one` for the wire-size enforcement.
     let build = jup
-        .build_swap_cpi_safe(
+        .build_swap(
             &src.mint,
             input_mint,
             src.amount,
@@ -258,14 +302,13 @@ async fn bridge_one(
 
     let inner_accounts = jupiter::into_account_metas(&build.swap_instruction.accounts)
         .map_err(|e| anyhow!("parse jupiter accounts: {e}"))?;
-    if inner_accounts.len() > jupiter::MAX_CPI_ACCOUNTS as usize {
-        return Err(anyhow!(
-            "jupiter route returned {} accounts; CPI budget is {}",
-            inner_accounts.len(),
-            jupiter::MAX_CPI_ACCOUNTS
-        ));
-    }
     let inner_data = jupiter::decode_inner_data(&build.swap_instruction.data)?;
+
+    // Resolve route ALTs via the shared cache (same instance the
+    // executor uses), so concurrent bridge + executor fires don't both
+    // re-fetch Jupiter's published tables.
+    let alt_keys = jupiter::lookup_table_pubkeys(&build.addresses_by_lookup_table_address)?;
+    let alts = lookup_table_cache.resolve_many(rpc, &alt_keys).await?;
 
     // The on-chain handler expects the destination (input_mint) ATA to
     // appear in the relayed accounts list at `output_ata_index`. Locate
@@ -292,7 +335,16 @@ async fn bridge_one(
         min_amount_out,
     );
 
-    let sig = submit_with_priority(cfg, http, rpc, bridge_ix, blockhash_cache, priority_fee_cache).await?;
+    let sig = submit_with_priority(
+        cfg,
+        http,
+        rpc,
+        bridge_ix,
+        &alts,
+        blockhash_cache,
+        priority_fee_cache,
+    )
+    .await?;
     info!(
         automation = %ctx.pubkey,
         sig = %sig,
@@ -315,6 +367,7 @@ async fn submit_with_priority(
     http: &reqwest::Client,
     rpc: &RpcClient,
     action_ix: Instruction,
+    alts: &[AddressLookupTableAccount],
     blockhash_cache: &caches::blockhash::BlockhashCache,
     priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
 ) -> Result<String> {
@@ -339,31 +392,43 @@ async fn submit_with_priority(
         ComputeBudgetInstruction::set_compute_unit_price(micro_lamports),
         action_ix,
     ];
-    let tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, bh.hash).await?;
-
-    send_via_helius(http, &cfg.sender_url, &tx).await
+    let tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, alts, bh.hash).await?;
+    let serialized = bincode::serialize(&tx).map_err(|e| anyhow!("bincode serialize: {e}"))?;
+    if serialized.len() > TX_WIRE_SIZE_LIMIT {
+        return Err(anyhow!(
+            "bridge tx wire size {} exceeds Solana cap {} ({} static keys)",
+            serialized.len(),
+            TX_WIRE_SIZE_LIMIT,
+            tx.message.static_account_keys().len(),
+        ));
+    }
+    send_via_helius(http, &cfg.sender_url, &serialized).await
 }
 
 async fn sign_tx(
     signer: &dyn KeeperSigner,
     payer: &Pubkey,
     ixs: &[Instruction],
+    alts: &[AddressLookupTableAccount],
     blockhash: Hash,
-) -> Result<Transaction> {
-    let message = Message::new_with_blockhash(ixs, Some(payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    let sig = signer.sign_message(&tx.message_data()).await?;
-    tx.signatures = vec![sig];
-    Ok(tx)
+) -> Result<VersionedTransaction> {
+    let message_v0 = MessageV0::try_compile(payer, ixs, alts, blockhash)
+        .map_err(|e| anyhow!("MessageV0::try_compile: {e}"))?;
+    let versioned = VersionedMessage::V0(message_v0);
+    let signable = versioned.serialize();
+    let sig = signer.sign_message(&signable).await?;
+    Ok(VersionedTransaction {
+        signatures: vec![sig],
+        message: versioned,
+    })
 }
 
 async fn send_via_helius(
     http: &reqwest::Client,
     sender_url: &str,
-    tx: &Transaction,
+    serialized: &[u8],
 ) -> Result<String> {
-    let serialized = bincode::serialize(tx).map_err(|e| anyhow!("bincode serialize: {e}"))?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&serialized);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(serialized);
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,

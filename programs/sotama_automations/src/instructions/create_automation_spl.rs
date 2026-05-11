@@ -1,9 +1,10 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer};
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{ActionSpec, Automation, Cadence, Config, TriggerSpec};
+use crate::state::{compute_time_fee, ActionSpec, Automation, Cadence, Config, TriggerSpec};
 
 /// Create an automation whose action is `TransferSpl`. The owner deposits
 /// `amount` of `mint` from their ATA into the Automation PDA's ATA. The
@@ -53,6 +54,15 @@ pub struct CreateAutomationSpl<'info> {
     )]
     pub automation_ata: Account<'info, TokenAccount>,
 
+    /// Recipient of the upfront time fee. Address-checked against
+    /// `config.keeper`.
+    /// CHECK: address-checked.
+    #[account(
+        mut,
+        address = config.keeper @ SotamaError::UnauthorizedKeeper,
+    )]
+    pub keeper: AccountInfo<'info>,
+
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -91,6 +101,12 @@ pub fn handler(
         require!(*unix_deadline > now, SotamaError::BadCadence);
     }
 
+    let time_fee = compute_time_fee(
+        &cadence,
+        now,
+        ctx.accounts.config.time_fee_lamports_per_day,
+    );
+
     let automation = &mut ctx.accounts.automation;
     automation.owner = ctx.accounts.owner.key();
     automation.nonce = nonce;
@@ -116,6 +132,21 @@ pub fn handler(
         ),
         amount,
     )?;
+
+    // Upfront time fee → keeper. See `compute_time_fee` and
+    // `create_automation::handler` for the rationale.
+    if time_fee > 0 {
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.owner.to_account_info(),
+                    to: ctx.accounts.keeper.to_account_info(),
+                },
+            ),
+            time_fee,
+        )?;
+    }
 
     ctx.accounts.config.automation_count = nonce
         .checked_add(1)

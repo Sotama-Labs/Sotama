@@ -70,8 +70,16 @@ pub enum SotamaError {
     BadBridgeOwner,
     #[msg("Bridge swap delivered fewer tokens than min_amount_out.")]
     BridgeSlippageExceeded,
-    #[msg("Close fee exceeds protocol cap (0.1 SOL)")]
+    #[msg("Fee parameter exceeds protocol cap")]
     FeeTooLarge,
+    #[msg("Swap fee in basis points exceeds MAX_SWAP_FEE_BPS")]
+    SwapFeeTooLarge,
+    #[msg("Time fee per day exceeds MAX_TIME_FEE_LAMPORTS_PER_DAY")]
+    TimeFeeTooLarge,
+    #[msg("Treasury output ATA mint does not match the swap's output mint")]
+    BadTreasuryOutput,
+    #[msg("Treasury output ATA owner does not match Config.treasury")]
+    BadTreasuryOwner,
     #[msg("Provided treasury account does not match Config.treasury")]
     WrongTreasury,
     #[msg("Program is in terminal shutdown — operation rejected")]

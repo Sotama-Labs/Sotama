@@ -4,12 +4,19 @@ use crate::errors::SotamaError;
 use crate::events::{AutomationClosed, AutomationFinished};
 use crate::state::{Automation, Config};
 
-/// Close an automation whose action is `TransferSol`. Anchor sweeps the
-/// PDA's lamports to the owner via `close = owner`. Before that sweep,
-/// we divert `Config.close_fee_lamports` (capped to "above rent-exempt"
-/// excess) to `Config.treasury`. Owner gets the rest. Action types that
-/// also hold an SPL/swap deposit go through `close_automation_spl` or
-/// `close_automation_swap` instead.
+/// Close a `TransferSol` automation. Lamport split on close:
+///   * Unfired SOL deposit (PDA balance above rent-exempt) → owner.
+///   * Rent-exempt portion of the PDA → `Config.treasury`.
+///
+/// The rent IS the close fee — there's no separate configurable
+/// close-fee field anymore. Owner only gets back what they would have
+/// transferred out if the rule had fired (or stays with what already
+/// fired if the rule partially executed).
+///
+/// Anchor's `close = treasury` constraint sweeps whatever remains in
+/// the PDA's lamports to treasury after the manual debit below. By
+/// pre-debiting the above-rent excess to owner first, the `close`
+/// sweep ends up moving only the rent.
 #[derive(Accounts)]
 pub struct CloseAutomation<'info> {
     #[account(mut)]
@@ -17,7 +24,7 @@ pub struct CloseAutomation<'info> {
 
     #[account(
         mut,
-        close = owner,
+        close = treasury,
         seeds = [
             b"automation",
             owner.key().as_ref(),
@@ -35,9 +42,7 @@ pub struct CloseAutomation<'info> {
     pub config: Account<'info, Config>,
 
     /// CHECK: address-checked against `config.treasury`. Receives the
-    /// close-fee lamports; if `config.close_fee_lamports == 0` or the
-    /// PDA has no excess above rent-min, no transfer occurs and this
-    /// account is read-only in effect.
+    /// rent-exempt portion via Anchor's `close = treasury` sweep.
     #[account(
         mut,
         address = config.treasury @ SotamaError::WrongTreasury,
@@ -46,14 +51,31 @@ pub struct CloseAutomation<'info> {
 }
 
 pub fn handler(ctx: Context<CloseAutomation>) -> Result<()> {
-    let fee_lamports = deduct_close_fee(
-        &ctx.accounts.automation.to_account_info(),
-        &ctx.accounts.treasury.to_account_info(),
-        ctx.accounts.config.close_fee_lamports,
-    )?;
+    let auto_info = ctx.accounts.automation.to_account_info();
+    let pda_balance = auto_info.lamports();
+    let rent_exempt = Rent::get()?.minimum_balance(auto_info.data_len());
+    // Anything above rent-exempt is the user's unfired deposit. For an
+    // already-fired Once or fully-fired Repeat, this will be zero.
+    let deposit_refund = pda_balance.saturating_sub(rent_exempt);
 
+    if deposit_refund > 0 {
+        // Direct lamport math is correct here: both accounts are owned
+        // by this program (PDA via `init`) and we're crediting a system
+        // account (owner) which always accepts credits.
+        **auto_info.try_borrow_mut_lamports()? = pda_balance
+            .checked_sub(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+        let owner_info = ctx.accounts.owner.to_account_info();
+        **owner_info.try_borrow_mut_lamports()? = owner_info
+            .lamports()
+            .checked_add(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+    }
+
+    // Whatever is left in the PDA at this point is the rent-exempt
+    // amount; Anchor's `close = treasury` sweeps it on handler return.
+    let fee_lamports = auto_info.lamports();
     let automation = &ctx.accounts.automation;
-    let refund = automation.to_account_info().lamports();
 
     if !automation.finished {
         emit!(AutomationFinished {
@@ -65,43 +87,9 @@ pub fn handler(ctx: Context<CloseAutomation>) -> Result<()> {
     emit!(AutomationClosed {
         automation: automation.key(),
         owner: ctx.accounts.owner.key(),
-        refund_lamports: refund,
+        refund_lamports: deposit_refund,
         fee_lamports,
     });
 
     Ok(())
-}
-
-/// Move `requested` lamports (capped to "PDA balance minus rent-exempt
-/// minimum for an Automation account") from the automation PDA to the
-/// treasury. Returns the actual lamports transferred (may be less than
-/// `requested` on freshly-created rules with no excess deposit).
-///
-/// Lamport-direct manipulation is safe here because both accounts are
-/// owned by this program (the PDA via `init` at create time, the
-/// treasury is a system account whose lamports we're crediting — the
-/// runtime allows credits to any account regardless of owner).
-pub(crate) fn deduct_close_fee<'info>(
-    automation: &AccountInfo<'info>,
-    treasury: &AccountInfo<'info>,
-    requested: u64,
-) -> Result<u64> {
-    if requested == 0 {
-        return Ok(0);
-    }
-    let rent_min = Rent::get()?.minimum_balance(8 + Automation::INIT_SPACE);
-    let pda_balance = automation.lamports();
-    let max_fee = pda_balance.saturating_sub(rent_min);
-    let actual_fee = requested.min(max_fee);
-    if actual_fee == 0 {
-        return Ok(0);
-    }
-    **automation.try_borrow_mut_lamports()? = pda_balance
-        .checked_sub(actual_fee)
-        .ok_or(error!(SotamaError::FeeTooLarge))?;
-    let treasury_balance = treasury.lamports();
-    **treasury.try_borrow_mut_lamports()? = treasury_balance
-        .checked_add(actual_fee)
-        .ok_or(error!(SotamaError::FeeTooLarge))?;
-    Ok(actual_fee)
 }

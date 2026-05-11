@@ -172,6 +172,7 @@ pub struct SwapAccountMeta {
 ///     `inner_accounts`. The on-chain handler uses these to mint-check
 ///     before invoking.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn build_execute_swap_ix(
     program_id: &Pubkey,
     keeper: &Pubkey,
@@ -181,6 +182,10 @@ pub fn build_execute_swap_ix(
     inner_data: Vec<u8>,
     input_ata_index: u8,
     output_ata_index: u8,
+    // Treasury's ATA for the swap's output mint. The handler enforces
+    // mint = output_mint and owner = Config.treasury, then routes the
+    // protocol fee here.
+    treasury_output_ata: &Pubkey,
     // Optional linked-downstream PDA. When set, gets appended as the
     // LAST remaining account so the on-chain handler can transfer the
     // auto-deposit fee to it after the swap CPI succeeds.
@@ -208,15 +213,17 @@ pub fn build_execute_swap_ix(
     data.push(input_ata_index);
     data.push(output_ata_index);
 
-    // Outer accounts: keeper, config, automation, jupiter_program, then
-    // every Jupiter inner-ix account, then optionally the downstream
-    // PDA at index `4 + inner_accounts.len()`. The PDA itself signs via
-    // invoke_signed (the keeper just authorizes).
+    // Outer accounts: keeper, config, automation, jupiter_program,
+    // treasury_output_ata, token_program, then every Jupiter inner-ix
+    // account, then optionally the downstream PDA. The PDA itself
+    // signs via invoke_signed (the keeper just authorizes).
     let mut accounts = vec![
         AccountMeta::new_readonly(*keeper, true),
         AccountMeta::new_readonly(*config, false),
         AccountMeta::new(*automation, false),
         AccountMeta::new_readonly(*jupiter_program_id(), false),
+        AccountMeta::new(*treasury_output_ata, false),
+        AccountMeta::new_readonly(*spl_token_program_id(), false),
     ];
     accounts.extend_from_slice(inner_accounts);
     if let Some(downstream) = linked_downstream {
@@ -269,8 +276,10 @@ pub fn build_execute_fee_topup_ix(
     inner_accounts: &[AccountMeta],
     inner_data: Vec<u8>,
     keeper_wsol_ata_index: u8,
+    min_amount_out: u64,
 ) -> Instruction {
-    let mut data = Vec::with_capacity(8 + 4 + inner_data.len() + 4 + inner_accounts.len() * 2 + 1);
+    let mut data =
+        Vec::with_capacity(8 + 4 + inner_data.len() + 4 + inner_accounts.len() * 2 + 1 + 8);
     data.extend_from_slice(execute_fee_topup_discriminator());
 
     let inner_len = inner_data.len() as u32;
@@ -285,6 +294,10 @@ pub fn build_execute_fee_topup_ix(
     }
 
     data.push(keeper_wsol_ata_index);
+    // Anchor-encoded u64 (little-endian). The on-chain handler reads
+    // this and asserts the keeper's wSOL ATA was credited at least
+    // this many lamports of wSOL after the Jupiter CPI.
+    data.extend_from_slice(&min_amount_out.to_le_bytes());
 
     let mut accounts = vec![
         AccountMeta::new_readonly(*keeper, true),

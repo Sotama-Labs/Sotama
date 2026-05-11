@@ -75,10 +75,71 @@ pub mod cadence_kind {
 /// default 5_000 lamport per-fire fee, leaving plenty of headroom.
 pub const MAX_LINK_FEE_LAMPORTS: u64 = 1_000_000;
 
-/// Hard ceiling on `Config.close_fee_lamports`. Prevents a misconfigured
-/// admin update from making rules un-closable (which would strand owner
-/// deposits). 0.1 SOL is well above any realistic protocol fee.
-pub const MAX_CLOSE_FEE_LAMPORTS: u64 = 100_000_000;
+/// Hard ceiling on `Config.swap_fee_bps`. 100 bps = 1%. Stops a
+/// misconfigured admin update from taxing swaps above any reasonable
+/// protocol rate — the launch rate is 10 bps (0.1%).
+pub const MAX_SWAP_FEE_BPS: u16 = 100;
+
+/// Hard ceiling on `Config.time_fee_lamports_per_day`. 0.01 SOL/day =
+/// 0.3 SOL per 30-day uncapped rule. The launch rate is 300_000
+/// (0.0003 SOL/day); this cap is 33× headroom so a future repricing
+/// has room without an upgrade, while keeping a misconfigured value
+/// from making rule creation prohibitive.
+pub const MAX_TIME_FEE_LAMPORTS_PER_DAY: u64 = 10_000_000;
+
+/// Default protocol fee on every `execute_swap`. Charged on the output
+/// amount delivered to the user and routed to `Config.treasury`. 10 bps
+/// = 0.1%.
+pub const DEFAULT_SWAP_FEE_BPS: u16 = 10;
+
+/// Default protocol time fee per day of rule lifetime. 300_000 lamports
+/// = 0.0003 SOL/day. Charged upfront at create time and credited to the
+/// keeper's wallet to fund its tx-fee budget. Rules without a bounded
+/// lifetime (`Cadence::Once` / `Cadence::Repeat`) pay `30 * this` as a
+/// flat ceiling.
+pub const DEFAULT_TIME_FEE_LAMPORTS_PER_DAY: u64 = 300_000;
+
+/// Maximum days a single rule is charged for at create time. Rules with
+/// `Cadence::Until { unix_deadline }` shorter than 30 days pay
+/// proportionally less; rules with no bounded lifetime pay this many
+/// days at the current `time_fee_lamports_per_day` rate.
+pub const TIME_FEE_MAX_DAYS: u64 = 30;
+
+/// Seconds per day. Pulled out so the `compute_time_fee` math is
+/// readable.
+const SECS_PER_DAY: i64 = 86_400;
+
+/// Compute the upfront time fee a `create_automation_*` ix charges.
+/// Returns lamports owed by `owner` to the keeper.
+///
+/// Duration source:
+///   * `Cadence::Until { unix_deadline }` → bounded lifetime, charged
+///     for `ceil((deadline - now) / SECS_PER_DAY)` days, capped at
+///     `TIME_FEE_MAX_DAYS`. A deadline within 1 day still pays 1 day.
+///   * `Cadence::Once` and `Cadence::Repeat` → unbounded lifetime,
+///     charged for `TIME_FEE_MAX_DAYS` flat.
+///
+/// Saturating arithmetic throughout so an absurd `lamports_per_day`
+/// can't overflow into a wrap-around-cheap fee.
+pub fn compute_time_fee(cadence: &Cadence, now: i64, lamports_per_day: u64) -> u64 {
+    let days = match cadence {
+        Cadence::Until { unix_deadline } => {
+            let delta = unix_deadline.saturating_sub(now);
+            if delta <= 0 {
+                // Defensive: create_automation also rejects past
+                // deadlines, but if a near-zero gap slips through we
+                // still charge for at least one day.
+                1u64
+            } else {
+                let ceil_days = ((delta as i128).saturating_add(SECS_PER_DAY as i128 - 1)
+                    / SECS_PER_DAY as i128) as u64;
+                ceil_days.min(TIME_FEE_MAX_DAYS)
+            }
+        }
+        Cadence::Once | Cadence::Repeat { .. } => TIME_FEE_MAX_DAYS,
+    };
+    days.saturating_mul(lamports_per_day)
+}
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
 pub enum TriggerSpec {
@@ -225,19 +286,31 @@ pub struct Config {
     pub paused: bool,
     pub automation_count: u64,
     pub bump: u8,
-    /// Destination for `close_fee_lamports` when an automation is closed.
-    /// Initialized to `admin` at config-create time; rotatable via
-    /// `update_treasury`. Kept separate from `admin` so a treasury
+    /// Destination for the swap protocol fee and the rent refund on
+    /// close. Initialized to `admin` at config-create time; rotatable
+    /// via `update_treasury`. Kept separate from `admin` so a treasury
     /// rotation doesn't require a fresh upgrade-authority key.
     pub treasury: Pubkey,
-    /// Protocol fee deducted from each close (in lamports, native SOL).
-    /// Comes from above-rent-exempt PDA lamports — never touches the
-    /// owner's SPL deposit. `0` = full refund. Capped at
-    /// `MAX_CLOSE_FEE_LAMPORTS` by `update_close_fee`.
-    pub close_fee_lamports: u64,
+    /// Protocol fee on every `execute_swap`, in basis points of the
+    /// delivered output amount. Charged from the user's output ATA to
+    /// the treasury's output ATA after the slippage check. Capped at
+    /// `MAX_SWAP_FEE_BPS` by `update_swap_fee_bps`. Default 10 bps
+    /// (0.1%).
+    pub swap_fee_bps: u16,
+    /// Protocol time fee in lamports of SOL per day of rule lifetime.
+    /// Charged upfront at `create_automation_*` time, transferred from
+    /// the owner to the keeper's wallet (to fund tx fees). Rules with
+    /// `Cadence::Until { unix_deadline }` pay
+    /// `ceil((deadline - now) / 86_400)` days, capped at
+    /// `TIME_FEE_MAX_DAYS`. `Cadence::Once` and `Cadence::Repeat` have
+    /// no bounded lifetime so they pay the cap (30 days) flat.
+    /// Capped at `MAX_TIME_FEE_LAMPORTS_PER_DAY` by
+    /// `update_time_fee_per_day`. Default 300_000 (0.0003 SOL/day).
+    pub time_fee_lamports_per_day: u64,
     /// Terminal kill-switch flag. Once true:
     ///   * `execute_*` and `create_automation_*` revert
-    ///   * `update_treasury`, `update_close_fee`, `update_admin`,
+    ///   * `update_treasury`, `update_swap_fee_bps`,
+    ///     `update_time_fee_per_day`, `update_admin`,
     ///     `migrate_config` revert
     ///   * `admin_close_automation*` becomes callable (admin OR owner
     ///     signs; deposit → owner, all other lamports → treasury)

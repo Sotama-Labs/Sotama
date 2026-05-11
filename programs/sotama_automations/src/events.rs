@@ -38,10 +38,14 @@ pub struct AutomationExecuted {
 pub struct AutomationClosed {
     pub automation: Pubkey,
     pub owner: Pubkey,
+    /// Lamports returned to the owner. For `TransferSol` rules that
+    /// never fired, this includes the unfired SOL deposit (above-rent
+    /// excess). For SPL/Swap rules this is `0` — token deposits flow
+    /// back via the ATA transfer earlier in the same ix, and the PDA's
+    /// own lamports are all rent (routed to treasury, not the owner).
     pub refund_lamports: u64,
-    /// Lamports diverted to `Config.treasury` before the owner refund.
-    /// `0` when `Config.close_fee_lamports == 0` or when the PDA had no
-    /// excess lamports above rent-exempt minimum to cover the fee.
+    /// Rent-exempt portion of the PDA routed to `Config.treasury`.
+    /// This is the protocol's per-close fee.
     pub fee_lamports: u64,
 }
 

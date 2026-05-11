@@ -404,9 +404,7 @@ export type SotamaAutomations = {
         {
           "name": "treasury",
           "docs": [
-            "close-fee lamports; if `config.close_fee_lamports == 0` or the",
-            "PDA has no excess above rent-min, no transfer occurs and this",
-            "account is read-only in effect."
+            "rent-exempt portion via Anchor's `close = treasury` sweep."
           ],
           "writable": true
         }
@@ -687,6 +685,16 @@ export type SotamaAutomations = {
           }
         },
         {
+          "name": "keeper",
+          "docs": [
+            "Recipient of the time fee — must equal `config.keeper`. SOL is",
+            "transferred here from `owner` at create time so the keeper has",
+            "the budget to pay tx fees for this rule's future fires.",
+            "can't redirect the fee to an attacker-controlled address."
+          ],
+          "writable": true
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
@@ -805,6 +813,14 @@ export type SotamaAutomations = {
           "name": "automationAta",
           "docs": [
             "Automation PDA's ATA — must be pre-created and owned by `automation`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "keeper",
+          "docs": [
+            "Recipient of the upfront time fee. Address-checked against",
+            "`config.keeper`."
           ],
           "writable": true
         },
@@ -931,6 +947,14 @@ export type SotamaAutomations = {
           "name": "automationInputAta",
           "docs": [
             "Automation PDA's ATA for `input_mint`. Pre-created by the client."
+          ],
+          "writable": true
+        },
+        {
+          "name": "keeper",
+          "docs": [
+            "Recipient of the upfront time fee. Address-checked against",
+            "`config.keeper`."
           ],
           "writable": true
         },
@@ -1076,6 +1100,14 @@ export type SotamaAutomations = {
             "time and is the destination ATA the upstream rule's",
             "`Swap.destination` should point to (so its output mint = this",
             "rule's input mint)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "keeper",
+          "docs": [
+            "Recipient of the upfront time fee. Address-checked against",
+            "`config.keeper`."
           ],
           "writable": true
         },
@@ -1501,6 +1533,10 @@ export type SotamaAutomations = {
         {
           "name": "keeperWsolAtaIndex",
           "type": "u8"
+        },
+        {
+          "name": "minAmountOut",
+          "type": "u64"
         }
       ]
     },
@@ -1666,6 +1702,23 @@ export type SotamaAutomations = {
         {
           "name": "jupiterProgram",
           "address": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        },
+        {
+          "name": "treasuryOutputAta",
+          "docs": [
+            "Treasury's ATA for the swap's output mint. Receives the protocol",
+            "swap fee (`received * config.swap_fee_bps / 10_000`) after the",
+            "slippage check passes. The handler verifies mint = output_mint",
+            "and owner = config.treasury directly against the account data —",
+            "no `Account<TokenAccount>` constraint here because Anchor needs",
+            "the output mint to be known at IDL-derive time and it lives in",
+            "the action spec."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         }
       ],
       "args": [
@@ -1745,10 +1798,10 @@ export type SotamaAutomations = {
     {
       "name": "migrateConfig",
       "docs": [
-        "One-shot devnet migration: realloc the v4.0 Config PDA to the",
-        "v4.1 layout and initialize the new `treasury` + `close_fee_lamports`",
-        "fields. Mainnet doesn't need this — its first `initialize_config`",
-        "writes the v4.1 layout directly. Admin only."
+        "One-shot devnet migration: realloc the predecessor Config PDA",
+        "to the current layout and initialize the new fee fields. Mainnet",
+        "doesn't need this — its first `initialize_config` writes the",
+        "current layout directly. Admin only."
       ],
       "discriminator": [
         92,
@@ -1846,10 +1899,11 @@ export type SotamaAutomations = {
       "name": "setShutdown",
       "docs": [
         "One-way kill switch. Admin only. Sets `Config.shutdown = true`",
-        "and locks `update_treasury`, `update_close_fee`, `update_admin`,",
-        "`migrate_config`, all `execute_*`, and all `create_automation*`.",
-        "Enables `admin_close_automation*` for the wind-down. Reverts on",
-        "a second invocation (`ShutdownAlreadySet`)."
+        "and locks `update_treasury`, `update_swap_fee_bps`,",
+        "`update_time_fee_per_day`, `update_admin`, `migrate_config`,",
+        "all `execute_*`, and all `create_automation*`. Enables",
+        "`admin_close_automation*` for the wind-down. Reverts on a",
+        "second invocation (`ShutdownAlreadySet`)."
       ],
       "discriminator": [
         118,
@@ -1945,58 +1999,6 @@ export type SotamaAutomations = {
       ]
     },
     {
-      "name": "updateCloseFee",
-      "docs": [
-        "Rotate `Config.close_fee_lamports` (per-close protocol fee).",
-        "Admin only. Capped at `MAX_CLOSE_FEE_LAMPORTS` (0.1 SOL) so a",
-        "misconfig can't make rules un-closable."
-      ],
-      "discriminator": [
-        127,
-        49,
-        70,
-        176,
-        56,
-        34,
-        12,
-        135
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
-        },
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        }
-      ],
-      "args": [
-        {
-          "name": "newFeeLamports",
-          "type": "u64"
-        }
-      ]
-    },
-    {
       "name": "updateKeeper",
       "discriminator": [
         36,
@@ -2040,6 +2042,111 @@ export type SotamaAutomations = {
         {
           "name": "newKeeper",
           "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "updateSwapFeeBps",
+      "docs": [
+        "Rotate `Config.swap_fee_bps` — protocol fee in basis points on",
+        "every `execute_swap`. Admin only. Capped at `MAX_SWAP_FEE_BPS`",
+        "(100 = 1%). The launch rate is 10 bps (0.1%)."
+      ],
+      "discriminator": [
+        40,
+        82,
+        142,
+        238,
+        23,
+        201,
+        16,
+        124
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "newBps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "updateTimeFeePerDay",
+      "docs": [
+        "Rotate `Config.time_fee_lamports_per_day` — protocol fee per day",
+        "of rule lifetime, charged upfront to the keeper at create time.",
+        "Admin only. Capped at `MAX_TIME_FEE_LAMPORTS_PER_DAY`",
+        "(0.01 SOL/day). The launch rate is 0.0003 SOL/day."
+      ],
+      "discriminator": [
+        147,
+        37,
+        49,
+        150,
+        9,
+        53,
+        98,
+        48
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "newLamportsPerDay",
+          "type": "u64"
         }
       ]
     },
@@ -2162,6 +2269,45 @@ export type SotamaAutomations = {
         49,
         9,
         160
+      ]
+    },
+    {
+      "name": "automationFilled",
+      "discriminator": [
+        75,
+        161,
+        138,
+        219,
+        23,
+        250,
+        242,
+        176
+      ]
+    },
+    {
+      "name": "automationFinished",
+      "discriminator": [
+        9,
+        111,
+        0,
+        120,
+        175,
+        150,
+        164,
+        121
+      ]
+    },
+    {
+      "name": "automationUpdated",
+      "discriminator": [
+        254,
+        17,
+        208,
+        64,
+        206,
+        143,
+        127,
+        218
       ]
     }
   ],
@@ -2339,35 +2485,55 @@ export type SotamaAutomations = {
     {
       "code": 6034,
       "name": "feeTooLarge",
-      "msg": "Close fee exceeds protocol cap (0.1 SOL)"
+      "msg": "Fee parameter exceeds protocol cap"
     },
     {
       "code": 6035,
+      "name": "swapFeeTooLarge",
+      "msg": "Swap fee in basis points exceeds MAX_SWAP_FEE_BPS"
+    },
+    {
+      "code": 6036,
+      "name": "timeFeeTooLarge",
+      "msg": "Time fee per day exceeds MAX_TIME_FEE_LAMPORTS_PER_DAY"
+    },
+    {
+      "code": 6037,
+      "name": "badTreasuryOutput",
+      "msg": "Treasury output ATA mint does not match the swap's output mint"
+    },
+    {
+      "code": 6038,
+      "name": "badTreasuryOwner",
+      "msg": "Treasury output ATA owner does not match Config.treasury"
+    },
+    {
+      "code": 6039,
       "name": "wrongTreasury",
       "msg": "Provided treasury account does not match Config.treasury"
     },
     {
-      "code": 6036,
+      "code": 6040,
       "name": "shutdown",
       "msg": "Program is in terminal shutdown — operation rejected"
     },
     {
-      "code": 6037,
+      "code": 6041,
       "name": "notShutdown",
       "msg": "Operation requires Config.shutdown = true (kill-switch only)"
     },
     {
-      "code": 6038,
+      "code": 6042,
       "name": "shutdownAlreadySet",
       "msg": "Shutdown is one-way; cannot be cleared once set"
     },
     {
-      "code": 6039,
+      "code": 6043,
       "name": "unauthorizedCloser",
       "msg": "Caller is neither the automation owner nor the program admin"
     },
     {
-      "code": 6040,
+      "code": 6044,
       "name": "badCloseAccounts",
       "msg": "Close pair accounts must be (PDA-owned ATA, owner-owned ATA) of matching mint != input_mint."
     }
@@ -2594,7 +2760,7 @@ export type SotamaAutomations = {
         "kind": "struct",
         "fields": [
           {
-            "name": "pubkey",
+            "name": "automation",
             "type": "pubkey"
           },
           {
@@ -2603,14 +2769,20 @@ export type SotamaAutomations = {
           },
           {
             "name": "refundLamports",
+            "docs": [
+              "Lamports returned to the owner. For `TransferSol` rules that",
+              "never fired, this includes the unfired SOL deposit (above-rent",
+              "excess). For SPL/Swap rules this is `0` — token deposits flow",
+              "back via the ATA transfer earlier in the same ix, and the PDA's",
+              "own lamports are all rent (routed to treasury, not the owner)."
+            ],
             "type": "u64"
           },
           {
             "name": "feeLamports",
             "docs": [
-              "Lamports diverted to `Config.treasury` before the owner refund.",
-              "`0` when `Config.close_fee_lamports == 0` or when the PDA had no",
-              "excess lamports above rent-exempt minimum to cover the fee."
+              "Rent-exempt portion of the PDA routed to `Config.treasury`.",
+              "This is the protocol's per-close fee."
             ],
             "type": "u64"
           }
@@ -2623,7 +2795,7 @@ export type SotamaAutomations = {
         "kind": "struct",
         "fields": [
           {
-            "name": "pubkey",
+            "name": "automation",
             "type": "pubkey"
           },
           {
@@ -2675,7 +2847,7 @@ export type SotamaAutomations = {
         "kind": "struct",
         "fields": [
           {
-            "name": "pubkey",
+            "name": "automation",
             "type": "pubkey"
           },
           {
@@ -2705,6 +2877,103 @@ export type SotamaAutomations = {
               "the keeper should stop polling it."
             ],
             "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "automationFilled",
+      "docs": [
+        "Emitted at the end of every successful `execute_swap` (after Jupiter CPI completes).",
+        "Carries the actual swap input/output amounts so the keeper can compute the effective",
+        "fill price for downstream `PriceRelativeToFill` triggers."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "automation",
+            "type": "pubkey"
+          },
+          {
+            "name": "inputAmount",
+            "docs": [
+              "SPL amount of the input mint that was swapped."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "outputAmount",
+            "docs": [
+              "SPL amount of the output mint that was received (post-slippage)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fillSlot",
+            "docs": [
+              "Slot at which the fill occurred (for staleness checks)."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "automationFinished",
+      "docs": [
+        "Emitted when an automation reaches its terminal state, either by",
+        "firing its last allowed execution (`reason = 0`) or by being",
+        "explicitly closed by the owner or admin (`reason = 1`).",
+        "",
+        "`reason` codes:",
+        "0 = fired_terminal  — cadence exhausted (Once fired, Repeat hit total, Until past deadline)",
+        "1 = closed          — owner or admin called close_automation*",
+        "2 = error           — reserved for keeper-side error annotation (not emitted on-chain today)",
+        "",
+        "The keeper subscribes to this event to prune finished automations",
+        "from its active polling set without a full getProgramAccounts scan."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "automation",
+            "type": "pubkey"
+          },
+          {
+            "name": "reason",
+            "docs": [
+              "`0` = fired_terminal, `1` = closed, `2` = error"
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "automationUpdated",
+      "docs": [
+        "Emitted when a mutable field on a live automation is updated. The",
+        "keeper can use this to invalidate its cached copy of the rule without",
+        "re-fetching all accounts via getProgramAccounts.",
+        "",
+        "`change_kind` codes:",
+        "0 = trigger updated",
+        "1 = action updated",
+        "2 = cadence updated",
+        "3 = link (linked_downstream / link_fee_deposit) updated"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "automation",
+            "type": "pubkey"
+          },
+          {
+            "name": "changeKind",
+            "type": "u8"
           }
         ]
       }
@@ -2782,20 +3051,36 @@ export type SotamaAutomations = {
           {
             "name": "treasury",
             "docs": [
-              "Destination for `close_fee_lamports` when an automation is closed.",
-              "Initialized to `admin` at config-create time; rotatable via",
-              "`update_treasury`. Kept separate from `admin` so a treasury",
+              "Destination for the swap protocol fee and the rent refund on",
+              "close. Initialized to `admin` at config-create time; rotatable",
+              "via `update_treasury`. Kept separate from `admin` so a treasury",
               "rotation doesn't require a fresh upgrade-authority key."
             ],
             "type": "pubkey"
           },
           {
-            "name": "closeFeeLamports",
+            "name": "swapFeeBps",
             "docs": [
-              "Protocol fee deducted from each close (in lamports, native SOL).",
-              "Comes from above-rent-exempt PDA lamports — never touches the",
-              "owner's SPL deposit. `0` = full refund. Capped at",
-              "`MAX_CLOSE_FEE_LAMPORTS` by `update_close_fee`."
+              "Protocol fee on every `execute_swap`, in basis points of the",
+              "delivered output amount. Charged from the user's output ATA to",
+              "the treasury's output ATA after the slippage check. Capped at",
+              "`MAX_SWAP_FEE_BPS` by `update_swap_fee_bps`. Default 10 bps",
+              "(0.1%)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "timeFeeLamportsPerDay",
+            "docs": [
+              "Protocol time fee in lamports of SOL per day of rule lifetime.",
+              "Charged upfront at `create_automation_*` time, transferred from",
+              "the owner to the keeper's wallet (to fund tx fees). Rules with",
+              "`Cadence::Until { unix_deadline }` pay",
+              "`ceil((deadline - now) / 86_400)` days, capped at",
+              "`TIME_FEE_MAX_DAYS`. `Cadence::Once` and `Cadence::Repeat` have",
+              "no bounded lifetime so they pay the cap (30 days) flat.",
+              "Capped at `MAX_TIME_FEE_LAMPORTS_PER_DAY` by",
+              "`update_time_fee_per_day`. Default 300_000 (0.0003 SOL/day)."
             ],
             "type": "u64"
           },
@@ -2804,7 +3089,8 @@ export type SotamaAutomations = {
             "docs": [
               "Terminal kill-switch flag. Once true:",
               "* `execute_*` and `create_automation_*` revert",
-              "* `update_treasury`, `update_close_fee`, `update_admin`,",
+              "* `update_treasury`, `update_swap_fee_bps`,",
+              "`update_time_fee_per_day`, `update_admin`,",
               "`migrate_config` revert",
               "* `admin_close_automation*` becomes callable (admin OR owner",
               "signs; deposit → owner, all other lamports → treasury)",
@@ -2940,31 +3226,27 @@ export type SotamaAutomations = {
           },
           {
             "name": "priceRelativeToFill",
-            "docs": [
-              "Fires when the rule's input-token USD price has moved by `pctBps`",
-              "basis points relative to the effective fill price recorded when the",
-              "upstream automation at `upstream` last executed.",
-              "Only valid on downstream consume-upstream-output chain rules."
-            ],
             "fields": [
               {
                 "name": "upstream",
                 "docs": [
-                  "Upstream automation PDA — the rule whose fill price is the cost basis."
+                  "Pubkey of the upstream automation whose `AutomationFilled` event",
+                  "established the cost basis."
                 ],
                 "type": "pubkey"
               },
               {
                 "name": "direction",
                 "docs": [
-                  "`0` = drop_below_fill, `1` = grow_above_fill."
+                  "0 = drop_below_fill (price <= fill * (1 - pct_bps/10000)).",
+                  "1 = grow_above_fill (price >= fill * (1 + pct_bps/10000))."
                 ],
                 "type": "u8"
               },
               {
                 "name": "pctBps",
                 "docs": [
-                  "Movement threshold in basis points (100 = 1%, 500 = 5%, 1000 = 10%)."
+                  "Percent threshold in basis points. 100 = 1%, 500 = 5%, etc."
                 ],
                 "type": "u32"
               }

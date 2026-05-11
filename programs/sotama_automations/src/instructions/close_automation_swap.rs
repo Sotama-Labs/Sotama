@@ -3,7 +3,6 @@ use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer 
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationClosed, AutomationFinished};
-use crate::instructions::close_automation::deduct_close_fee;
 use crate::state::{ActionSpec, Automation, Config};
 
 /// Close an automation whose action is `Swap`. Drains the PDA's input
@@ -22,7 +21,7 @@ pub struct CloseAutomationSwap<'info> {
 
     #[account(
         mut,
-        close = owner,
+        close = treasury,
         seeds = [
             b"automation",
             owner.key().as_ref(),
@@ -168,13 +167,12 @@ pub fn handler<'info>(
         ))?;
     }
 
-    let fee_lamports = deduct_close_fee(
-        &automation.to_account_info(),
-        &ctx.accounts.treasury.to_account_info(),
-        ctx.accounts.config.close_fee_lamports,
-    )?;
-
-    let refund = automation.to_account_info().lamports();
+    // PDA's remaining lamports are pure rent at this point — input
+    // ATA's deposit went to owner via token::transfer, input ATA's rent
+    // went to owner via token::close_account, and the optional
+    // remaining-account dust pairs followed the same flow. Anchor's
+    // `close = treasury` sweeps the PDA rent on handler return.
+    let fee_lamports = automation.to_account_info().lamports();
 
     if !automation.finished {
         emit!(AutomationFinished {
@@ -186,7 +184,7 @@ pub fn handler<'info>(
     emit!(AutomationClosed {
         automation: automation.key(),
         owner: ctx.accounts.owner.key(),
-        refund_lamports: refund,
+        refund_lamports: 0,
         fee_lamports,
     });
 

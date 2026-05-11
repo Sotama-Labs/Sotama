@@ -2,13 +2,14 @@ use anyhow::{anyhow, Result};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::address_lookup_table::AddressLookupTableAccount;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::message::Message;
+use solana_sdk::message::{v0::Message as MessageV0, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use std::collections::{HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -17,7 +18,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::caches::blockhash::{BlockhashCache, CachedBlockhash};
+use crate::caches::lookup_table::LookupTableCache;
 use crate::caches::priority_fee::PriorityFeeCache;
+use crate::caches::treasury::TreasuryHandle;
 use crate::config::KeeperConfig;
 use crate::jupiter::{self, JupiterClient};
 use crate::program::{
@@ -27,6 +30,11 @@ use crate::program::{
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
 use crate::types::{AutomationCtx, TriggerEvent};
+
+/// Hard Solana transaction wire-size limit. The packet-level cap is
+/// 1232 bytes; we leave a tiny safety margin so a last-second blockhash
+/// change or signature path doesn't tip us over.
+const TX_WIRE_SIZE_LIMIT: usize = 1232;
 
 /// Default compute-unit limit for SOL/SPL transfers.
 const COMPUTE_UNIT_LIMIT_DEFAULT: u32 = 200_000;
@@ -106,6 +114,8 @@ pub async fn run(
     mut rx: mpsc::Receiver<TriggerEvent>,
     blockhash_cache: BlockhashCache,
     priority_fee_cache: PriorityFeeCache,
+    lookup_table_cache: LookupTableCache,
+    treasury_handle: TreasuryHandle,
 ) -> Result<()> {
     let config = config_pda(&cfg.program_id);
     let dedupe: Arc<Mutex<Dedupe>> = Arc::new(Mutex::new(Dedupe::new()));
@@ -128,6 +138,8 @@ pub async fn run(
         let dedupe_task = dedupe.clone();
         let blockhash_cache_task = blockhash_cache.clone();
         let priority_fee_cache_task = priority_fee_cache.clone();
+        let alt_cache_task = lookup_table_cache.clone();
+        let treasury_task = treasury_handle.clone();
         tokio::spawn(async move {
             process_event(
                 cfg_task,
@@ -137,6 +149,8 @@ pub async fn run(
                 dedupe_task,
                 blockhash_cache_task,
                 priority_fee_cache_task,
+                alt_cache_task,
+                treasury_task,
             )
             .await;
         });
@@ -152,6 +166,8 @@ async fn process_event(
     dedupe: Arc<Mutex<Dedupe>>,
     blockhash_cache: BlockhashCache,
     priority_fee_cache: PriorityFeeCache,
+    lookup_table_cache: LookupTableCache,
+    treasury_handle: TreasuryHandle,
 ) {
     let depth = evt.depth;
     let mut matches = evt.matches;
@@ -208,6 +224,8 @@ async fn process_event(
             depth,
             &blockhash_cache,
             &priority_fee_cache,
+            &lookup_table_cache,
+            &treasury_handle,
         )
         .await;
         match result {
@@ -280,8 +298,11 @@ async fn execute_one(
     depth: u8,
     blockhash_cache: &BlockhashCache,
     priority_fee_cache: &PriorityFeeCache,
+    lookup_table_cache: &LookupTableCache,
+    treasury_handle: &TreasuryHandle,
 ) -> Result<String> {
-    let exec_ix = build_action_ix(cfg, http, rpc, config, ctx).await?;
+    let (exec_ix, alts) =
+        build_action_ix(cfg, http, rpc, config, ctx, lookup_table_cache, treasury_handle).await?;
 
     // Resolve blockhash from cache; fall back to live RPC on cold start
     // (cache empty) or if the cached entry is more than 5 s old.
@@ -326,37 +347,61 @@ async fn execute_one(
         automation = %ctx.pubkey,
         action = ?ctx.action,
         priority_fee = fee_microlamports_per_cu,
+        alt_count = alts.len(),
         "executor: sending tx via helius sender"
     );
 
-    let sig = send_with_one_shot_escalation(cfg, http, rpc, &ixs, &bh, fee_microlamports_per_cu).await?;
+    let sig = send_with_one_shot_escalation(
+        cfg,
+        http,
+        rpc,
+        &ixs,
+        &alts,
+        &bh,
+        fee_microlamports_per_cu,
+    )
+    .await?;
     Ok(sig)
 }
 
-/// Build, serialize, and sign a Transaction via the configured signer.
-/// Equivalent to `Transaction::new_signed_with_payer` but routes
-/// signing through `KeeperSigner` so prod can use Turnkey.
+/// Compile, serialize, and sign a v0 versioned transaction via the
+/// configured signer. ALT-aware: `alts` are matched into the compiled
+/// `MessageV0`, which lets the wire-serialized tx reference common
+/// accounts (Jupiter token-program, intermediate ATAs, etc.) as
+/// 1-byte table indices instead of 32-byte inline pubkeys. This is
+/// what keeps composed swaps under the 1232-byte cap on mainnet.
 async fn sign_tx(
     signer: &dyn KeeperSigner,
     payer: &Pubkey,
     ixs: &[Instruction],
+    alts: &[AddressLookupTableAccount],
     blockhash: Hash,
-) -> Result<Transaction> {
-    let message = Message::new_with_blockhash(ixs, Some(payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    let sig = signer.sign_message(&tx.message_data()).await?;
-    tx.signatures = vec![sig];
-    Ok(tx)
+) -> Result<VersionedTransaction> {
+    let message_v0 = MessageV0::try_compile(payer, ixs, alts, blockhash)
+        .map_err(|e| anyhow!("MessageV0::try_compile: {e}"))?;
+    let versioned = VersionedMessage::V0(message_v0);
+    let signable = versioned.serialize();
+    let sig = signer.sign_message(&signable).await?;
+    Ok(VersionedTransaction {
+        signatures: vec![sig],
+        message: versioned,
+    })
 }
 
 /// Build, sign, and send one transaction attempt. Thin wrapper so
 /// `send_with_one_shot_escalation` can call it twice with different fees.
 /// Returns the raw signature string (base58), matching the contract of
 /// `send_via_helius`.
+///
+/// Post-compile enforces the 1232-byte wire-size cap. If the serialized
+/// tx exceeds the cap the call errors *before* hitting the network —
+/// better to surface a structured failure than burn a sendTransaction
+/// quote on a packet the validators will reject.
 async fn send_one(
     cfg: &KeeperConfig,
     http: &reqwest::Client,
     ixs: &[Instruction],
+    alts: &[AddressLookupTableAccount],
     bh: &CachedBlockhash,
     fee_microlamports_per_cu: u64,
 ) -> Result<String> {
@@ -369,8 +414,24 @@ async fn send_one(
     // CU-limit ix and is not fee-related.
     let mut ixs_owned = ixs.to_vec();
     ixs_owned[1] = ComputeBudgetInstruction::set_compute_unit_price(fee_microlamports_per_cu);
-    let tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs_owned, bh.hash).await?;
-    send_via_helius(http, &cfg.sender_url, &tx).await
+    let tx = sign_tx(
+        cfg.signer.as_ref(),
+        &cfg.keeper_pubkey,
+        &ixs_owned,
+        alts,
+        bh.hash,
+    )
+    .await?;
+    let serialized = bincode::serialize(&tx).map_err(|e| anyhow!("bincode serialize: {e}"))?;
+    if serialized.len() > TX_WIRE_SIZE_LIMIT {
+        return Err(anyhow!(
+            "tx wire size {} exceeds Solana cap {} ({} accounts inline; ALT compression insufficient)",
+            serialized.len(),
+            TX_WIRE_SIZE_LIMIT,
+            tx.message.static_account_keys().len(),
+        ));
+    }
+    send_via_helius(http, &cfg.sender_url, &serialized).await
 }
 
 /// Sends the transaction. On a retryable send error (blockhash not found,
@@ -382,10 +443,11 @@ async fn send_with_one_shot_escalation(
     http: &reqwest::Client,
     rpc: &Arc<RpcClient>,
     ixs: &[Instruction],
+    alts: &[AddressLookupTableAccount],
     bh: &CachedBlockhash,
     base_fee_micro: u64,
 ) -> Result<String> {
-    match send_one(cfg, http, ixs, bh, base_fee_micro).await {
+    match send_one(cfg, http, ixs, alts, bh, base_fee_micro).await {
         Ok(sig) => Ok(sig),
         Err(e) if is_retryable_send_error(&e) => {
             warn!(target: "executor", error = %e, "send failed; escalating fee and refreshing blockhash");
@@ -400,7 +462,7 @@ async fn send_with_one_shot_escalation(
                 last_valid_block_height,
                 fetched_at: std::time::Instant::now(),
             };
-            send_one(cfg, http, ixs, &fresh_bh, escalated).await
+            send_one(cfg, http, ixs, alts, &fresh_bh, escalated).await
         }
         Err(e) => Err(e),
     }
@@ -443,30 +505,32 @@ async fn build_action_ix(
     rpc: &RpcClient,
     config: &Pubkey,
     ctx: &AutomationCtx,
-) -> Result<Instruction> {
+    lookup_table_cache: &LookupTableCache,
+    treasury_handle: &TreasuryHandle,
+) -> Result<(Instruction, Vec<AddressLookupTableAccount>)> {
     let program_id = &cfg.program_id;
     let keeper = &cfg.keeper_pubkey;
     match &ctx.action {
-        ActionSpec::TransferSol { destination, .. } => Ok(build_execute_automation_ix(
-            program_id,
-            keeper,
-            config,
-            &ctx.pubkey,
-            destination,
+        ActionSpec::TransferSol { destination, .. } => Ok((
+            build_execute_automation_ix(program_id, keeper, config, &ctx.pubkey, destination),
+            Vec::new(),
         )),
         ActionSpec::TransferSpl {
             destination, mint, ..
         } => {
             let automation_ata = associated_token_address(&ctx.pubkey, mint);
             let destination_ata = associated_token_address(destination, mint);
-            Ok(build_execute_automation_spl_ix(
-                program_id,
-                keeper,
-                config,
-                &ctx.pubkey,
-                mint,
-                &automation_ata,
-                &destination_ata,
+            Ok((
+                build_execute_automation_spl_ix(
+                    program_id,
+                    keeper,
+                    config,
+                    &ctx.pubkey,
+                    mint,
+                    &automation_ata,
+                    &destination_ata,
+                ),
+                Vec::new(),
             ))
         }
         ActionSpec::Swap {
@@ -521,9 +585,10 @@ async fn build_action_ix(
                 *amount_in
             };
 
-            let jup = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone());
+            let jup = JupiterClient::new(http.clone(), cfg.jupiter_base_url.clone())
+                .with_api_key(cfg.jupiter_api_key.clone());
             let build = jup
-                .build_swap_cpi_safe(
+                .build_swap(
                     input_mint,
                     output_mint,
                     effective_amount_in,
@@ -559,13 +624,6 @@ async fn build_action_ix(
 
             let inner_accounts = jupiter::into_account_metas(&build.swap_instruction.accounts)
                 .map_err(|e| anyhow!("parse jupiter accounts: {e}"))?;
-            if inner_accounts.len() > jupiter::MAX_CPI_ACCOUNTS as usize {
-                return Err(anyhow!(
-                    "jupiter route returned {} accounts; CPI budget is {}. Try a different pair or maxAccounts.",
-                    inner_accounts.len(),
-                    jupiter::MAX_CPI_ACCOUNTS
-                ));
-            }
             let inner_data = jupiter::decode_inner_data(&build.swap_instruction.data)?;
             let (input_idx, output_idx) = jupiter::locate_ata_indices(
                 &inner_accounts,
@@ -573,16 +631,37 @@ async fn build_action_ix(
                 &destination_output_ata,
             )?;
 
-            Ok(build_execute_swap_ix(
-                program_id,
-                keeper,
-                config,
-                &ctx.pubkey,
-                &inner_accounts,
-                inner_data,
-                input_idx,
-                output_idx,
-                linked_downstream.as_ref(),
+            // Resolve the route's address-lookup-tables via the shared
+            // cache so concurrent fires don't each hit the network for
+            // the same ALTs. With the resolved ALTs included in the v0
+            // outer tx, common Jupiter accounts (token program,
+            // intermediate ATAs) reference by 1-byte index instead of
+            // 32-byte inline, which keeps composed SOL↔USDC swaps
+            // under the 1232-byte wire cap.
+            let alt_keys = jupiter::lookup_table_pubkeys(&build.addresses_by_lookup_table_address)?;
+            let alts = lookup_table_cache.resolve_many(rpc, &alt_keys).await?;
+
+            // Treasury's output ATA — derived from on-chain
+            // Config.treasury (cached) and the swap's output mint. The
+            // on-chain handler enforces mint + owner, so the keeper
+            // can't redirect the fee even if this resolution is wrong.
+            let treasury_pubkey = treasury_handle.get(rpc, config).await?;
+            let treasury_output_ata = associated_token_address(&treasury_pubkey, output_mint);
+
+            Ok((
+                build_execute_swap_ix(
+                    program_id,
+                    keeper,
+                    config,
+                    &ctx.pubkey,
+                    &inner_accounts,
+                    inner_data,
+                    input_idx,
+                    output_idx,
+                    &treasury_output_ata,
+                    linked_downstream.as_ref(),
+                ),
+                alts,
             ))
         }
     }
@@ -591,10 +670,9 @@ async fn build_action_ix(
 async fn send_via_helius(
     http: &reqwest::Client,
     sender_url: &str,
-    tx: &Transaction,
+    serialized: &[u8],
 ) -> Result<String> {
-    let serialized = bincode::serialize(tx).map_err(|e| anyhow!("bincode serialize: {e}"))?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&serialized);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(serialized);
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -679,5 +757,153 @@ mod tests {
     async fn buffered_fee_floor_used_when_cache_empty() {
         let cache = PriorityFeeCache::new();
         assert_eq!(cache.buffered(42).await, 42);
+    }
+
+    /// Offline integration test for the v0 + ALT compile + serialize
+    /// chain. Mirrors today's mainnet measurement of SOL→USDC: 36 inner
+    /// accounts, 21 of them ALT-resident across 2 published ALTs. Proves
+    /// the keeper's actual compile path (the same one `send_one` calls)
+    /// produces a wire-serialized tx under the 1232-byte cap.
+    ///
+    /// Devnet can't validate this end-to-end because Jupiter doesn't
+    /// route the same way on devnet (thin liquidity, often no route).
+    /// This test is the pre-mainnet substitute: feed the keeper a
+    /// realistic shape and confirm the bytes-on-wire math holds.
+    #[tokio::test]
+    async fn v0_with_alts_fits_under_wire_cap() {
+        use solana_sdk::hash::Hash;
+        use solana_sdk::message::v0::Message as MessageV0;
+        use solana_sdk::message::VersionedMessage;
+        use solana_sdk::signature::Signature;
+        use solana_sdk::transaction::VersionedTransaction;
+
+        let (ixs, alts, payer) = build_realistic_swap_scenario(/*alt_resident=*/ 21);
+        let blockhash = Hash::new_unique();
+        let message_v0 = MessageV0::try_compile(&payer, &ixs, &alts, blockhash)
+            .expect("MessageV0::try_compile");
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::V0(message_v0),
+        };
+        let serialized = bincode::serialize(&tx).expect("serialize");
+
+        assert!(
+            serialized.len() <= TX_WIRE_SIZE_LIMIT,
+            "v0+ALT tx exceeded wire cap: {} > {} (static keys: {}, alt lookups: {})",
+            serialized.len(),
+            TX_WIRE_SIZE_LIMIT,
+            tx.message.static_account_keys().len(),
+            alts.len(),
+        );
+    }
+
+    /// Counter-test: same 36-account Jupiter route, same outer Sotama
+    /// frame, but NO ALTs. Confirms ALT compression is what's keeping
+    /// the tx under the wire cap — if this somehow passes under 1232
+    /// without ALTs, then the positive test above is testing nothing.
+    #[tokio::test]
+    async fn v0_without_alts_overshoots_wire_cap() {
+        use solana_sdk::hash::Hash;
+        use solana_sdk::message::v0::Message as MessageV0;
+        use solana_sdk::message::VersionedMessage;
+        use solana_sdk::signature::Signature;
+        use solana_sdk::transaction::VersionedTransaction;
+
+        let (ixs, _alts, payer) = build_realistic_swap_scenario(/*alt_resident=*/ 21);
+        let blockhash = Hash::new_unique();
+        let message_v0 = MessageV0::try_compile(&payer, &ixs, &[], blockhash)
+            .expect("MessageV0::try_compile");
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::V0(message_v0),
+        };
+        let serialized = bincode::serialize(&tx).expect("serialize");
+
+        assert!(
+            serialized.len() > TX_WIRE_SIZE_LIMIT,
+            "no-ALT path unexpectedly fit under cap ({} <= {}); positive test is meaningless",
+            serialized.len(),
+            TX_WIRE_SIZE_LIMIT,
+        );
+    }
+
+    /// Shared fixture for both v0 tests. Builds the same instructions
+    /// list send_one builds in production:
+    ///   1. ComputeBudget::set_compute_unit_limit
+    ///   2. ComputeBudget::set_compute_unit_price
+    ///   3. Sotama execute_swap wrapping a synthetic 36-account Jupiter ix
+    ///
+    /// `alt_resident` controls how many of the 36 inner Jupiter accounts
+    /// also appear in the ALTs returned alongside the ixs. The ALTs are
+    /// padded to 256 entries each, matching Jupiter's production ALTs.
+    fn build_realistic_swap_scenario(
+        alt_resident: usize,
+    ) -> (
+        Vec<solana_sdk::instruction::Instruction>,
+        Vec<solana_sdk::address_lookup_table::AddressLookupTableAccount>,
+        Pubkey,
+    ) {
+        use crate::program::build_execute_swap_ix;
+        use solana_sdk::address_lookup_table::AddressLookupTableAccount;
+        use solana_sdk::instruction::AccountMeta;
+
+        let inner_pubkeys: Vec<Pubkey> = (0..36).map(|_| Pubkey::new_unique()).collect();
+        let inner_accounts: Vec<AccountMeta> = inner_pubkeys
+            .iter()
+            .enumerate()
+            .map(|(i, k)| AccountMeta {
+                pubkey: *k,
+                is_signer: false,
+                is_writable: i < 18, // ~half writable, matches Jupiter shape
+            })
+            .collect();
+
+        // Split alt_resident accounts across 2 published ALTs.
+        let half = alt_resident / 2;
+        let alt1_inner: Vec<Pubkey> = inner_pubkeys[..half].to_vec();
+        let alt2_inner: Vec<Pubkey> = inner_pubkeys[half..alt_resident].to_vec();
+        let pad = |seed: &[Pubkey], pad_n: usize| -> Vec<Pubkey> {
+            let mut v: Vec<Pubkey> = seed.to_vec();
+            v.extend((0..pad_n).map(|_| Pubkey::new_unique()));
+            v
+        };
+        let alts = vec![
+            AddressLookupTableAccount {
+                key: Pubkey::new_unique(),
+                addresses: pad(&alt1_inner, 256 - alt1_inner.len()),
+            },
+            AddressLookupTableAccount {
+                key: Pubkey::new_unique(),
+                addresses: pad(&alt2_inner, 256 - alt2_inner.len()),
+            },
+        ];
+
+        let program_id = Pubkey::new_unique();
+        let keeper = Pubkey::new_unique();
+        let config = Pubkey::new_unique();
+        let automation = Pubkey::new_unique();
+        // Jupiter swap ix data is typically 16-32 bytes (route bytes +
+        // slippage); 32 is a conservative upper bound.
+        let inner_data = vec![0u8; 32];
+
+        let swap_ix = build_execute_swap_ix(
+            &program_id,
+            &keeper,
+            &config,
+            &automation,
+            &inner_accounts,
+            inner_data,
+            0,
+            1,
+            &Pubkey::new_unique(),
+            None,
+        );
+
+        let ixs = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(1_000_000),
+            ComputeBudgetInstruction::set_compute_unit_price(50_000),
+            swap_ix,
+        ];
+        (ixs, alts, keeper)
     }
 }

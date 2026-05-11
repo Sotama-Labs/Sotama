@@ -3,29 +3,17 @@ use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer 
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationClosed, AutomationFinished};
-use crate::instructions::close_automation::deduct_close_fee;
 use crate::state::{ActionSpec, Automation, Config};
 
 /// Close an automation whose action is `TransferSpl`. Drains the
 /// PDA's ATA balance back to the owner's ATA, closes that ATA (rent
-/// → owner), then closes the automation account itself (rent +
-/// remaining lamports → owner).
-///
-/// **Why a separate ix:** the v3 `close_automation` only refunds the
-/// PDA's own lamports — the SPL deposit lives inside `automation_ata`,
-/// which `close = owner` doesn't touch. Without this handler, owners
-/// who cancel an SPL automation lose their deposit.
+/// → owner), then closes the automation account itself (rent →
+/// treasury).
 ///
 /// Refund path (in order):
-///   1. token::transfer  automation_ata.amount → owner_ata
-///   2. token::close      automation_ata        → owner (rent)
-///   3. deduct fee        automation PDA        → treasury
-///   4. close = owner     automation PDA        → owner (rent + leftover SOL)
-///
-/// The fee is taken in lamports (native SOL) from the PDA's "above
-/// rent-min" excess, never from the SPL deposit. So a freshly-created
-/// rule with no excess SOL pays no fee even when `close_fee_lamports`
-/// is non-zero.
+///   1. token::transfer  automation_ata.amount → owner_ata  (deposit)
+///   2. token::close      automation_ata        → owner     (ATA rent)
+///   3. close = treasury automation PDA         → treasury  (PDA rent — the close fee)
 #[derive(Accounts)]
 pub struct CloseAutomationSpl<'info> {
     #[account(mut)]
@@ -33,7 +21,7 @@ pub struct CloseAutomationSpl<'info> {
 
     #[account(
         mut,
-        close = owner,
+        close = treasury,
         seeds = [
             b"automation",
             owner.key().as_ref(),
@@ -132,17 +120,11 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
         signer_seeds,
     ))?;
 
-    // Charge protocol fee from PDA's above-rent-min lamports → treasury.
-    let fee_lamports = deduct_close_fee(
-        &automation.to_account_info(),
-        &ctx.accounts.treasury.to_account_info(),
-        ctx.accounts.config.close_fee_lamports,
-    )?;
-
-    // The PDA itself closes via Anchor's `close = owner` constraint
-    // after this handler returns — owner gets rent + any leftover
-    // lamports (minus the fee already deducted).
-    let refund = automation.to_account_info().lamports();
+    // The PDA itself closes via Anchor's `close = treasury` constraint
+    // on handler return — its lamports are pure rent at this point
+    // (the token deposit and ATA rent were already moved above), so
+    // treasury receives just the rent.
+    let fee_lamports = automation.to_account_info().lamports();
 
     if !automation.finished {
         emit!(AutomationFinished {
@@ -154,7 +136,7 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
     emit!(AutomationClosed {
         automation: automation.key(),
         owner: ctx.accounts.owner.key(),
-        refund_lamports: refund,
+        refund_lamports: 0,
         fee_lamports,
     });
 

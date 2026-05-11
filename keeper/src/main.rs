@@ -60,6 +60,16 @@ async fn main() -> Result<()> {
     let blockhash_cache = caches::blockhash::BlockhashCache::new();
     caches::blockhash::spawn_refresher(rpc.clone(), blockhash_cache.clone());
 
+    // Address-lookup-table cache: dedupes ALT fetches across the
+    // executor + bridge dispatcher so concurrent swap fires don't each
+    // re-fetch Jupiter's published lookup tables.
+    let lookup_table_cache = caches::lookup_table::LookupTableCache::new();
+
+    // Treasury cache: resolves `Config.treasury` once on the first
+    // swap fire, used to derive the treasury's output ATA for the
+    // protocol swap fee.
+    let treasury_handle = caches::treasury::TreasuryHandle::new();
+
     let priority_fee_cache = caches::priority_fee::PriorityFeeCache::new();
     let representative_accounts = vec![cfg.program_id.to_string()];
     caches::priority_fee::spawn_refresher(
@@ -463,8 +473,18 @@ async fn main() -> Result<()> {
         let vault_cache_for_bridge = vault_cache.clone();
         let blockhash_cache_for_bridge = blockhash_cache.clone();
         let priority_fee_cache_for_bridge = priority_fee_cache.clone();
+        let lookup_table_cache_for_bridge = lookup_table_cache.clone();
         tokio::spawn(async move {
-            if let Err(e) = bridge_dispatcher::run(cfg, set_rx, vault_cache_for_bridge, blockhash_cache_for_bridge, priority_fee_cache_for_bridge).await {
+            if let Err(e) = bridge_dispatcher::run(
+                cfg,
+                set_rx,
+                vault_cache_for_bridge,
+                blockhash_cache_for_bridge,
+                priority_fee_cache_for_bridge,
+                lookup_table_cache_for_bridge,
+            )
+            .await
+            {
                 error!(error = %e, "bridge_dispatcher task exited");
             }
         })
@@ -494,8 +514,20 @@ async fn main() -> Result<()> {
         let http_client = http_client.clone();
         let blockhash_cache = blockhash_cache.clone();
         let priority_fee_cache = priority_fee_cache.clone();
+        let lookup_table_cache = lookup_table_cache.clone();
+        let treasury_handle = treasury_handle.clone();
         tokio::spawn(async move {
-            if let Err(e) = executor::run(cfg, http_client, trigger_rx, blockhash_cache, priority_fee_cache).await {
+            if let Err(e) = executor::run(
+                cfg,
+                http_client,
+                trigger_rx,
+                blockhash_cache,
+                priority_fee_cache,
+                lookup_table_cache,
+                treasury_handle,
+            )
+            .await
+            {
                 error!(error = %e, "executor task exited");
             }
         })

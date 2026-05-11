@@ -21,7 +21,7 @@ import {
   cadenceToOnChain,
   getProgram,
   isProgramConfigured,
-  nextNonce,
+  fetchConfig,
   parseAutomationCreated,
   SOTAMA_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
@@ -799,7 +799,11 @@ async function sendCreateAutomation(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const program = getProgram(connection, adapterWallet as any);
   const owner = wallet.publicKey;
-  const nonce = await nextNonce(program);
+  // Fetch Config once — needed for the keeper pubkey (time-fee
+  // destination) on every create variant + the next nonce.
+  const config = await fetchConfig(program);
+  const keeper = config.keeper;
+  const nonce = BigInt(config.automationCount.toString());
 
   const tx = new Transaction();
   let automation: PublicKey;
@@ -809,6 +813,7 @@ async function sendCreateAutomation(
     const built = await buildCreateAutomationIx({
       program,
       owner,
+      keeper,
       trigger: spec.trigger,
       action: spec.action,
       cadence: onChainCadence,
@@ -829,6 +834,7 @@ async function sendCreateAutomation(
     const builtBefore = await buildCreateAutomationSplIx({
       program,
       owner,
+      keeper,
       trigger: spec.trigger,
       action: spec.action,
       cadence: onChainCadence,
@@ -872,6 +878,7 @@ async function sendCreateAutomation(
     const builtBefore = await buildCreateAutomationSwapIx({
       program,
       owner,
+      keeper,
       trigger: spec.trigger,
       action: spec.action,
       cadence: onChainCadence,
