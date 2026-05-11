@@ -79,6 +79,7 @@ const action = {
     minAmountOut: BN,
     linkedDownstream: PublicKey | null = null,
     linkFeeDeposit: BN = new BN(0),
+    consumeUpstreamOutput: boolean = false,
   ) => ({
     swap: {
       inputMint,
@@ -88,6 +89,7 @@ const action = {
       minAmountOut,
       linkedDownstream,
       linkFeeDeposit,
+      consumeUpstreamOutput,
     },
   }),
 };
@@ -152,9 +154,13 @@ describe("sotama_automations v2", () => {
     expect(cfg.keeper.toBase58()).to.eq(keeper.publicKey.toBase58());
     expect(cfg.paused).to.eq(false);
     expect(cfg.automationCount.toString()).to.eq("0");
-    // v4.1: treasury defaults to admin, close-fee defaults to 0.
+    // v4.5: treasury defaults to admin; fees default to constants in
+    // state.rs (DEFAULT_SWAP_FEE_BPS = 10, DEFAULT_TIME_FEE_LAMPORTS_PER_DAY
+    // = 300_000). The separate close-fee field was removed — the close
+    // fee is now just the PDA's rent_exempt, swept by `close = treasury`.
     expect(cfg.treasury.toBase58()).to.eq(admin.publicKey.toBase58());
-    expect(cfg.closeFeeLamports.toString()).to.eq("0");
+    expect(cfg.swapFeeBps).to.eq(10);
+    expect(cfg.timeFeeLamportsPerDay.toString()).to.eq("300000");
   });
 
   it("creates an account-transfer + transfer-SOL automation and holds the deposit on the PDA", async () => {
@@ -174,6 +180,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -218,6 +225,7 @@ describe("sotama_automations v2", () => {
           owner: owner.publicKey,
           config: configPda,
           automation: auto,
+          keeper: keeper.publicKey,
           systemProgram: SystemProgram.programId,
         })
         .signers([owner])
@@ -250,6 +258,7 @@ describe("sotama_automations v2", () => {
           owner: owner.publicKey,
           config: configPda,
           automation: auto,
+          keeper: keeper.publicKey,
           systemProgram: SystemProgram.programId,
         })
         .signers([owner])
@@ -359,6 +368,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -401,6 +411,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -434,6 +445,7 @@ describe("sotama_automations v2", () => {
           owner: owner.publicKey,
           config: configPda,
           automation: auto,
+          keeper: keeper.publicKey,
           systemProgram: SystemProgram.programId,
         })
         .signers([owner])
@@ -462,6 +474,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -605,6 +618,7 @@ describe("sotama_automations v2", () => {
         mint: mint.publicKey,
         ownerAta: ataOwnerKeeper,
         automationAta: ataAuto,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -660,6 +674,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -726,6 +741,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -803,6 +819,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -855,6 +872,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -920,6 +938,7 @@ describe("sotama_automations v2", () => {
           owner: owner.publicKey,
           config: configPda,
           automation: auto,
+          keeper: keeper.publicKey,
           systemProgram: SystemProgram.programId,
         })
         .signers([owner])
@@ -1012,6 +1031,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta: ownerAta,
         automationInputAta: automationAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -1102,6 +1122,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta: ownerAta,
         automationInputAta: automationAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -1176,6 +1197,7 @@ describe("sotama_automations v2", () => {
           inputMint,
           ownerInputAta: ownerAta,
           automationInputAta: automationAta,
+          keeper: keeper.publicKey,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
         })
@@ -1251,6 +1273,7 @@ describe("sotama_automations v2", () => {
           mint: mintKp.publicKey,
           ownerAta,
           automationAta: autoAta,
+          keeper: keeper.publicKey,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
         })
@@ -1285,6 +1308,7 @@ describe("sotama_automations v2", () => {
           owner: owner.publicKey,
           config: configPda,
           automation: auto,
+          keeper: keeper.publicKey,
           systemProgram: SystemProgram.programId,
         })
         .signers([owner])
@@ -1342,36 +1366,12 @@ describe("sotama_automations v2", () => {
     expect(threw, "expected has_one violation for non-admin").to.eq(true);
   });
 
-  it("update_close_fee sets the fee within the cap", async () => {
-    const FEE = new BN(1_000_000); // 0.001 SOL
-    await program.methods
-      .updateCloseFee(FEE)
-      .accountsStrict({ admin: admin.publicKey, config: configPda })
-      .rpc();
-
-    const cfg = await program.account.config.fetch(configPda);
-    expect(cfg.closeFeeLamports.toString()).to.eq(FEE.toString());
-  });
-
-  it("update_close_fee rejects fees above MAX_CLOSE_FEE_LAMPORTS (0.1 SOL)", async () => {
-    let threw = false;
-    try {
-      await program.methods
-        .updateCloseFee(new BN(100_000_001))
-        .accountsStrict({ admin: admin.publicKey, config: configPda })
-        .rpc();
-    } catch (e: any) {
-      threw = true;
-      expect(`${e?.error?.errorCode?.code ?? ""} ${e?.message ?? ""}`).to.match(
-        /FeeTooLarge|feeTooLarge/i,
-      );
-    }
-    expect(threw, "expected FeeTooLarge").to.eq(true);
-  });
-
-  it("close_automation deducts close-fee to treasury and refunds rest to owner", async () => {
-    // Use a dedicated treasury keypair so we measure the exact close-fee
-    // landing without admin's tx-fee bookkeeping muddying the delta.
+  it("close_automation routes PDA rent to treasury and deposit to owner", async () => {
+    // v4.5 close-fee model: the close fee IS the PDA's rent_exempt
+    // minimum, swept to treasury by Anchor's `close = treasury` while
+    // the above-rent SOL deposit is refunded to the owner. Use a
+    // dedicated treasury keypair so we measure the rent landing
+    // without admin's tx-fee bookkeeping muddying the delta.
     const treasuryKp = Keypair.generate();
     await fund(treasuryKp.publicKey, 0.001); // rent-exempt floor
 
@@ -1381,9 +1381,6 @@ describe("sotama_automations v2", () => {
       .rpc();
 
     const cfg0 = await program.account.config.fetch(configPda);
-    const fee = Number(cfg0.closeFeeLamports.toString());
-    expect(fee, "previous test must have set a non-zero fee").to.be.greaterThan(0);
-
     const nonce = BigInt(cfg0.automationCount.toString());
     const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
     const depositSol = new BN(0.1 * LAMPORTS_PER_SOL);
@@ -1399,6 +1396,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -1423,14 +1421,19 @@ describe("sotama_automations v2", () => {
     const ownerAfter = await provider.connection.getBalance(owner.publicKey);
     const acct = await provider.connection.getAccountInfo(auto);
 
+    // Compute the PDA's rent_exempt from its actual data length. Anchor
+    // 0.32 ties Automation's size to InitSpace, which varies as the
+    // struct grows; deriving it from the runtime account beats a
+    // hardcoded constant that silently drifts.
+    const rentExempt = pdaBefore - depositSol.toNumber();
+
     expect(acct, "PDA must be closed").to.eq(null);
-    // Treasury isn't a tx signer; its delta equals exactly the close fee.
-    expect(treasuryAfter - treasuryBefore).to.eq(fee, "treasury got the fee");
-    // Owner refund = pdaBefore - fee. Owner isn't paying tx fees here
-    // either (provider wallet is the fee payer), so the delta should
-    // equal the expected refund precisely.
-    const expectedOwnerDelta = pdaBefore - fee;
-    expect(ownerAfter - ownerBefore).to.eq(expectedOwnerDelta, "owner refund");
+    // Treasury isn't a tx signer; its delta equals exactly the PDA rent.
+    expect(treasuryAfter - treasuryBefore).to.eq(rentExempt, "treasury got the rent");
+    // Owner refund = the SOL deposit (everything above rent). Owner isn't
+    // paying tx fees either (provider wallet is the fee payer), so the
+    // delta equals the expected refund precisely.
+    expect(ownerAfter - ownerBefore).to.eq(depositSol.toNumber(), "owner got the deposit refund");
 
     // Rotate treasury back to admin so the rest of the suite has a
     // simple invariant.
@@ -1456,6 +1459,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -1493,12 +1497,6 @@ describe("sotama_automations v2", () => {
       })
       .signers([owner])
       .rpc();
-
-    // Reset close-fee to 0 so subsequent assertions don't accidentally pay.
-    await program.methods
-      .updateCloseFee(new BN(0))
-      .accountsStrict({ admin: admin.publicKey, config: configPda })
-      .rpc();
   });
 
   it("Automation defaults fee_topup_enabled to false on non-swap creates", async () => {
@@ -1517,6 +1515,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -1597,6 +1596,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta: ownerAta,
         automationInputAta: automationAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -1607,36 +1607,6 @@ describe("sotama_automations v2", () => {
     expect(a.feeTopupEnabled).to.eq(true);
   });
 
-  it("migrate_config is idempotent — running it on a v4.1 Config preserves admin's customizations", async () => {
-    // Set a non-zero fee + custom treasury so we can detect any
-    // unintended reset by `migrate_config`. The handler resets these
-    // to defaults — which is the documented one-shot semantics — so
-    // test that explicitly: after migrate, treasury == admin and
-    // close_fee_lamports == 0, regardless of prior state.
-    const customTreasury = Keypair.generate().publicKey;
-    const customFee = new BN(2_000_000);
-    await program.methods
-      .updateTreasury(customTreasury)
-      .accountsStrict({ admin: admin.publicKey, config: configPda })
-      .rpc();
-    await program.methods
-      .updateCloseFee(customFee)
-      .accountsStrict({ admin: admin.publicKey, config: configPda })
-      .rpc();
-
-    await program.methods
-      .migrateConfig()
-      .accountsStrict({
-        admin: admin.publicKey,
-        config: configPda,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
-
-    const cfg = await program.account.config.fetch(configPda);
-    expect(cfg.treasury.toBase58()).to.eq(admin.publicKey.toBase58());
-    expect(cfg.closeFeeLamports.toString()).to.eq("0");
-  });
 
   /* ── execute_bridge pre-CPI gate tests ──────────────────────────────── */
   // These tests never invoke Jupiter. Each test creates real on-chain state
@@ -1706,6 +1676,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta: ownerAta,
         automationInputAta: automationAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -1812,6 +1783,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta: ownerAta,
         automationInputAta: automationAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -1942,6 +1914,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta: ownerAta,
         automationInputAta: automationAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -2093,6 +2066,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta,
         automationInputAta: autoInputAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -2231,6 +2205,7 @@ describe("sotama_automations v2", () => {
         inputMint,
         ownerInputAta,
         automationInputAta: autoInputAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -2375,6 +2350,7 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: pre_shutdown_sol_auto,
+        keeper: keeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -2421,10 +2397,9 @@ describe("sotama_automations v2", () => {
         automation: pre_shutdown_spl_auto,
         mint: pre_shutdown_spl_mint,
         ownerAta: splOwnerAta,
-        destinationAta: splDestAta,
         automationAta: splAutoAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -2469,6 +2444,7 @@ describe("sotama_automations v2", () => {
         inputMint: pre_shutdown_swap_input_mint,
         ownerInputAta: swapOwnerAta,
         automationInputAta: swapAutoAta,
+        keeper: keeper.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -2585,6 +2561,7 @@ describe("sotama_automations v2", () => {
           owner: owner.publicKey,
           config: configPda,
           automation: auto,
+          keeper: keeper.publicKey,
           systemProgram: SystemProgram.programId,
         })
         .signers([owner])
@@ -2598,7 +2575,11 @@ describe("sotama_automations v2", () => {
     expect(threw).to.eq(true);
   });
 
-  it("Post-shutdown: update_treasury, update_close_fee, update_admin, migrate_config all revert", async () => {
+  it("Post-shutdown: update_treasury, update_swap_fee_bps, update_time_fee_per_day, update_admin all revert", async () => {
+    // v4.5: update_close_fee and migrate_config are no longer part of
+    // the mainnet binary (close fee folded into PDA rent; migrate_config
+    // cfg-gated to devnet only). The shutdown-lockdown invariant still
+    // applies to the surviving admin ixs.
     const checks: Array<() => Promise<unknown>> = [
       () =>
         program.methods
@@ -2607,22 +2588,18 @@ describe("sotama_automations v2", () => {
           .rpc(),
       () =>
         program.methods
-          .updateCloseFee(new BN(0))
+          .updateSwapFeeBps(0)
+          .accountsStrict({ admin: admin.publicKey, config: configPda })
+          .rpc(),
+      () =>
+        program.methods
+          .updateTimeFeePerDay(new BN(0))
           .accountsStrict({ admin: admin.publicKey, config: configPda })
           .rpc(),
       () =>
         program.methods
           .updateAdmin(Keypair.generate().publicKey)
           .accountsStrict({ admin: admin.publicKey, config: configPda })
-          .rpc(),
-      () =>
-        program.methods
-          .migrateConfig()
-          .accountsStrict({
-            admin: admin.publicKey,
-            config: configPda,
-            systemProgram: SystemProgram.programId,
-          })
           .rpc(),
     ];
     for (const run of checks) {

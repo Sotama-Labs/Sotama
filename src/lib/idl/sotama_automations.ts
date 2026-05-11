@@ -1847,8 +1847,9 @@ export type SotamaAutomations = {
       "docs": [
         "One-way kill switch. Admin only. Sets `Config.shutdown = true`",
         "and locks `update_treasury`, `update_swap_fee_bps`,",
-        "`update_time_fee_per_day`, `update_admin`, `migrate_config`,",
-        "all `execute_*`, and all `create_automation*`. Enables",
+        "`update_time_fee_per_day`, `update_admin`, all `execute_*`, and",
+        "all `create_automation*` (plus `migrate_config` on devnet",
+        "builds). Enables",
         "`admin_close_automation*` for the wind-down. Reverts on a",
         "second invocation (`ShutdownAlreadySet`)."
       ],
@@ -3047,8 +3048,8 @@ export type SotamaAutomations = {
               "Terminal kill-switch flag. Once true:",
               "* `execute_*` and `create_automation_*` revert",
               "* `update_treasury`, `update_swap_fee_bps`,",
-              "`update_time_fee_per_day`, `update_admin`,",
-              "`migrate_config` revert",
+              "`update_time_fee_per_day`, `update_admin` revert",
+              "(plus `migrate_config` on devnet builds)",
               "* `admin_close_automation*` becomes callable (admin OR owner",
               "signs; deposit → owner, all other lamports → treasury)",
               "One-way: `set_shutdown` itself rejects when already true. The",

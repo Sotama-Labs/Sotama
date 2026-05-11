@@ -132,6 +132,7 @@ describe("lifecycle events", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: adminAndKeeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -186,6 +187,7 @@ describe("lifecycle events", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: adminAndKeeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -262,6 +264,7 @@ describe("lifecycle events", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: adminAndKeeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -332,6 +335,7 @@ describe("lifecycle events", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: adminAndKeeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -406,6 +410,7 @@ describe("lifecycle events", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: adminAndKeeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
@@ -453,6 +458,7 @@ describe("lifecycle events", () => {
         owner: owner.publicKey,
         config: configPda,
         automation: auto,
+        keeper: adminAndKeeper.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])

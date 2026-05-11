@@ -310,8 +310,8 @@ pub struct Config {
     /// Terminal kill-switch flag. Once true:
     ///   * `execute_*` and `create_automation_*` revert
     ///   * `update_treasury`, `update_swap_fee_bps`,
-    ///     `update_time_fee_per_day`, `update_admin`,
-    ///     `migrate_config` revert
+    ///     `update_time_fee_per_day`, `update_admin` revert
+    ///     (plus `migrate_config` on devnet builds)
     ///   * `admin_close_automation*` becomes callable (admin OR owner
     ///     signs; deposit → owner, all other lamports → treasury)
     /// One-way: `set_shutdown` itself rejects when already true. The

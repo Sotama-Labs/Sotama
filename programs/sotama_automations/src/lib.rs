@@ -78,8 +78,9 @@ pub mod sotama_automations {
 
     /// One-way kill switch. Admin only. Sets `Config.shutdown = true`
     /// and locks `update_treasury`, `update_swap_fee_bps`,
-    /// `update_time_fee_per_day`, `update_admin`, `migrate_config`,
-    /// all `execute_*`, and all `create_automation*`. Enables
+    /// `update_time_fee_per_day`, `update_admin`, all `execute_*`, and
+    /// all `create_automation*` (plus `migrate_config` on devnet
+    /// builds). Enables
     /// `admin_close_automation*` for the wind-down. Reverts on a
     /// second invocation (`ShutdownAlreadySet`).
     pub fn set_shutdown(ctx: Context<SetShutdown>) -> Result<()> {
