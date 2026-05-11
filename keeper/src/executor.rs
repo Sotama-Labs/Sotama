@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::caches::blockhash::{BlockhashCache, CachedBlockhash};
 use crate::caches::lookup_table::LookupTableCache;
@@ -258,6 +258,21 @@ async fn process_event(
                     || msg.contains("MinIntervalNotElapsed")
                     || msg.contains("minIntervalNotElapsed");
                 let skip_empty_ata = msg.contains("SkipEmptyUpstreamATA");
+                // The on-chain program rejects an execute_swap whose
+                // Jupiter CPI consumed more than the action's
+                // `amount_in` (added in v4.5 to enforce TWAP/DCA
+                // semantics). Hitting this means the keeper built a
+                // route with the wrong input cap — almost always a
+                // quote-vs-build mismatch (e.g. Jupiter returned a
+                // route with a larger inAmount than we requested) or a
+                // stale per-fire amount_in in our cache. Surface it as
+                // a distinct error so operators notice quote drift
+                // instead of swallowing it as a generic ix failure; the
+                // default retry-on-next-trigger path is correct
+                // because the next /build call should produce a fresh,
+                // correctly-sized quote.
+                let input_overconsumed = msg.contains("InputConsumedExceedsAmountIn")
+                    || msg.contains("inputConsumedExceedsAmountIn");
                 dedupe
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -276,6 +291,12 @@ async fn process_event(
                     debug!(
                         automation = %pubkey,
                         "executor: upstream ATA empty, skipping fire until bridge lands"
+                    );
+                } else if input_overconsumed {
+                    error!(
+                        automation = %pubkey,
+                        error = %msg,
+                        "executor: Jupiter route consumed more than amount_in — likely quote/build drift; will requote on next trigger"
                     );
                 } else {
                     warn!(

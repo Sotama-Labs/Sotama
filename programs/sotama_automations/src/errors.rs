@@ -92,4 +92,6 @@ pub enum SotamaError {
     UnauthorizedCloser,
     #[msg("Close pair accounts must be (PDA-owned ATA, owner-owned ATA) of matching mint != input_mint.")]
     BadCloseAccounts,
+    #[msg("Jupiter CPI consumed more input than amount_in — keeper accelerated more fires than the action authorizes")]
+    InputConsumedExceedsAmountIn,
 }

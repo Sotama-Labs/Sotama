@@ -13,12 +13,17 @@ use crate::state::{ActionSpec, Automation, Config};
 ///      `token::transfer`. Owner gets ALL their tokens back.
 ///   2. PDA's ATA closes with destination = `treasury` (ATA's rent
 ///      goes to treasury, not owner).
-///   3. Anchor's `close = treasury` sweeps the PDA's own rent_min →
+///   3. PDA's above-rent SOL deposit → owner. Any SOL the owner
+///      directly system-transferred into the PDA (e.g. to seed a
+///      keeper-fee buffer) is theirs regardless of who triggered the
+///      close. Mirrors the user-driven close path (#9).
+///   4. Anchor's `close = treasury` sweeps the PDA's own rent_min →
 ///      treasury.
 ///
-/// Net result: tokens to user, all lamports (PDA rent + ATA rent) to
-/// treasury. Owner's ATA must exist beforehand — the wind-down script
-/// prepends `createAssociatedTokenAccountIdempotentInstruction(admin, owner, mint)`
+/// Net result: tokens + above-rent SOL to owner, ATA rent + PDA rent
+/// to treasury. Owner's ATA must exist beforehand — the wind-down
+/// script prepends
+/// `createAssociatedTokenAccountIdempotentInstruction(admin, owner, mint)`
 /// so admin pays the rent for any owner ATAs that aren't initialized.
 #[derive(Accounts)]
 pub struct AdminCloseAutomationSpl<'info> {
@@ -131,10 +136,32 @@ pub fn handler(ctx: Context<AdminCloseAutomationSpl>) -> Result<()> {
         signer_seeds,
     ))?;
 
-    // Step 3: Anchor's `close = treasury` will run after this returns,
+    // Step 3: Refund any above-rent SOL the owner deposited into the
+    // PDA. SPL rules don't auto-accumulate `link_fee_deposit` the way
+    // chained Swap rules do, but the owner can still system-transfer
+    // SOL into the PDA (e.g. to seed a keeper-fee buffer). On
+    // admin-driven wind-down, those deposits belong to the user — same
+    // policy as the user-driven close (#9). PDA rent_min still flows
+    // to treasury via Anchor's `close = treasury` below.
+    let auto_info = automation.to_account_info();
+    let pda_balance = auto_info.lamports();
+    let rent_exempt = Rent::get()?.minimum_balance(auto_info.data_len());
+    let deposit_refund = pda_balance.saturating_sub(rent_exempt);
+    if deposit_refund > 0 {
+        **auto_info.try_borrow_mut_lamports()? = pda_balance
+            .checked_sub(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+        let owner_info = ctx.accounts.owner.to_account_info();
+        **owner_info.try_borrow_mut_lamports()? = owner_info
+            .lamports()
+            .checked_add(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+    }
+
+    // Step 4: Anchor's `close = treasury` will run after this returns,
     // sending the PDA's rent_min to treasury. We capture the lamport
     // figures for the event before that runs.
-    let pda_lamports = automation.to_account_info().lamports();
+    let pda_lamports = auto_info.lamports();
 
     if !automation.finished {
         emit!(AutomationFinished {
@@ -146,12 +173,7 @@ pub fn handler(ctx: Context<AdminCloseAutomationSpl>) -> Result<()> {
     emit!(AutomationClosed {
         automation: automation.key(),
         owner: ctx.accounts.owner.key(),
-        // For admin-close events, refund_lamports is 0 (no SOL deposit
-        // existed for this rule type) and fee_lamports captures the PDA
-        // rent that flows to treasury. The SPL token amount lives in a
-        // separate AutomationExecuted-style event in future versions if
-        // needed; for now indexers can derive it from the token tx.
-        refund_lamports: 0,
+        refund_lamports: deposit_refund,
         fee_lamports: pda_lamports,
     });
 

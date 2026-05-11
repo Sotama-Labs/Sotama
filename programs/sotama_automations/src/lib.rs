@@ -269,7 +269,9 @@ pub mod sotama_automations {
     /// Requires `Config.shutdown == true`. Owner gets the unspent
     /// input mint (via PDA→owner ATA transfer); treasury gets all
     /// lamports (PDA rent + input-ATA rent).
-    pub fn admin_close_automation_swap(ctx: Context<AdminCloseAutomationSwap>) -> Result<()> {
+    pub fn admin_close_automation_swap<'info>(
+        ctx: Context<'_, '_, '_, 'info, AdminCloseAutomationSwap<'info>>,
+    ) -> Result<()> {
         instructions::admin_close_automation_swap::handler(ctx)
     }
 }

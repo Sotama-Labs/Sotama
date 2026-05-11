@@ -2536,6 +2536,11 @@ export type SotamaAutomations = {
       "code": 6044,
       "name": "badCloseAccounts",
       "msg": "Close pair accounts must be (PDA-owned ATA, owner-owned ATA) of matching mint != input_mint."
+    },
+    {
+      "code": 6045,
+      "name": "inputConsumedExceedsAmountIn",
+      "msg": "Jupiter CPI consumed more input than amount_in — keeper accelerated more fires than the action authorizes"
     }
   ],
   "types": [

@@ -229,8 +229,27 @@ pub fn handler<'info>(
         .checked_sub(output_before)
         .ok_or(error!(SotamaError::SlippageExceeded))?;
     require!(received >= min_amount_out, SotamaError::SlippageExceeded);
-    let _ = amount_in; // amount_in is informational at this layer; Jupiter's ix bytes carry it
     let _ = post_data;
+
+    // Cap how much input the Jupiter CPI was allowed to consume. The
+    // PDA's input ATA is pre-funded with `amount_in × total_fires` at
+    // create time so it can cover every fire over the rule's lifetime
+    // (see create_automation_swap). Without this cap the keeper could
+    // build a Jupiter route that consumes the entire remaining balance
+    // in one fire — output still lands at the user's destination, but
+    // the rule's TWAP/DCA semantics collapse (N scheduled fires
+    // squashed into one), and any aggregated MEV from a single large
+    // swap accrues to a sandwich bot instead of being amortized across
+    // separate fires. Re-read the input ATA here, before fee math
+    // touches the output ATA, so we fail fast on overspend.
+    let mut post_input_data: &[u8] = &input_ata_info.try_borrow_data()?;
+    let post_input = TokenAccount::try_deserialize(&mut post_input_data)?;
+    let input_consumed = input_before.saturating_sub(post_input.amount);
+    require!(
+        input_consumed <= amount_in,
+        SotamaError::InputConsumedExceedsAmountIn
+    );
+    let _ = post_input_data;
 
     // Protocol swap fee on the delivered amount. `swap_fee_bps / 10_000`
     // of `received` is transferred from the output ATA to the treasury's
@@ -276,13 +295,9 @@ pub fn handler<'info>(
     // rule, fill event) sees the net amount.
     let received = received.saturating_sub(swap_fee);
 
-    // Read the post-CPI input ATA balance to compute the actual amount consumed.
-    let mut post_input_data: &[u8] = &input_ata_info.try_borrow_data()?;
-    let post_input = TokenAccount::try_deserialize(&mut post_input_data)?;
-    let input_consumed = input_before.saturating_sub(post_input.amount);
-
     // Emit the fill event so the keeper can capture the effective fill
     // price for downstream PriceRelativeToFill triggers.
+    // `input_consumed` was computed and checked above.
     emit!(AutomationFilled {
         automation: auto_key,
         input_amount: input_consumed,

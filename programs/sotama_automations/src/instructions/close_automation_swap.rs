@@ -167,12 +167,36 @@ pub fn handler<'info>(
         ))?;
     }
 
-    // PDA's remaining lamports are pure rent at this point — input
-    // ATA's deposit went to owner via token::transfer, input ATA's rent
-    // went to owner via token::close_account, and the optional
-    // remaining-account dust pairs followed the same flow. Anchor's
-    // `close = treasury` sweeps the PDA rent on handler return.
-    let fee_lamports = automation.to_account_info().lamports();
+    // Refund any above-rent SOL deposit to the owner before Anchor's
+    // `close = treasury` sweeps the remainder. The PDA accumulates
+    // lamports above rent in two paths:
+    //   * Linked chains — every upstream `execute_swap` fire transfers
+    //     `link_fee_deposit` lamports into the downstream PDA to prepay
+    //     its keeper-fee debits. Unspent surplus at close time belongs
+    //     to the user, not the protocol.
+    //   * Direct top-ups — the owner can system-transfer SOL into the
+    //     PDA at any time to refill its keeper-fee buffer.
+    // Without this, both paths get seized by `close = treasury` on a
+    // user-driven close. Mirror `close_automation`'s split: refund
+    // excess to owner, leave rent for treasury.
+    let auto_info = automation.to_account_info();
+    let pda_balance = auto_info.lamports();
+    let rent_exempt = Rent::get()?.minimum_balance(auto_info.data_len());
+    let deposit_refund = pda_balance.saturating_sub(rent_exempt);
+    if deposit_refund > 0 {
+        **auto_info.try_borrow_mut_lamports()? = pda_balance
+            .checked_sub(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+        let owner_info = ctx.accounts.owner.to_account_info();
+        **owner_info.try_borrow_mut_lamports()? = owner_info
+            .lamports()
+            .checked_add(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+    }
+
+    // Whatever is left in the PDA at this point is the rent-exempt
+    // amount; Anchor's `close = treasury` sweeps it on handler return.
+    let fee_lamports = auto_info.lamports();
 
     if !automation.finished {
         emit!(AutomationFinished {
@@ -184,7 +208,7 @@ pub fn handler<'info>(
     emit!(AutomationClosed {
         automation: automation.key(),
         owner: ctx.accounts.owner.key(),
-        refund_lamports: 0,
+        refund_lamports: deposit_refund,
         fee_lamports,
     });
 

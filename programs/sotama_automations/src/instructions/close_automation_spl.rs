@@ -120,11 +120,30 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
         signer_seeds,
     ))?;
 
+    // Refund any above-rent SOL deposit to the owner before Anchor's
+    // `close = treasury` sweep. SPL rules don't accumulate
+    // `link_fee_deposit` lamports the way chained Swap rules do, but
+    // the owner can still system-transfer SOL into the PDA at any time
+    // (e.g. to seed a keeper-fee buffer). Anything above rent is the
+    // user's, not the protocol's. Same split as `close_automation`.
+    let auto_info = automation.to_account_info();
+    let pda_balance = auto_info.lamports();
+    let rent_exempt = Rent::get()?.minimum_balance(auto_info.data_len());
+    let deposit_refund = pda_balance.saturating_sub(rent_exempt);
+    if deposit_refund > 0 {
+        **auto_info.try_borrow_mut_lamports()? = pda_balance
+            .checked_sub(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+        let owner_info = ctx.accounts.owner.to_account_info();
+        **owner_info.try_borrow_mut_lamports()? = owner_info
+            .lamports()
+            .checked_add(deposit_refund)
+            .ok_or(error!(SotamaError::FeeTooLarge))?;
+    }
+
     // The PDA itself closes via Anchor's `close = treasury` constraint
-    // on handler return — its lamports are pure rent at this point
-    // (the token deposit and ATA rent were already moved above), so
-    // treasury receives just the rent.
-    let fee_lamports = automation.to_account_info().lamports();
+    // on handler return — its lamports are pure rent at this point.
+    let fee_lamports = auto_info.lamports();
 
     if !automation.finished {
         emit!(AutomationFinished {
@@ -136,7 +155,7 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
     emit!(AutomationClosed {
         automation: automation.key(),
         owner: ctx.accounts.owner.key(),
-        refund_lamports: 0,
+        refund_lamports: deposit_refund,
         fee_lamports,
     });
 
