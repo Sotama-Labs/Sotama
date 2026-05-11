@@ -653,15 +653,22 @@ async fn build_action_ix(
                 &destination_output_ata,
             )?;
 
-            // Resolve the route's address-lookup-tables via the shared
-            // cache so concurrent fires don't each hit the network for
-            // the same ALTs. With the resolved ALTs included in the v0
-            // outer tx, common Jupiter accounts (token program,
-            // intermediate ATAs) reference by 1-byte index instead of
-            // 32-byte inline, which keeps composed SOL↔USDC swaps
-            // under the 1232-byte wire cap.
-            let alt_keys = jupiter::lookup_table_pubkeys(&build.addresses_by_lookup_table_address)?;
-            let alts = lookup_table_cache.resolve_many(rpc, &alt_keys).await?;
+            // Per Jupiter docs: "CPI cannot use Address Lookup Tables"
+            // (https://dev.jup.ag/docs/swap/build/common-instructions).
+            // Wrapping Jupiter's swap_ix in our execute_swap CPI breaks
+            // when ALT compression is used on the parent tx —
+            // RPC preflight rejects with "Transaction failed to sanitize
+            // accounts offsets correctly". So we resolve no ALTs and
+            // inline every account; JUPITER_MAX_ACCOUNTS_HINT=16 keeps
+            // the tx within the 1232-byte wire cap.
+            //
+            // _lookup_table_cache is kept in the executor signature for
+            // the bridge dispatcher path (which doesn't CPI-relay
+            // Jupiter and therefore CAN use ALTs); deliberately unused
+            // here.
+            let _ = lookup_table_cache;
+            let _ = build.addresses_by_lookup_table_address;
+            let alts: Vec<solana_sdk::address_lookup_table::AddressLookupTableAccount> = Vec::new();
 
             // Treasury's output ATA — derived from on-chain
             // Config.treasury (cached) and the swap's output mint. The
@@ -695,6 +702,14 @@ async fn send_via_helius(
     serialized: &[u8],
 ) -> Result<String> {
     let b64 = base64::engine::general_purpose::STANDARD.encode(serialized);
+    // Keep size at debug; raise to `info` only when diagnosing a future
+    // sanitize / preflight failure (each entry is ~1.4 KB).
+    tracing::debug!(
+        target: "executor",
+        size_bytes = serialized.len(),
+        tx_b64 = %b64,
+        "send_one: about to send tx"
+    );
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
