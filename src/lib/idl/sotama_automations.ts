@@ -1796,59 +1796,6 @@ export type SotamaAutomations = {
       ]
     },
     {
-      "name": "migrateConfig",
-      "docs": [
-        "One-shot devnet migration: realloc the predecessor Config PDA",
-        "to the current layout and initialize the new fee fields. Mainnet",
-        "doesn't need this — its first `initialize_config` writes the",
-        "current layout directly. Admin only."
-      ],
-      "discriminator": [
-        92,
-        131,
-        58,
-        105,
-        210,
-        154,
-        224,
-        193
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true,
-          "relations": [
-            "config"
-          ]
-        },
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "setPaused",
       "discriminator": [
         91,
@@ -2541,6 +2488,11 @@ export type SotamaAutomations = {
       "code": 6045,
       "name": "inputConsumedExceedsAmountIn",
       "msg": "Jupiter CPI consumed more input than amount_in — keeper accelerated more fires than the action authorizes"
+    },
+    {
+      "code": 6046,
+      "name": "transferLeavesPdaBelowRent",
+      "msg": "SOL transfer would leave the automation PDA below the rent-exempt minimum without fully closing it"
     }
   ],
   "types": [

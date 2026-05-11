@@ -17,6 +17,7 @@ pub mod execute_fee_topup;
 pub mod execute_link_fee_debit;
 pub mod execute_swap;
 pub mod initialize_config;
+#[cfg(feature = "devnet")]
 pub mod migrate_config;
 pub mod set_paused;
 pub mod set_shutdown;
@@ -43,6 +44,7 @@ pub use execute_fee_topup::*;
 pub use execute_link_fee_debit::*;
 pub use execute_swap::*;
 pub use initialize_config::*;
+#[cfg(feature = "devnet")]
 pub use migrate_config::*;
 pub use set_paused::*;
 pub use set_shutdown::*;

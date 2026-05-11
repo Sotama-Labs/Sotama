@@ -70,9 +70,21 @@ pub fn handler(ctx: Context<ExecuteAutomation>) -> Result<()> {
 
     let from_balance = from_info.lamports();
     let dest_balance = dest_info.lamports();
-    **from_info.try_borrow_mut_lamports()? = from_balance
+    let new_from_balance = from_balance
         .checked_sub(amount)
         .ok_or(ProgramError::InsufficientFunds)?;
+    // A SOL-action PDA that's still alive (not at end-of-life) must
+    // remain rent-exempt or the runtime rejects the tx at finalization,
+    // wedging the rule (#12 — "zombie PDA"). Allow the explicit
+    // "drain-to-zero" case where the user closes the rule out by
+    // setting `amount` to the entire PDA balance; otherwise require
+    // the post-transfer balance stays above rent_min.
+    let rent_min = Rent::get()?.minimum_balance(from_info.data_len());
+    require!(
+        new_from_balance == 0 || new_from_balance >= rent_min,
+        SotamaError::TransferLeavesPdaBelowRent
+    );
+    **from_info.try_borrow_mut_lamports()? = new_from_balance;
     **dest_info.try_borrow_mut_lamports()? = dest_balance
         .checked_add(amount)
         .ok_or(ProgramError::ArithmeticOverflow)?;

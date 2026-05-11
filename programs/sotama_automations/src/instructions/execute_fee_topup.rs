@@ -86,6 +86,19 @@ pub fn handler<'info>(
         ctx.accounts.automation.fee_topup_enabled,
         SotamaError::FeeTopupNotEnabled
     );
+    // Defense in depth: don't allow fee topup on a finished rule. A
+    // terminal Repeat (executions == total) can still hold token
+    // residuals — dust from rounding on past fires or stranded chain
+    // output that didn't bridge cleanly. Without this gate, a leaked
+    // keeper key could continue swapping those residuals to its wSOL
+    // ATA after the rule's user-facing lifetime ended. The owner is
+    // expected to call `close_automation_swap` (which routes residuals
+    // back to them) once the rule is finished; this require! makes
+    // that the only path.
+    require!(
+        !ctx.accounts.automation.finished,
+        SotamaError::AutomationFinished
+    );
     // Even with the opt-in, the keeper must promise a non-zero output
     // floor — `min_amount_out == 0` would be functionally equivalent
     // to no slippage check and defeat the guard's purpose.

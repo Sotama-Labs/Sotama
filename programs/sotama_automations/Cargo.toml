@@ -15,6 +15,11 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+# Devnet-only ixs (currently: `migrate_config`). Off by default — the
+# mainnet binary must NOT enable this, so the migrate path is absent
+# from the BPF binary and the IDL. Anchor build for devnet:
+#   `anchor build -- --features devnet`
+devnet = []
 
 [dependencies]
 anchor-lang = "0.32.1"

@@ -94,4 +94,6 @@ pub enum SotamaError {
     BadCloseAccounts,
     #[msg("Jupiter CPI consumed more input than amount_in — keeper accelerated more fires than the action authorizes")]
     InputConsumedExceedsAmountIn,
+    #[msg("SOL transfer would leave the automation PDA below the rent-exempt minimum without fully closing it")]
+    TransferLeavesPdaBelowRent,
 }

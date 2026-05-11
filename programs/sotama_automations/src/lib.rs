@@ -56,6 +56,14 @@ pub mod sotama_automations {
     /// to the current layout and initialize the new fee fields. Mainnet
     /// doesn't need this — its first `initialize_config` writes the
     /// current layout directly. Admin only.
+    ///
+    /// Gated behind the `devnet` cargo feature so the mainnet binary
+    /// does NOT include this ix. Calling it on the current layout is a
+    /// no-op realloc but unconditionally resets `treasury`, `swap_fee_bps`,
+    /// and `time_fee_lamports_per_day` back to launch defaults — a foot
+    /// gun for any post-launch treasury/fee rotation. Removing it from
+    /// the mainnet build eliminates that risk entirely.
+    #[cfg(feature = "devnet")]
     pub fn migrate_config(ctx: Context<MigrateConfig>) -> Result<()> {
         instructions::migrate_config::handler(ctx)
     }
