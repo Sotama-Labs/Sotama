@@ -6,6 +6,7 @@ import { resolveAppearance, useTweaks } from "@/hooks/useTweaks";
 import { BrandMark } from "@/components/BrandMark";
 import { WalletPill } from "@/components/WalletPill";
 import { AppearanceToggle } from "@/components/AppearanceToggle";
+import { AccessGate } from "@/components/AccessGate";
 import { SegmentedNav } from "@/components/SegmentedNav";
 import { CompactNav } from "@/components/CompactNav";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -455,7 +456,7 @@ export default function Page() {
   }, [editingId, automations]);
 
   return (
-    <>
+    <AccessGate>
       <BrandMark />
       <div
         style={{
@@ -562,6 +563,6 @@ export default function Page() {
         onCancel={() => setPendingCascade(null)}
         onConfirm={executeCascade}
       />
-    </>
+    </AccessGate>
   );
 }
