@@ -193,20 +193,44 @@ function AutomationRow({
           )}
         </div>
       </div>
-      <button
-        onClick={() => onDelete(a.id)}
-        className="hig-footnote"
-        style={{
-          opacity: hover ? 1 : 0,
-          transition: "opacity 120ms",
-          padding: "0.25rem 0.5rem",
-          fontWeight: 500,
-          color: "var(--red)",
-          borderRadius: "0.375rem",
-        }}
-      >
-        {terminal ? "Remove" : "Delete"}
-      </button>
+      {/* Three button states for the delete/close action:
+        * 1. completed + has-pubkey + not-yet-closed: explicit "Close & collect"
+        *    that's always visible (not hover-gated) because the user has
+        *    rent + ATA dust to reclaim. The actual on-chain close goes
+        *    through onDelete → closeAutomationOnChain (drains PDA ATA to
+        *    owner, ATA rent → owner, PDA rent → treasury).
+        * 2. terminal-but-already-cleaned (closedAt set OR never on-chain):
+        *    hover-only "Remove" — purely localStorage delete.
+        * 3. active rule: hover-only "Delete" — cancels + refunds.
+        */}
+      {(() => {
+        const needsClose = completed && a.pubkey && !a.closedAt;
+        return (
+          <button
+            onClick={() => onDelete(a.id)}
+            className="hig-footnote"
+            style={{
+              opacity: needsClose ? 1 : hover ? 1 : 0,
+              transition: "opacity 120ms",
+              padding: "0.25rem 0.5rem",
+              fontWeight: 500,
+              color: needsClose ? "var(--accent)" : "var(--red)",
+              borderRadius: "0.375rem",
+              border: needsClose ? "0.5px solid var(--accent)" : "none",
+              whiteSpace: "nowrap",
+            }}
+            title={
+              needsClose
+                ? "Close on-chain: refunds remaining deposit + ATA rent to you, PDA rent (~0.003 SOL) to the treasury."
+                : terminal
+                ? "Remove from list (no on-chain action)"
+                : "Cancel and refund the deposit"
+            }
+          >
+            {needsClose ? "Close & collect" : terminal ? "Remove" : "Delete"}
+          </button>
+        );
+      })()}
       <button
         onClick={() => {
           if (terminal) return;
