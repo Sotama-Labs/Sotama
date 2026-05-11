@@ -24,7 +24,10 @@ export type ChainOnChainResult = {
   nodes: Array<{ pubkey: string; nonce: string; seedAmount: string }>;
 };
 
-const PROTOCOL_FEE_BPS = 20;
+// Matches on-chain `Config.swap_fee_bps` (currently 10 = 0.10 %). Chain
+// nodes are all `execute_swap` per `validateChainDraft`, so the head's
+// seed deposit pays the fee at swap time.
+const PROTOCOL_FEE_BPS = 10;
 
 export function ChainDepositSheet({
   open,

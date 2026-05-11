@@ -32,7 +32,20 @@ import { lookupFeedForAsset } from "@/lib/oracles";
 import { Spinner } from "./icons";
 
 const SOLANA_NETWORK_FEE_SOL = 0.000045;
-const PROTOCOL_FEE_BPS = 20;
+// Matches on-chain `Config.swap_fee_bps` (currently 10 = 0.10 %). Only
+// `execute_swap` deducts this — `transfer_sol` / `transfer_spl` never do.
+const PROTOCOL_FEE_BPS = 10;
+
+/** Sum input amounts for swap actions only, keyed by input symbol.
+ *  Used to compute the protocol fee preview — transfers don't pay it. */
+function swapInputsByToken(actions: Action[]): Record<string, number> {
+  const totals: Record<string, number> = {};
+  for (const a of actions) {
+    if (a.kind !== "swap") continue;
+    totals[a.inputToken.symbol] = (totals[a.inputToken.symbol] || 0) + a.amount;
+  }
+  return totals;
+}
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const SOL_MINT_STR = "So11111111111111111111111111111111111111112";
 /** Pyth's typical exponent for crypto/USD feeds. Stored at create time so
@@ -506,13 +519,16 @@ export function DepositSheet({
   const primaryAmount = totals[primaryToken] || 0;
 
   const networkFeeSol = SOLANA_NETWORK_FEE_SOL * actionsList.length;
+  // Fee applies only to swap-input amounts, not transfer amounts.
+  const swapInputs = swapInputsByToken(actionsList);
+  const feeTokens = Object.keys(swapInputs);
   const protocolFeeByToken: Record<string, number> = {};
-  tokens.forEach((t) => {
-    protocolFeeByToken[t] = totals[t] * (PROTOCOL_FEE_BPS / 10000);
+  feeTokens.forEach((t) => {
+    protocolFeeByToken[t] = swapInputs[t] * (PROTOCOL_FEE_BPS / 10000);
   });
   const totalByToken: Record<string, number> = {};
   tokens.forEach((t) => {
-    totalByToken[t] = totals[t] + protocolFeeByToken[t];
+    totalByToken[t] = totals[t] + (protocolFeeByToken[t] || 0);
   });
 
   const handleConfirm = async () => {
@@ -638,11 +654,11 @@ export function DepositSheet({
               value={`${fmt(totals[t], 4)} ${t}`}
             />
           ))}
-          {tokens.map((t) => (
+          {feeTokens.map((t) => (
             <FeeRow
               key={`fee-${t}`}
-              label={tokens.length > 1 ? `Sotama fee (${t})` : "Sotama fee"}
-              sub={`${(PROTOCOL_FEE_BPS / 100).toFixed(2)}% of action`}
+              label={feeTokens.length > 1 ? `Sotama fee (${t})` : "Sotama fee"}
+              sub={`${(PROTOCOL_FEE_BPS / 100).toFixed(2)}% of swap input`}
               value={`${fmt(protocolFeeByToken[t], 4)} ${t}`}
             />
           ))}
