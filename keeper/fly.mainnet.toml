@@ -1,0 +1,71 @@
+# fly.mainnet.toml — Sotama keeper, mainnet-beta.
+#
+# Deploy with:
+#   fly deploy --config keeper/fly.mainnet.toml --app sotama-keeper-mainnet
+#
+# The devnet config lives in fly.toml. Keep them separate so a stray
+# `fly deploy` from the keeper/ directory never points at the wrong
+# cluster.
+#
+# Secrets (NOT in this file — encrypted in `fly secrets set`):
+#   HELIUS_API_KEY, JUPITER_API_KEY, LAZER_ACCESS_TOKEN, KEEPER_PUBKEY,
+#   TURNKEY_API_PUBLIC_KEY, TURNKEY_API_PRIVATE_KEY,
+#   TURNKEY_ORGANIZATION_ID, TURNKEY_PRIVATE_KEY_ID
+
+app = 'sotama-keeper-mainnet'
+primary_region = 'iad'
+
+[experimental]
+  auto_rollback = true
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[deploy]
+  strategy = 'immediate'
+
+[env]
+  CLUSTER = 'mainnet-beta'
+
+  # Helius mainnet endpoints. Sender uses `__APIKEY__` placeholder which
+  # the keeper substitutes at runtime with `HELIUS_API_KEY` (secret).
+  HELIUS_MAINNET_RPC = 'https://mainnet.helius-rpc.com'
+  HELIUS_MAINNET_WS = 'wss://atlas-mainnet.helius-rpc.com'
+  HELIUS_MAINNET_SENDER = 'https://sender.helius-rpc.com/fast?api-key=__APIKEY__'
+
+  # Pyth Hermes — fallback when Lazer auth expires (~2026-05-25 on the
+  # current demo token).
+  PYTH_HERMES_URL = 'https://hermes.pyth.network'
+
+  # Jupiter — base URL, key arrives via secret as x-api-key header.
+  JUPITER_BASE_URL = 'https://api.jup.ag'
+
+  # Program identity. Permanent.
+  PROGRAM_ID = 'FWv1i9zufohHyezBsfrtyKXX8SWSwFEKXiS6FqrqzZzd'
+
+  # Keeper economics (matches v4.5 audit defaults).
+  KEEPER_FEE_LAMPORTS = '5000'
+  SWAP_SLIPPAGE_BPS = '50'
+
+  # Polling cadences. Hermes only matters when Lazer is unavailable.
+  PRICE_POLL_INTERVAL_SECS = '12'
+  RECONCILE_INTERVAL_SECS = '60'
+  SHARD_SIZE = '40'
+
+  # Arb-bridge dispatcher (v4.4).
+  BRIDGE_SCAN_INTERVAL_SECS = '30'
+  BRIDGE_MIN_BALANCE = '100000'
+  BRIDGE_SLIPPAGE_BPS = '50'
+
+  # Fee top-up safety net (keeper auto-refills its own gas).
+  FEE_TOPUP_AMOUNT_LAMPORTS = '100000'
+  FEE_TOPUP_SCAN_INTERVAL_SECS = '300'
+  FEE_TOPUP_THRESHOLD_LAMPORTS = '50000'
+
+  # Production log level. Devnet uses `debug`; mainnet stays at info to
+  # keep log volume sane.
+  RUST_LOG = 'info,sotama_keeper=info'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

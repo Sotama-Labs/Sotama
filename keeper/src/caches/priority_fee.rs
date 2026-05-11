@@ -44,8 +44,8 @@ impl Default for PriorityFeeCache {
     }
 }
 
-/// Refreshes via Helius RPC `getPriorityFeeEstimate` with `priorityLevel: "high"` (p75 in Helius's
-/// Min/Low/Medium/High/VeryHigh/UnsafeMax mapping).
+/// Refreshes via Helius RPC `getPriorityFeeEstimate` with `priorityLevel: "High"` (p75 in Helius's
+/// Min/Low/Medium/High/VeryHigh/UnsafeMax mapping). Helius now rejects lowercase variants.
 pub fn spawn_refresher(
     http: Client,
     rpc_url: String,
@@ -63,7 +63,7 @@ pub fn spawn_refresher(
                 "method": "getPriorityFeeEstimate",
                 "params": [{
                     "accountKeys": representative_accounts,
-                    "options": { "priorityLevel": "high" },
+                    "options": { "priorityLevel": "High" },
                 }],
             });
             match http.post(&rpc_url).json(&body).send().await {

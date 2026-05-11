@@ -142,9 +142,16 @@ let consensus;
 let policyName;
 if (isMainnet) {
   const keeperUserId = process.env.TURNKEY_KEEPER_USER_ID;
-  if (!keeperUserId || !keeperUserId.startsWith("u-")) {
+  // Turnkey's current user IDs are UUIDs (8-4-4-4-12 hex). Older docs
+  // referenced a `u-xxxx` short form; both are accepted here.
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      keeperUserId ?? "",
+    );
+  const isPrefixed = (keeperUserId ?? "").startsWith("u-");
+  if (!keeperUserId || (!isUuid && !isPrefixed)) {
     console.error(
-      "✗ CLUSTER=mainnet requires TURNKEY_KEEPER_USER_ID (Turnkey API user id, format `u-xxxxxxxx`).",
+      "✗ CLUSTER=mainnet requires TURNKEY_KEEPER_USER_ID (UUID or `u-…` form).",
     );
     console.error(
       "  Find it under Turnkey dashboard → Users → (your keeper API user) → User ID.",
@@ -152,8 +159,8 @@ if (isMainnet) {
     process.exit(1);
   }
   // Escape any single-quotes in the id (defensive — Turnkey IDs are
-  // base32-style and shouldn't contain quotes, but the script
-  // shouldn't silently emit a broken policy if env is malformed).
+  // UUIDs and shouldn't contain quotes, but the script shouldn't
+  // silently emit a broken policy if env is malformed).
   const safeId = keeperUserId.replace(/'/g, "");
   consensus = `approvers.any(user, user.id == '${safeId}')`;
   policyName = "sotama-keeper-mainnet-strict";

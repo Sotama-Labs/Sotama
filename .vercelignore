@@ -1,0 +1,54 @@
+# Vercel only needs the Next.js frontend. Everything below is build
+# artifacts, the Solana program, the keeper, dev tooling, or local
+# docs — none of which belong in the Vercel upload.
+
+# Rust / Anchor build state
+target/
+.anchor/
+Cargo.lock
+Cargo.toml
+
+# Solana program source
+programs/
+
+# Keeper (its own deploy target on Fly)
+keeper/
+
+# Program keypairs (never ship)
+keys/
+
+# Anchor / Solana tests + migrations + tooling
+tests/
+migrations/
+scripts/
+
+# Local docs (also gitignored)
+docs/
+brand/
+marketing-video/
+*.md
+
+# Editor / OS cruft
+.idea/
+.vscode/
+.DS_Store
+*.tsbuildinfo
+*.swp
+
+# Local secrets and config templates (also gitignored)
+.env.local
+.env.mainnet
+.env.*.local
+.env.*.mainnet
+keeper-keypair.json
+*.pem
+
+# Claude session + skills lock — local only
+.claude/
+claude-session.jsonl
+skills-lock.json
+
+# Test ledger lock files (the actual blocker — Unix sockets that
+# Vercel's tar-upload can't handle)
+**/test-ledger/
+**/*.rpc

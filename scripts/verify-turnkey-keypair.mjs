@@ -14,7 +14,8 @@ import { fileURLToPath } from "node:url";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const env = readFileSync(resolve(root, "keeper/.env"), "utf8");
+const envPath = process.env.ENV_FILE ?? "keeper/.env";
+const env = readFileSync(resolve(root, envPath), "utf8");
 
 function readEnv(key) {
   const m = env.match(new RegExp(`^${key}=(.*)$`, "m"));

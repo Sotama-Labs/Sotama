@@ -1,9 +1,13 @@
 node_modules
 .next
 out
+.vercel
 .env
 .env.local
 .env.*.local
+.env.mainnet
+.env.*.mainnet
+*.env.mainnet
 .DS_Store
 *.tsbuildinfo
 .idea
@@ -22,6 +26,15 @@ test-ledger/
 keeper/target/
 keeper/keeper-keypair.json
 keeper/.env
+keeper/.env.mainnet
+keeper/.env.*
+!keeper/.env.example
+
+# Generated Turnkey policy — regenerable via `pnpm keeper:policy`.
+# Mainnet builds bake the keeper API user UUID into the consensus
+# expression; we keep the file local so the UUID isn't pushed to the
+# public repo. Source of truth is the Turnkey dashboard.
+keeper/turnkey-policy.json
 
 # Program deploy keypair (regenerable, but keep local)
 *.so
@@ -34,6 +47,7 @@ keeper/.env
 /.claude/2026-05-08-v4-devnet-session.md
 /FLY-DEPLOY.md
 /MAINNET-UPGRADE-AUTHORITY.md
+/MAINNET-LIVE.md
 
 # Program keypairs (regenerable but never commit). Each entry is the
 # *identity* of a deployed program, not its upgrade authority. Losing

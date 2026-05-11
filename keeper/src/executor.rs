@@ -499,7 +499,7 @@ async fn fetch_p95_once(
         "id": "p95-escalation",
         "method": "getPriorityFeeEstimate",
         "params": [{ "accountKeys": [program_id.to_string()],
-                     "options": { "priorityLevel": "veryHigh" } }],
+                     "options": { "priorityLevel": "VeryHigh" } }],
     });
     http.post(rpc_url)
         .json(&body)
