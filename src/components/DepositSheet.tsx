@@ -530,7 +530,7 @@ export function DepositSheet({
     }
 
     if (!isProgramConfigured() || !SOTAMA_PROGRAM_ID) {
-      setErrorMsg("Sotama program ID is not configured. Run `pnpm anchor:deploy:devnet` and update .env.local.");
+      setErrorMsg("Sotama program ID is not configured. Set NEXT_PUBLIC_SOTAMA_PROGRAM_ID in your environment.");
       setConfirming(false);
       return;
     }

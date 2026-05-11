@@ -497,7 +497,7 @@ export function parseAutomationCreated(
 function mustProgramId(): PublicKey {
   if (!SOTAMA_PROGRAM_ID) {
     throw new Error(
-      "NEXT_PUBLIC_SOTAMA_PROGRAM_ID is not set. Run `pnpm anchor:deploy:devnet` and copy the program ID into .env.local."
+      "NEXT_PUBLIC_SOTAMA_PROGRAM_ID is not set. Configure it in your environment to use Sotama."
     );
   }
   return SOTAMA_PROGRAM_ID;

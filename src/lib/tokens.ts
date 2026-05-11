@@ -92,7 +92,7 @@ export const CANONICAL_DEVNET_MINTS: Record<string, TokenRef> = {
   "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": {
     mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     symbol: "USDC",
-    name: "USD Coin (Devnet)",
+    name: "USD Coin (Test)",
     logo: STATIC_LOGO("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
     decimals: 6,
     metadataSource: "canonical",
@@ -292,9 +292,9 @@ export function metadataSourceLabel(src: TokenMetadataSource): string {
     case "canonical":
       return "canonical";
     case "devnet":
-      return "from devnet";
+      return "test network";
     case "mainnet":
-      return "from mainnet";
+      return "on-chain";
     case "manual":
       return "entered manually";
   }

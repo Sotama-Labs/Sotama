@@ -192,6 +192,16 @@ export function ActiveStrategiesPage({
     () => items.filter((a) => !a.running && !isTerminal(a)),
     [items],
   );
+  // Single signal driving PdaHoldings re-fetch — see SavedList for the
+  // rationale (catches upstream-chain fires that credit downstream PDAs).
+  const refreshKey = useMemo(
+    () =>
+      items.reduce(
+        (s, a) => s + (a.runs || 0) + (a.closedAt ? 1 : 0),
+        0,
+      ),
+    [items],
+  );
 
   if (items.length === 0) {
     return (
@@ -263,6 +273,7 @@ export function ActiveStrategiesPage({
                 onToggle={onToggle}
                 onDelete={onDelete}
                 isLast={i === running.length - 1}
+                refreshKey={refreshKey}
               />
             ))}
           </div>
@@ -288,6 +299,7 @@ export function ActiveStrategiesPage({
                 onToggle={onToggle}
                 onDelete={onDelete}
                 isLast={i === completed.length - 1}
+                refreshKey={refreshKey}
               />
             ))}
           </div>
@@ -313,6 +325,7 @@ export function ActiveStrategiesPage({
                 onToggle={onToggle}
                 onDelete={onDelete}
                 isLast={i === paused.length - 1}
+                refreshKey={refreshKey}
               />
             ))}
           </div>

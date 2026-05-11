@@ -10,17 +10,20 @@ import {
   shouldParenthesizeTrigger,
 } from "./builder/SentenceRenderer";
 import { Check, Plus } from "./icons";
+import { PdaHoldings } from "./PdaHoldings";
 
 function AutomationRow({
   a,
   onToggle,
   onDelete,
   isLast,
+  refreshKey,
 }: {
   a: Automation;
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
   isLast: boolean;
+  refreshKey: number;
 }) {
   const [hover, setHover] = useState(false);
 
@@ -177,6 +180,7 @@ function AutomationRow({
           {a.runs > 0 && (
             <span>· {a.runs} {a.runs === 1 ? "execution" : "executions"}</span>
           )}
+          {a.pubkey && <PdaHoldings pda={a.pubkey} refreshKey={refreshKey} />}
           {a.pubkey && terminal && (
             <a
               href={`https://orbmarkets.io/address/${a.pubkey}`}
@@ -280,6 +284,14 @@ export function SavedList({
   onNew: () => void;
 }) {
   if (items.length === 0) return null;
+  // Single signal that increments whenever the keeper executes any
+  // automation OR an automation gets closed. Drives PdaHoldings
+  // re-fetch — captures upstream-chain fires that credit downstream
+  // PDAs' input ATAs without mutating their own Automation account.
+  const refreshKey = items.reduce(
+    (s, a) => s + (a.runs || 0) + (a.closedAt ? 1 : 0),
+    0,
+  );
   return (
     <section className="fade-slide" style={{ width: "100%", maxWidth: "45rem", marginTop: "1.5rem" }}>
       <div
@@ -328,7 +340,7 @@ export function SavedList({
         }}
       >
         {items.map((a, i) => (
-          <AutomationRow key={a.id} a={a} onToggle={onToggle} onDelete={onDelete} isLast={i === items.length - 1} />
+          <AutomationRow key={a.id} a={a} onToggle={onToggle} onDelete={onDelete} isLast={i === items.length - 1} refreshKey={refreshKey} />
         ))}
       </div>
     </section>

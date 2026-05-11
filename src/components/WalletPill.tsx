@@ -6,7 +6,6 @@ import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { useSolPrice } from "@/hooks/useSolPrice";
 import { fmt, fmtUSD, shortAddress } from "@/lib/format";
-import { CLUSTER, CLUSTER_LABEL } from "@/lib/rpc";
 import { Popover } from "./builder/Popover";
 import { Check, Chevron, CopyGlyph } from "./icons";
 
@@ -81,9 +80,6 @@ export function WalletPill() {
 
   const active = hover || open;
   const usd = sol != null && price != null ? sol * price : null;
-  const clusterLabel = CLUSTER_LABEL[CLUSTER];
-  const isDevnet = CLUSTER === "devnet";
-  const clusterAccent = isDevnet ? "var(--orange)" : "var(--green)";
   const walletIcon = wallet?.adapter.icon;
   const walletName = wallet?.adapter.name ?? "Wallet";
 
@@ -210,21 +206,6 @@ export function WalletPill() {
                 {walletName}
               </span>
             </div>
-            <span
-              className="hig-caption-2"
-              style={{
-                color: clusterAccent,
-                background: `color-mix(in srgb, ${clusterAccent} 14%, transparent)`,
-                padding: "0.125rem 0.4375rem",
-                borderRadius: "999px",
-                fontWeight: 600,
-                letterSpacing: "0.02em",
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-              }}
-            >
-              {clusterLabel}
-            </span>
           </div>
 
           <div style={{ padding: "0 0.5rem" }}>

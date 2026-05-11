@@ -453,7 +453,7 @@ export async function sendChainCreate(params: {
   const { connection, wallet, nodes, loopMode } = params;
   if (!isProgramConfigured() || !SOTAMA_PROGRAM_ID) {
     throw new Error(
-      "Sotama program ID is not configured. Run `pnpm anchor:deploy:devnet` and update .env.local.",
+      "Sotama program ID is not configured. Set NEXT_PUBLIC_SOTAMA_PROGRAM_ID in your environment.",
     );
   }
   // Capture a non-null reference so the closures below get the same
