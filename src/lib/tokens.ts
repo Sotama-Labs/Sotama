@@ -213,10 +213,28 @@ function dasToTokenRef(
   };
 }
 
+/** Regular SPL Token program. Sotama's on-chain handlers use
+ *  `anchor_spl::token::TokenAccount` which only deserializes accounts
+ *  owned by this program. Token-2022 mints are gated out at resolve
+ *  time so users get a clear message instead of a cryptic
+ *  `IncorrectProgramId` simulation failure. */
+const REGULAR_SPL_TOKEN_PROGRAM =
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
 export type ResolveResult =
   | { status: "ok"; token: TokenRef }
   | { status: "manual"; mint: string }
-  | { status: "invalid" };
+  | { status: "invalid" }
+  | {
+      /** Mint exists and is tradable on Jupiter, but lives on the
+       *  Token-2022 program. Sotama doesn't yet support those
+       *  (transfer hooks / fees require InterfaceAccount-based
+       *  handlers in the program). */
+      status: "token2022_unsupported";
+      mint: string;
+      symbol: string;
+      name: string;
+    };
 
 /** Resolve a pasted contract address to a TokenRef, with cache + fallback chain. */
 export async function resolveToken(input: string): Promise<ResolveResult> {
@@ -243,6 +261,24 @@ export async function resolveToken(input: string): Promise<ResolveResult> {
   // logo even when the local devnet RPC has no metadata for them.
   const fromJupiter = await fetchJupiterTokenMetadata(mint);
   if (fromJupiter) {
+    // Token-2022 mints (transfer hooks, fees, confidential transfers,
+    // …) are gated out at the resolver layer so the picker can surface
+    // a clean "coming soon" message before the user tries to fund the
+    // automation. Without this, the create_automation tx fails at sim
+    // with a cryptic `IncorrectProgramId` because anchor_spl::token's
+    // ATA-create ix asks the regular SPL Token program to size a mint
+    // it doesn't own.
+    if (
+      fromJupiter.tokenProgram &&
+      fromJupiter.tokenProgram !== REGULAR_SPL_TOKEN_PROGRAM
+    ) {
+      return {
+        status: "token2022_unsupported",
+        mint: fromJupiter.mint,
+        symbol: fromJupiter.symbol,
+        name: fromJupiter.name,
+      };
+    }
     const token: TokenRef = {
       mint: fromJupiter.mint,
       symbol: fromJupiter.symbol,

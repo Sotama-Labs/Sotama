@@ -70,6 +70,11 @@ export type JupiterTokenMetadata = {
   name: string;
   logo?: string;
   decimals: number;
+  /** Token program that owns the mint. Used to detect Token-2022 mints
+   *  (with transfer hooks, fees, etc.) which Sotama doesn't yet support
+   *  end-to-end — the on-chain program uses anchor_spl::token::TokenAccount
+   *  which only handles the regular SPL Token program. */
+  tokenProgram?: string;
 };
 
 type JupiterTokenSearchResult = {
@@ -83,6 +88,9 @@ type JupiterTokenSearchResult = {
   /** v2 returns the logo at `icon`; v1 used `logoURI`. */
   icon?: string;
   logoURI?: string;
+  /** v2 returns the owning token program. `TokenkegQ…` = regular SPL,
+   *  `TokenzQdB…` = Token-2022. */
+  tokenProgram?: string;
 };
 
 export async function fetchJupiterTokenMetadata(
@@ -107,6 +115,7 @@ export async function fetchJupiterTokenMetadata(
       name: hit.name || hit.symbol,
       logo: hit.icon || hit.logoURI || undefined,
       decimals: hit.decimals,
+      tokenProgram: hit.tokenProgram,
     };
   } catch {
     return null;

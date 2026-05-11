@@ -17,7 +17,8 @@ type ResolveState =
   | { phase: "resolving"; mint: string }
   | { phase: "resolved"; token: TokenRef }
   | { phase: "manual"; mint: string; symbol: string; decimals: string }
-  | { phase: "invalid"; input: string };
+  | { phase: "invalid"; input: string }
+  | { phase: "token2022"; mint: string; symbol: string; name: string };
 
 export function TokenPicker({
   title = "Pick a token",
@@ -66,6 +67,13 @@ export function TokenPicker({
       if (res.status === "ok") setState({ phase: "resolved", token: res.token });
       else if (res.status === "manual")
         setState({ phase: "manual", mint: res.mint, symbol: "", decimals: "" });
+      else if (res.status === "token2022_unsupported")
+        setState({
+          phase: "token2022",
+          mint: res.mint,
+          symbol: res.symbol,
+          name: res.name,
+        });
       else setState({ phase: "invalid", input: trimmed });
     });
     return () => {
@@ -282,6 +290,36 @@ export function TokenPicker({
           style={{ color: "var(--red)", padding: "0.25rem 0.125rem 0.5rem" }}
         >
           Not a valid Solana mint address.
+        </div>
+      )}
+
+      {state.phase === "token2022" && (
+        <div
+          className="hig-caption-1"
+          style={{
+            padding: "0.5rem 0.75rem",
+            margin: "0.25rem 0 0.5rem",
+            borderRadius: "0.5rem",
+            background: "color-mix(in oklab, var(--orange) 12%, transparent)",
+            border: "0.5px solid color-mix(in oklab, var(--orange) 32%, transparent)",
+            color: "var(--label-primary)",
+            lineHeight: 1.4,
+          }}
+        >
+          <strong>{state.symbol}</strong> ({state.name}) is a Token-2022 mint.
+          Sotama doesn&rsquo;t support tokenized stocks (xStocks) or other
+          Token-2022 mints yet — they need custom on-chain handling for
+          transfer hooks and compliance checks.
+          <div
+            className="hig-caption-2"
+            style={{
+              color: "var(--label-tertiary)",
+              marginTop: "0.375rem",
+            }}
+          >
+            Coming in a future release. Use regular SPL tokens (SOL, USDC,
+            USDT, BONK, JUP, …) for now.
+          </div>
         </div>
       )}
 
