@@ -140,33 +140,59 @@ describe("sotama_automations v2", () => {
   });
 
   it("initializes config", async () => {
-    await program.methods
-      .initializeConfig(keeper.publicKey)
-      .accountsStrict({
-        admin: admin.publicKey,
-        config: configPda,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+    // `anchor test` runs all *.ts test files against a single validator
+    // instance, so an earlier file (lifecycle_events.ts) may have
+    // already initialized the Config PDA with a different keeper. Init
+    // only when absent; otherwise rotate keeper to this suite's value
+    // via `update_keeper` so the rest of the suite's keeper-signed ixs
+    // line up with Config.keeper. The freshly-initialized invariants
+    // (paused=false, automation_count=0, treasury=admin, swap fee &
+    // time fee at defaults) only get asserted in the cold-start path.
+    const existing = await provider.connection.getAccountInfo(configPda);
+    if (!existing) {
+      await program.methods
+        .initializeConfig(keeper.publicKey)
+        .accountsStrict({
+          admin: admin.publicKey,
+          config: configPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
 
-    const cfg = await program.account.config.fetch(configPda);
-    expect(cfg.admin.toBase58()).to.eq(admin.publicKey.toBase58());
-    expect(cfg.keeper.toBase58()).to.eq(keeper.publicKey.toBase58());
-    expect(cfg.paused).to.eq(false);
-    expect(cfg.automationCount.toString()).to.eq("0");
-    // v4.5: treasury defaults to admin; fees default to constants in
-    // state.rs (DEFAULT_SWAP_FEE_BPS = 10, DEFAULT_TIME_FEE_LAMPORTS_PER_DAY
-    // = 300_000). The separate close-fee field was removed — the close
-    // fee is now just the PDA's rent_exempt, swept by `close = treasury`.
-    expect(cfg.treasury.toBase58()).to.eq(admin.publicKey.toBase58());
-    expect(cfg.swapFeeBps).to.eq(10);
-    expect(cfg.timeFeeLamportsPerDay.toString()).to.eq("300000");
+      const cfg = await program.account.config.fetch(configPda);
+      expect(cfg.admin.toBase58()).to.eq(admin.publicKey.toBase58());
+      expect(cfg.keeper.toBase58()).to.eq(keeper.publicKey.toBase58());
+      expect(cfg.paused).to.eq(false);
+      expect(cfg.automationCount.toString()).to.eq("0");
+      // v4.5: treasury defaults to admin; fees default to constants in
+      // state.rs (DEFAULT_SWAP_FEE_BPS = 10, DEFAULT_TIME_FEE_LAMPORTS_PER_DAY
+      // = 300_000). The separate close-fee field was removed — the close
+      // fee is now just the PDA's rent_exempt, swept by `close = treasury`.
+      expect(cfg.treasury.toBase58()).to.eq(admin.publicKey.toBase58());
+      expect(cfg.swapFeeBps).to.eq(10);
+      expect(cfg.timeFeeLamportsPerDay.toString()).to.eq("300000");
+    } else {
+      await program.methods
+        .updateKeeper(keeper.publicKey)
+        .accountsStrict({ admin: admin.publicKey, config: configPda })
+        .rpc();
+      const cfg = await program.account.config.fetch(configPda);
+      expect(cfg.keeper.toBase58()).to.eq(keeper.publicKey.toBase58());
+    }
   });
+
+  // The "creates / executes / closes" tests below depend on the first
+  // automation this suite creates. When tests run via `anchor test`,
+  // lifecycle_events.ts has already incremented automation_count past 0,
+  // so a hardcoded `0n` nonce no longer maps to this suite's first auto.
+  // Track it explicitly across the dependent tests.
+  let firstAutoPda: PublicKey;
 
   it("creates an account-transfer + transfer-SOL automation and holds the deposit on the PDA", async () => {
     const cfg = await program.account.config.fetch(configPda);
     const nonce = BigInt(cfg.automationCount.toString());
     const auto = automationPdaFor(program.programId, owner.publicKey, nonce);
+    firstAutoPda = auto;
     const amount = new BN(0.5 * LAMPORTS_PER_SOL);
 
     await program.methods
@@ -273,7 +299,7 @@ describe("sotama_automations v2", () => {
   });
 
   it("rejects execute from a non-keeper signer", async () => {
-    const auto = automationPdaFor(program.programId, owner.publicKey, 0n);
+    const auto = firstAutoPda;
 
     let threw = false;
     try {
@@ -297,7 +323,7 @@ describe("sotama_automations v2", () => {
   });
 
   it("executes a transfer-SOL automation via the keeper", async () => {
-    const auto = automationPdaFor(program.programId, owner.publicKey, 0n);
+    const auto = firstAutoPda;
     const a = await program.account.automation.fetch(auto);
     const amount = (a.action as any).transferSol.amount.toNumber();
 
@@ -327,7 +353,7 @@ describe("sotama_automations v2", () => {
   });
 
   it("rejects double-execute on a SOL automation", async () => {
-    const auto = automationPdaFor(program.programId, owner.publicKey, 0n);
+    const auto = firstAutoPda;
     let threw = false;
     try {
       await program.methods
@@ -680,7 +706,19 @@ describe("sotama_automations v2", () => {
       .signers([owner])
       .rpc();
 
+    // v4.5 close-fee model: owner gets the deposit back, treasury gets
+    // the PDA rent. Use a dedicated treasury keypair (NOT admin/provider
+    // wallet, which doubles as fee payer) so the treasury delta is the
+    // pure rent landing with no tx-fee noise.
+    const treasuryKp = Keypair.generate();
+    await fund(treasuryKp.publicKey, 0.001); // rent-exempt floor for system account
+    await program.methods
+      .updateTreasury(treasuryKp.publicKey)
+      .accountsStrict({ admin: admin.publicKey, config: configPda })
+      .rpc();
+
     const ownerBefore = await provider.connection.getBalance(owner.publicKey);
+    const treasuryBefore = await provider.connection.getBalance(treasuryKp.publicKey);
     const autoBalance = await provider.connection.getBalance(auto);
 
     await program.methods
@@ -689,15 +727,30 @@ describe("sotama_automations v2", () => {
         owner: owner.publicKey,
         automation: auto,
         config: configPda,
-        treasury: admin.publicKey,
+        treasury: treasuryKp.publicKey,
       })
       .signers([owner])
       .rpc();
 
     const ownerAfter = await provider.connection.getBalance(owner.publicKey);
+    const treasuryAfter = await provider.connection.getBalance(treasuryKp.publicKey);
     const acct = await provider.connection.getAccountInfo(auto);
     expect(acct).to.eq(null);
-    expect(ownerAfter - ownerBefore).to.be.greaterThan(autoBalance - 1_000_000);
+
+    // Provider wallet is the fee payer; owner pays no tx fee. Owner
+    // delta == amount exactly.
+    expect(ownerAfter - ownerBefore).to.eq(amount.toNumber(), "owner got the deposit refund");
+    // Treasury delta == rent_exempt exactly (no fee debit since
+    // treasury is not the fee payer).
+    const expectedRent = autoBalance - amount.toNumber();
+    expect(treasuryAfter - treasuryBefore).to.eq(expectedRent, "treasury got the PDA rent");
+
+    // Rotate treasury back to admin so subsequent tests see the
+    // canonical state.
+    await program.methods
+      .updateTreasury(admin.publicKey)
+      .accountsStrict({ admin: admin.publicKey, config: configPda })
+      .rpc();
   });
 
   it("rotates the keeper via update_keeper", async () => {
