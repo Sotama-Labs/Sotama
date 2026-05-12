@@ -238,6 +238,29 @@ export function findCycleNodes(
   return cycle;
 }
 
+/** Client-side mirror of `programs/sotama_automations/src/state.rs::
+ *  compute_time_fee`. Returns the lamports the on-chain handler will
+ *  charge `owner → keeper` at create time for this rule's cadence. */
+const TIME_FEE_MAX_DAYS = 30n;
+const SECS_PER_DAY = 86_400n;
+export function estimateTimeFee(cadence: Cadence, lamportsPerDay: bigint): bigint {
+  let days: bigint;
+  if (cadence.kind === "until") {
+    const nowSec = BigInt(Math.floor(Date.now() / 1000));
+    const delta = BigInt(cadence.unixDeadline) - nowSec;
+    if (delta <= 0n) {
+      days = 1n;
+    } else {
+      const ceilDays = (delta + SECS_PER_DAY - 1n) / SECS_PER_DAY;
+      days = ceilDays < TIME_FEE_MAX_DAYS ? ceilDays : TIME_FEE_MAX_DAYS;
+    }
+  } else {
+    // once or repeat — unbounded lifetime, charged for the cap.
+    days = TIME_FEE_MAX_DAYS;
+  }
+  return days * lamportsPerDay;
+}
+
 /** Resolve a `LoopMode` to a concrete `Cadence` for a given rule. Used
  *  by `sendChainCreate` to override per-rule cadences when the chain
  *  has a loop mode set. */
@@ -534,14 +557,18 @@ export async function sendChainCreate(params: {
     .map((node, i) => classifyChainLink(node.result, nodes[i + 1].result));
 
   // Two ix buckets. The setup bucket (ATA creates + SOL wrap) goes into
-  // a dedicated pre-tx when the combined chain doesn't fit in a single
+  // a dedicated pre-tx because the combined chain doesn't fit in a single
   // legacy tx (Solana's v0 wire cap is 1232 bytes; even a 2-card chain
-  // typically overruns once you add 8 ATA creates + 2 create_automation_
-  // swap_linked ixs). Splitting keeps each tx well under the cap and only
-  // costs one extra prompt-less signature (signAllTransactions).
+  // typically overruns once you add ~8 ATA creates + 2 create_automation_
+  // swap_linked ixs). Splitting keeps each tx well under the cap.
   const setupIxs: TransactionInstruction[] = [];
   const chainIxs: TransactionInstruction[] = [];
   const seedAmounts: BN[] = [];
+  // Accumulate the SOL cost the chain create will charge so we can
+  // pre-flight a wallet balance check before any prompt. Time fees +
+  // optional wSOL wrap dominate; ATA rents + tx fees are bounded.
+  let estimatedTimeFeeLamports = 0n;
+  let estimatedWrapLamports = 0n;
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
@@ -625,6 +652,7 @@ export async function sendChainCreate(params: {
     // wrapping (they receive wSOL from the upstream swap).
     if (isHead && onChainAction.swap.inputMint.toBase58() === SOL_MINT_STR) {
       const wrapLamports = BigInt(seedAmount.toString());
+      estimatedWrapLamports += wrapLamports;
       const ownerWsolAta = associatedTokenAddress(owner, NATIVE_MINT);
       setupIxs.push(
         createAssociatedTokenAccountIdempotentInstruction(
@@ -697,6 +725,10 @@ export async function sendChainCreate(params: {
       loopMode && cycleMembers.has(i)
         ? loopModeToCadence(loopMode)
         : result.cadence;
+    estimatedTimeFeeLamports += estimateTimeFee(
+      effectiveCadence,
+      BigInt(config.timeFeeLamportsPerDay.toString()),
+    );
 
     const upstreamLinkClass = i === 0 ? null : linkClasses[i - 1];
     // Self-link with mismatched mints needs the bridge too — the rule's
@@ -734,6 +766,35 @@ export async function sendChainCreate(params: {
       nextNonce: startNonce + BigInt(i),
     });
     chainIxs.push(built.ix);
+  }
+
+  // Pre-flight SOL balance check. Time fees + wSOL wrap dominate; ATA
+  // rents are 0.00203928 SOL each and only billed for ATAs that don't
+  // exist yet (the client overestimates by assuming all setup ATA ixs
+  // create — safe and clear). The partial-failure mode without this
+  // check is painful: setup tx burns ATA rent, then chain tx reverts
+  // on time-fee transfer, leaving the wallet depleted.
+  const ATA_RENT_LAMPORTS = 2_039_280n;
+  const TX_FEE_LAMPORTS = 5_000n;
+  const txCount = setupIxs.length > 0 ? 2n : 1n;
+  const estimatedSolNeeded =
+    estimatedTimeFeeLamports +
+    estimatedWrapLamports +
+    ATA_RENT_LAMPORTS * BigInt(setupIxs.length) +
+    TX_FEE_LAMPORTS * txCount;
+  const ownerBalance = BigInt(await connection.getBalance(owner));
+  if (ownerBalance < estimatedSolNeeded) {
+    const fmt = (lamports: bigint) =>
+      (Number(lamports) / 1_000_000_000).toLocaleString(undefined, {
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 4,
+      });
+    const need = fmt(estimatedSolNeeded);
+    const have = fmt(ownerBalance);
+    const shortBy = fmt(estimatedSolNeeded - ownerBalance);
+    throw new Error(
+      `Not enough SOL to fund this chain. Need ~${need} SOL (time fees + ATA rent + tx fees), wallet has ${have} SOL — top up ~${shortBy} SOL and retry.`,
+    );
   }
 
   // Send setup tx first (sign + submit + confirm) and ONLY then build,
