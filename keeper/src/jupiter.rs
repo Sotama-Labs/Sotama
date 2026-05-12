@@ -234,7 +234,7 @@ impl JupiterClient {
         // well-known account and produces a stable build response.
         let synthetic_taker = "11111111111111111111111111111111";
         let url = format!(
-            "{base}/swap/v2/build?inputMint={input}&outputMint={output}&amount={amount}&slippageBps={bps}&taker={taker}&maxAccounts={max_accounts}",
+            "{base}/swap/v2/build?inputMint={input}&outputMint={output}&amount={amount}&slippageBps={bps}&taker={taker}&maxAccounts={max_accounts}&wrapAndUnwrapSol=false",
             base = self.base_url.trim_end_matches('/'),
             input = input_mint,
             output = output_mint,
@@ -284,7 +284,7 @@ impl JupiterClient {
             .map(|ata| format!("&destinationTokenAccount={ata}"))
             .unwrap_or_default();
         let url = format!(
-            "{base}/swap/v2/build?inputMint={input}&outputMint={output}&amount={amount}&slippageBps={bps}&taker={taker}&maxAccounts={max_accounts}{dest_param}",
+            "{base}/swap/v2/build?inputMint={input}&outputMint={output}&amount={amount}&slippageBps={bps}&taker={taker}&maxAccounts={max_accounts}&wrapAndUnwrapSol=false{dest_param}",
             base = self.base_url.trim_end_matches('/'),
             input = input_mint,
             output = output_mint,
