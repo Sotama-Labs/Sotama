@@ -48,6 +48,13 @@ primary_region = 'iad'
 
   # Keeper economics (matches v4.5 audit defaults).
   KEEPER_FEE_LAMPORTS = '5000'
+  # 50 bps = 0.5% slippage tolerance, deliberately tight per product
+  # preference. Tradeoff: volatile-token swaps (JTO, BONK, WIF, etc.)
+  # may revert with Jupiter error 0x1789 (6025 / SlippageToleranceExceeded)
+  # when actual output < quoted * 0.995. The keeper retries on each
+  # 60s time_watcher tick until a quote/execution pair lines up — so
+  # the swap eventually lands, but may need multiple cycles for
+  # volatile pairs. Stable swaps (USDC↔USDT, etc.) succeed reliably.
   SWAP_SLIPPAGE_BPS = '50'
 
   # Polling cadences. Hermes only matters when Lazer is unavailable.
