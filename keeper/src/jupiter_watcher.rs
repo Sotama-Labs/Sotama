@@ -339,8 +339,16 @@ async fn fetch_prices(
         let Ok(mint) = mint_str.parse::<Pubkey>() else {
             continue;
         };
+        // Scale USD float → i64 fixed-point. Defense in depth: usd was
+        // already constrained to `>0 && finite` above, but the
+        // multiplication can produce ±inf if usd is near f64::MAX (it
+        // can't here, but it's free to check) and `.round() as i64`
+        // saturates rather than wrapping — guard the boundary so we
+        // never insert a saturated/clipped value that would silently
+        // mis-trigger a price condition. `>=` (not `>`) because
+        // `i64::MAX as f64` rounds up to one past i64::MAX.
         let scaled = usd * JUPITER_PRICE_SCALE;
-        if scaled.is_nan() || scaled > i64::MAX as f64 {
+        if !scaled.is_finite() || scaled < 0.0 || scaled >= i64::MAX as f64 {
             continue;
         }
         out.insert(mint, scaled.round() as i64);
