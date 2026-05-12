@@ -218,8 +218,7 @@ export type SotamaAutomations = {
           "writable": true
         },
         {
-          "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "tokenProgram"
         }
       ],
       "args": []
@@ -324,8 +323,7 @@ export type SotamaAutomations = {
           "writable": true
         },
         {
-          "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "tokenProgram"
         }
       ],
       "args": []
@@ -512,8 +510,7 @@ export type SotamaAutomations = {
           "writable": true
         },
         {
-          "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "tokenProgram"
         }
       ],
       "args": []
@@ -609,8 +606,7 @@ export type SotamaAutomations = {
           "writable": true
         },
         {
-          "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "tokenProgram"
         }
       ],
       "args": []
@@ -826,7 +822,11 @@ export type SotamaAutomations = {
         },
         {
           "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "docs": [
+            "Token program for `mint`. Polymorphic over legacy SPL and",
+            "Token-2022; Anchor validates the supplied program matches the",
+            "mint's owning program at runtime."
+          ]
         },
         {
           "name": "systemProgram",
@@ -960,7 +960,13 @@ export type SotamaAutomations = {
         },
         {
           "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "docs": [
+            "Token program for `input_mint`. `Interface<TokenInterface>`",
+            "accepts either the legacy SPL Token program or Token-2022, and",
+            "Anchor validates at runtime that the program ID matches the",
+            "mint's owner program — so callers can't sneak a Token-2022 mint",
+            "through with the legacy program id."
+          ]
         },
         {
           "name": "systemProgram",
@@ -1113,7 +1119,11 @@ export type SotamaAutomations = {
         },
         {
           "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "docs": [
+            "Token program for `input_mint`. Polymorphic interface that",
+            "accepts legacy SPL or Token-2022 at runtime; Anchor checks the",
+            "program ID matches the mint's owning program."
+          ]
         },
         {
           "name": "systemProgram",
@@ -1325,8 +1335,7 @@ export type SotamaAutomations = {
           "writable": true
         },
         {
-          "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "tokenProgram"
         }
       ],
       "args": []
@@ -1710,15 +1719,30 @@ export type SotamaAutomations = {
             "swap fee (`received * config.swap_fee_bps / 10_000`) after the",
             "slippage check passes. The handler verifies mint = output_mint",
             "and owner = config.treasury directly against the account data —",
-            "no `Account<TokenAccount>` constraint here because Anchor needs",
-            "the output mint to be known at IDL-derive time and it lives in",
-            "the action spec."
+            "no `InterfaceAccount<TokenAccount>` constraint here because",
+            "Anchor needs the output mint to be known at IDL-derive time and",
+            "it lives in the action spec."
           ],
           "writable": true
         },
         {
+          "name": "outputMint",
+          "docs": [
+            "Output mint of the swap. Passed as an account here (rather than",
+            "pulled from `action`) because `transfer_checked` requires the",
+            "mint account in the CPI, AND we need its `decimals` value. The",
+            "handler validates the key against `ActionSpec::Swap.output_mint`",
+            "so the caller can't sneak in the wrong mint. Polymorphic over",
+            "legacy SPL vs Token-2022."
+          ]
+        },
+        {
           "name": "tokenProgram",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "docs": [
+            "Token program for the output mint. Accepts either legacy SPL or",
+            "Token-2022 at runtime; Anchor validates it matches the mint's",
+            "owning program."
+          ]
         }
       ],
       "args": [
@@ -2494,6 +2518,21 @@ export type SotamaAutomations = {
       "code": 6046,
       "name": "transferLeavesPdaBelowRent",
       "msg": "SOL transfer would leave the automation PDA below the rent-exempt minimum without fully closing it"
+    },
+    {
+      "code": 6047,
+      "name": "transferHookNotSupported",
+      "msg": "Mint carries the Token-2022 TransferHook extension — hostile-code surface, refused at create time"
+    },
+    {
+      "code": 6048,
+      "name": "inconsistentTokenProgram",
+      "msg": "Mint accounts for the input and output mints must use the same token program"
+    },
+    {
+      "code": 6049,
+      "name": "badCloseMint",
+      "msg": "Provided mint account does not match the mint of the ATA it pairs with"
     }
   ],
   "types": [
