@@ -63,6 +63,25 @@ impl LocalKeypairSigner {
         let pubkey = keypair.pubkey();
         Ok(Self { keypair, pubkey })
     }
+
+    /// Load from a JSON byte-array string (the same format
+    /// `solana-keygen new` writes to disk, e.g. `[12,34,...]`).
+    /// Used when the keypair is delivered via `KEEPER_KEYPAIR_JSON`
+    /// Fly secret so it never lands on the machine's filesystem.
+    pub fn from_json_bytes(json: &str) -> Result<Self> {
+        let bytes: Vec<u8> = serde_json::from_str(json)
+            .map_err(|e| anyhow!("KEEPER_KEYPAIR_JSON: not a JSON byte array: {e}"))?;
+        if bytes.len() != 64 {
+            return Err(anyhow!(
+                "KEEPER_KEYPAIR_JSON: expected 64 bytes, got {}",
+                bytes.len()
+            ));
+        }
+        let keypair = solana_sdk::signature::keypair::Keypair::from_bytes(&bytes)
+            .map_err(|e| anyhow!("KEEPER_KEYPAIR_JSON: invalid keypair bytes: {e}"))?;
+        let pubkey = keypair.pubkey();
+        Ok(Self { keypair, pubkey })
+    }
 }
 
 #[async_trait]
@@ -287,10 +306,18 @@ pub fn load_signer() -> Result<std::sync::Arc<dyn KeeperSigner>> {
         .unwrap_or(false);
     if turnkey_set {
         let signer = TurnkeySigner::from_env()?;
-        Ok(std::sync::Arc::new(signer))
-    } else {
-        let path = required("KEEPER_KEYPAIR_PATH")?;
-        let signer = LocalKeypairSigner::from_path(&path)?;
-        Ok(std::sync::Arc::new(signer))
+        return Ok(std::sync::Arc::new(signer));
     }
+    // Inline JSON keypair wins over the on-disk path so the Fly secret
+    // delivery model (no file ever materialized) is preferred for
+    // production. Fall through to KEEPER_KEYPAIR_PATH for dev / e2e.
+    if let Ok(json) = std::env::var("KEEPER_KEYPAIR_JSON") {
+        if !json.is_empty() {
+            let signer = LocalKeypairSigner::from_json_bytes(&json)?;
+            return Ok(std::sync::Arc::new(signer));
+        }
+    }
+    let path = required("KEEPER_KEYPAIR_PATH")?;
+    let signer = LocalKeypairSigner::from_path(&path)?;
+    Ok(std::sync::Arc::new(signer))
 }

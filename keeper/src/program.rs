@@ -225,7 +225,24 @@ pub fn build_execute_swap_ix(
         AccountMeta::new(*treasury_output_ata, false),
         AccountMeta::new_readonly(*spl_token_program_id(), false),
     ];
-    accounts.extend_from_slice(inner_accounts);
+    // Strip the `is_signer` flag from every inner account before adding
+    // to the outer ix's account list. Jupiter marks the taker (our
+    // automation PDA) as `is_signer = true` because that pubkey signs
+    // the INNER ix (via `invoke_signed` from Sotama's execute_swap).
+    // But the outer tx is signed only by the keeper — Solana's sanitize
+    // check would reject the message because no signature exists for
+    // the PDA at the outer level ("Transaction failed to sanitize
+    // accounts offsets correctly"). The signer flag is preserved in
+    // the IX DATA (the metas_len + flag bytes above), which the
+    // on-chain handler uses when reconstructing the inner ix for
+    // invoke_signed.
+    for inner in inner_accounts {
+        accounts.push(AccountMeta {
+            pubkey: inner.pubkey,
+            is_signer: false,
+            is_writable: inner.is_writable,
+        });
+    }
     if let Some(downstream) = linked_downstream {
         // Writable so the handler can credit lamports to it.
         accounts.push(AccountMeta::new(*downstream, false));

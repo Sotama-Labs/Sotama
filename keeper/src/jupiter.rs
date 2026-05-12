@@ -129,14 +129,20 @@ pub struct ApiAccount {
 // Per Jupiter docs (https://dev.jup.ag/docs/swap/build/common-instructions
 // — "CPI considerations"), CPI-relayed Jupiter swaps CANNOT use Address
 // Lookup Tables. Without ALT compression, every account in Jupiter's
-// route lands inline in the v0 tx (~32 bytes each). With the Sotama
-// outer ix overhead (~150 bytes for signature + headers + CU + Sotama
-// accounts + ix data), we have ~1080 bytes for inline accounts. At 32
-// bytes each that's a hard cap of ~33 inline accounts; 16 gives plenty
-// of headroom for Jupiter's route quality (Jupiter routes USDC↔USDT
-// stables in 4-12 accounts) while staying well under the 1232-byte
-// wire cap.
-pub const JUPITER_MAX_ACCOUNTS_HINT: u16 = 16;
+// route lands inline in the v0 tx (~32 bytes each).
+//
+// The `maxAccounts` query param is a HINT, not a binding cap — Jupiter
+// frequently exceeds it when routing requires it (observed: hint=16 →
+// 33 accounts returned; hint=12 → 22 accounts returned). The keeper's
+// outer ix adds 6 prefix accounts + ix data (~200 bytes) + 1 signature
+// + headers, leaving ~1000 bytes for inline accounts (~31 max).
+//
+// We set the hint to 12 so Jupiter targets ~22 accounts, giving us
+// 22 + 6 = 28 accounts ≈ 900 bytes + 200 byte ix data + headers, which
+// fits comfortably under the 1232-byte wire cap. Going lower (e.g. 8)
+// often returns "No routes found" because the router can't find a
+// path with that few accounts.
+pub const JUPITER_MAX_ACCOUNTS_HINT: u16 = 12;
 
 /// Number of 429 retries before bubbling the error. At 10 rpm even a
 /// brief burst can trip the limit, so the client backs off rather than

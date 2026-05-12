@@ -150,35 +150,46 @@ pub fn handler<'info>(
     // use Anchor's typed `Account<TokenAccount>` because they live in
     // remaining_accounts, but `TokenAccount::try_deserialize` works
     // against an UncheckedAccount.
+    //
+    // CRITICAL: every `try_borrow_data()` call returns a `Ref<>` whose
+    // lifetime is bound to the slice reference taken from it. If we
+    // don't scope these blocks, the Ref guards stay alive through the
+    // function body and the subsequent `invoke_signed` fails with
+    // `AccountBorrowFailed` when Jupiter tries to access these same
+    // accounts. The prior `let _ = x;` lines DID NOT release the
+    // borrows — `&[u8]` is Copy so the binding is never moved out, and
+    // temporary lifetime extension kept the underlying Ref alive.
     let input_ata_info = &remaining[input_ata_index as usize];
     let output_ata_info = &remaining[output_ata_index as usize];
-
-    let mut input_data: &[u8] = &input_ata_info.try_borrow_data()?;
-    let input_ata = TokenAccount::try_deserialize(&mut input_data)?;
-    require_keys_eq!(input_ata.mint, input_mint, SotamaError::WrongInputMint);
-    require_keys_eq!(
-        input_ata.owner,
-        automation.key(),
-        SotamaError::BadSwapAccounts
-    );
-
-    let mut output_data: &[u8] = &output_ata_info.try_borrow_data()?;
-    let output_ata = TokenAccount::try_deserialize(&mut output_data)?;
-    require_keys_eq!(output_ata.mint, output_mint, SotamaError::WrongOutputMint);
-    require_keys_eq!(output_ata.owner, destination, SotamaError::WrongDestination);
 
     // Snapshot balances so we can verify the post-CPI increase and
     // compute the actual fill amounts for the AutomationFilled event.
     // (Jupiter's inner ix has its own slippage guard via
     // `otherAmountThreshold`, but we enforce ours independently —
     // the keeper might pass a lax threshold.)
-    let input_before = input_ata.amount;
-    let output_before = output_ata.amount;
-    // Explicitly release the borrowed data so we can re-borrow the
-    // output ATA after the CPI. Borsh deserialization above held
-    // references into try_borrow_data's RefCell guard.
-    let _ = input_data;
-    let _ = output_data;
+    let input_before: u64;
+    let output_before: u64;
+    {
+        let input_data = input_ata_info.try_borrow_data()?;
+        let input_ata = TokenAccount::try_deserialize(&mut &input_data[..])?;
+        require_keys_eq!(input_ata.mint, input_mint, SotamaError::WrongInputMint);
+        require_keys_eq!(
+            input_ata.owner,
+            automation.key(),
+            SotamaError::BadSwapAccounts
+        );
+        input_before = input_ata.amount;
+        // input_data Ref drops here at scope end — Jupiter is free to
+        // borrow the same account during invoke_signed.
+    }
+    {
+        let output_data = output_ata_info.try_borrow_data()?;
+        let output_ata = TokenAccount::try_deserialize(&mut &output_data[..])?;
+        require_keys_eq!(output_ata.mint, output_mint, SotamaError::WrongOutputMint);
+        require_keys_eq!(output_ata.owner, destination, SotamaError::WrongDestination);
+        output_before = output_ata.amount;
+        // output_data Ref drops here at scope end.
+    }
 
     // Reconstruct the AccountMeta list the inner ix expects. Only the
     // first `inner_count` remaining accounts feed Jupiter; the optional
