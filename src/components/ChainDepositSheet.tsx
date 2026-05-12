@@ -24,10 +24,8 @@ export type ChainOnChainResult = {
   nodes: Array<{ pubkey: string; nonce: string; seedAmount: string }>;
 };
 
-// Matches on-chain `Config.swap_fee_bps` (currently 10 = 0.10 %). Chain
-// nodes are all `execute_swap` per `validateChainDraft`, so the head's
-// seed deposit pays the fee at swap time.
-const PROTOCOL_FEE_BPS = 10;
+// Protocol swap fee disabled: `Config.swap_fee_bps` set to 0 on-chain
+// until the fee-collection path is redesigned. No fee preview is shown.
 
 export function ChainDepositSheet({
   open,
@@ -71,16 +69,8 @@ export function ChainDepositSheet({
   const primaryToken = tokens.sort((a, b) => totalsByToken[b] - totalsByToken[a])[0] || "—";
   const primaryAmount = totalsByToken[primaryToken] || 0;
 
-  // Protocol fee is 0.20% of the head's seed deposit. Downstream
-  // rules don't pay a fee at create time because they don't deposit.
-  const protocolFeeByToken: Record<string, number> = {};
-  tokens.forEach((t) => {
-    protocolFeeByToken[t] = totalsByToken[t] * (PROTOCOL_FEE_BPS / 10_000);
-  });
-  const totalByToken: Record<string, number> = {};
-  tokens.forEach((t) => {
-    totalByToken[t] = totalsByToken[t] + protocolFeeByToken[t];
-  });
+  // Protocol swap fee disabled — totals are just the seed deposit.
+  const totalByToken: Record<string, number> = { ...totalsByToken };
 
   const handleConfirm = async () => {
     setConfirming(true);
@@ -291,14 +281,6 @@ export function ChainDepositSheet({
             overflow: "hidden",
           }}
         >
-          {tokens.map((t) => (
-            <FeeRow
-              key={`fee-${t}`}
-              label={`Sotama fee (${t})`}
-              sub={`${(PROTOCOL_FEE_BPS / 100).toFixed(2)}% of seed`}
-              value={`${fmt(protocolFeeByToken[t], 4)} ${t}`}
-            />
-          ))}
           <FeeRow
             label="Network fee"
             sub={`Solana base + priority · ${nodes.length} create ix${nodes.length === 1 ? "" : "s"}`}
