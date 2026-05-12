@@ -774,9 +774,17 @@ export async function sendChainCreate(params: {
   // create — safe and clear). The partial-failure mode without this
   // check is painful: setup tx burns ATA rent, then chain tx reverts
   // on time-fee transfer, leaving the wallet depleted.
+  //
+  // Tx count: 1 setup (if any setupIxs) + ceil(chainIxs / CHAIN_BATCH_SIZE)
+  // chain-create txs. For 1-3 rule chains that's 1 chain tx; for 4-5
+  // rules it's 2-3 chain txs (and 4 prompts total).
   const ATA_RENT_LAMPORTS = 2_039_280n;
   const TX_FEE_LAMPORTS = 5_000n;
-  const txCount = setupIxs.length > 0 ? 2n : 1n;
+  const CHAIN_BATCH_SIZE_PREVIEW = 2;
+  const chainTxCount = BigInt(
+    Math.ceil(chainIxs.length / CHAIN_BATCH_SIZE_PREVIEW),
+  );
+  const txCount = (setupIxs.length > 0 ? 1n : 0n) + chainTxCount;
   const estimatedSolNeeded =
     estimatedTimeFeeLamports +
     estimatedWrapLamports +
@@ -828,40 +836,93 @@ export async function sendChainCreate(params: {
     );
   }
 
+  // Chain create txs are split when chainIxs.length > CHAIN_BATCH_SIZE.
+  // Each batch is one tx, signed independently; the on-chain program
+  // enforces sequential nonces via `config.automation_count`, so the
+  // ix order across batches must match the rule order. Partial-failure
+  // recovery: if batch K lands but batch K+1 fails, the user can retry
+  // — the second attempt will rebuild from a fresh fetchConfig and
+  // pick up the new nonce baseline. The first K rules are already
+  // live and their setup ATAs are still valid; the remaining N-K
+  // rules just need to be created. (For now the simple retry flow
+  // requires the user to recreate from scratch; the partially-created
+  // PDAs can be closed via the regular close ix to recover ATA rent.)
+  const CHAIN_BATCH_SIZE = 2;
+  const batches: TransactionInstruction[][] = [];
+  for (let i = 0; i < chainIxs.length; i += CHAIN_BATCH_SIZE) {
+    batches.push(chainIxs.slice(i, i + CHAIN_BATCH_SIZE));
+  }
   const chainBh = await connection.getLatestBlockhash("confirmed");
-  const chainTx = new Transaction();
-  for (const ix of chainIxs) chainTx.add(ix);
-  chainTx.feePayer = owner;
-  chainTx.recentBlockhash = chainBh.blockhash;
-  const signedChain = await wallet.signTransaction(chainTx);
-  sig = await connection.sendRawTransaction(signedChain.serialize(), {
-    skipPreflight: false,
-    preflightCommitment: "confirmed",
-  });
-  await connection.confirmTransaction(
-    {
-      signature: sig,
-      blockhash: chainBh.blockhash,
-      lastValidBlockHeight: chainBh.lastValidBlockHeight,
-    },
-    "confirmed",
-  );
+  // The user-facing `sig` is the LAST batch's signature — that's the
+  // tx whose logs contain the AutomationCreated events for the tail
+  // rules. We parse events from every batch's tx below.
+  const batchSigs: string[] = [];
+  try {
+    for (let b = 0; b < batches.length; b++) {
+      const chainTx = new Transaction();
+      for (const ix of batches[b]) chainTx.add(ix);
+      chainTx.feePayer = owner;
+      // Re-fetch blockhash for batches after the first to avoid using
+      // a near-expired hash mid-flow. The first batch reuses the
+      // shared `chainBh` from above.
+      const bh = b === 0
+        ? chainBh
+        : await connection.getLatestBlockhash("confirmed");
+      chainTx.recentBlockhash = bh.blockhash;
+      const signedChain = await wallet.signTransaction(chainTx);
+      const batchSig = await connection.sendRawTransaction(signedChain.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
+      await connection.confirmTransaction(
+        {
+          signature: batchSig,
+          blockhash: bh.blockhash,
+          lastValidBlockHeight: bh.lastValidBlockHeight,
+        },
+        "confirmed",
+      );
+      batchSigs.push(batchSig);
+    }
+    sig = batchSigs[batchSigs.length - 1];
+  } catch (e) {
+    // Nonce race: between our fetchConfig() call near the top of this
+    // function and the chain tx landing, another user's
+    // create_automation* incremented Config.automation_count. Our PDA
+    // seeds (automation_count.to_le_bytes()) collided with the now-
+    // existing PDA and `SystemProgram` reverted with "already in use"
+    // / `0x0`. Setup tx already landed (idempotent ATAs are now created
+    // against the OLD nodePdas — wasted ~0.002 SOL per ATA but no data
+    // loss). Surface a recognizable error so the UI can prompt a
+    // one-click retry; the next attempt re-fetches a fresh startNonce.
+    const msg = e instanceof Error ? e.message : String(e);
+    const collided =
+      msg.includes("already in use") ||
+      msg.includes("0x0") ||
+      // Anchor's `init` constraint surfaces this when the PDA derived
+      // from our (assumed) nonce already has data.
+      msg.includes("AlreadyInitialized");
+    if (collided) {
+      throw new Error(
+        "Another user's automation was created at the same time and took your sequence number. Click create again — the setup ATAs are already provisioned so the next attempt will be cheaper.",
+      );
+    }
+    throw e;
+  }
 
-  // Parse the AutomationCreated events to recover each rule's pubkey
-  // + nonce. Anchor emits one event per create call, so the order
-  // matches our `nodes` array.
-  const txDetails = await connection.getTransaction(sig, {
-    maxSupportedTransactionVersion: 0,
-    commitment: "confirmed",
-  });
-  const logs = txDetails?.meta?.logMessages ?? [];
-  // parseAutomationCreated returns ONE event — call it per chunk.
-  // For a multi-create tx the EventParser yields multiple events; we
-  // collect them all by walking the logs N times skipping prior events.
+  // Parse the AutomationCreated events from EVERY batch's tx — Anchor
+  // emits one event per create call, and we may have split the chain
+  // across multiple txs. Walk each tx's logs in order so events line
+  // up with the `nodes` array.
   const events: { pubkey: string; nonce: string }[] = [];
-  // We use a custom parse that returns ALL events in order, since the
-  // existing helper short-circuits at the first one.
-  events.push(...parseAllAutomationCreated(program, logs));
+  for (const batchSig of batchSigs) {
+    const txDetails = await connection.getTransaction(batchSig, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
+    const logs = txDetails?.meta?.logMessages ?? [];
+    events.push(...parseAllAutomationCreated(program, logs));
+  }
   if (events.length < nodes.length) {
     // Fall back to derived pubkeys if event parsing doesn't recover all
     // creates (rare — would mean log truncation). The PDAs are
@@ -922,6 +983,13 @@ export type ChainDepositSummary = {
     isHead: boolean;
     linkSummary: string;
   }>;
+  /** Advisory: Token-2022 mints in the chain may have transfer-fee
+   *  extensions that compound across cycles. We can't compute exact
+   *  per-fire loss without an on-chain extension probe (deferred to
+   *  the UI layer), but we surface that at least one mint is
+   *  Token-2022 so the user knows to expect net < quoted amounts.
+   *  Empty when every mint is legacy SPL. */
+  token2022MintsInChain: string[];
 };
 
 export function summarizeChain(
@@ -996,10 +1064,32 @@ export function summarizeChain(
       linkSummary,
     };
   });
+  // Surface any Token-2022 mints in the chain so the UI can warn the
+  // user that transfer-fee extensions may erode the round-trip
+  // amount. We don't know the per-fire fee % without an on-chain
+  // extension probe; the UI shows an advisory and links to docs.
+  const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+  const token2022Mints = new Set<string>();
+  for (const node of nodes) {
+    for (const action of node.result.actions) {
+      if (action.kind !== "swap") continue;
+      if (action.inputToken.tokenProgram === TOKEN_2022_PROGRAM) {
+        token2022Mints.add(action.inputToken.symbol);
+      }
+      if (action.outputToken.tokenProgram === TOKEN_2022_PROGRAM) {
+        token2022Mints.add(action.outputToken.symbol);
+      }
+    }
+  }
   // network fee accounted in SOL; if the input is also SOL, we don't
   // double-count — the network fee is paid from the wallet's SOL
   // balance, separate from the wSOL ATA used for the seed transfer.
-  return { totalsByToken, networkFeeSol, nodes: breakdown };
+  return {
+    totalsByToken,
+    networkFeeSol,
+    nodes: breakdown,
+    token2022MintsInChain: [...token2022Mints],
+  };
 }
 
 const _LAMPORTS_PER_SOL = LAMPORTS_PER_SOL;

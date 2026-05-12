@@ -384,7 +384,15 @@ export type Automation = {
  *  chains start running into transaction-size limits (each rule's
  *  create_automation_swap_linked ix + ATA creates is ~600 bytes
  *  serialized; 3 nodes plus ATAs comfortably fit in one v0 tx). */
-export const MAX_CHAIN_LENGTH = 3;
+/** Maximum number of linked rules in a single chain. Originally 3 to
+ *  fit one atomic `create_automation_swap_linked` batch under Solana's
+ *  1232-byte v0 wire cap. Raised to 5 once `sendChainCreate` learned to
+ *  split chainIxs into multiple txs (each tx is atomic for its own
+ *  subset; failures between batches leave the partial chain in a
+ *  recoverable state — orphan PDAs can be closed via the standard
+ *  `close_automation_swap` ix, and intermediate-cycle output funds are
+ *  picked up by the next batch's rules once their PDAs are created). */
+export const MAX_CHAIN_LENGTH = 5;
 
 /** Default count for "Loop · cycles" mode. The user can edit this in
  *  the LoopSlot's cycles input before saving. Picked at 10 because the
