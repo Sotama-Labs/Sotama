@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { classifyChainLink, validateChainDraft } from "../src/lib/linked-chains";
+import {
+  classifyChainLink,
+  findCycleNodes,
+  validateChainDraft,
+} from "../src/lib/linked-chains";
 
 const SOL = "So11111111111111111111111111111111111111112";
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -78,5 +82,58 @@ describe("validateChainDraft (post-bridge)", () => {
       { result: swap(TKN, USDC), next: { kind: "rule" as const, ruleIndex: 1 } },
     ];
     assert.equal(validateChainDraft(nodes), null);
+  });
+});
+
+describe("findCycleNodes", () => {
+  it("empty chain returns no cycle", () => {
+    assert.equal(findCycleNodes([]).size, 0);
+  });
+
+  it("single-node terminal chain has no cycle", () => {
+    const set = findCycleNodes([{ next: null }]);
+    assert.equal(set.size, 0);
+  });
+
+  it("single-node self-loop is a cycle of {0}", () => {
+    const set = findCycleNodes([{ next: { kind: "rule", ruleIndex: 0 } }]);
+    assert.deepEqual([...set].sort(), [0]);
+  });
+
+  it("two-node back-link 1→0 yields cycle {0,1}", () => {
+    const set = findCycleNodes([
+      { next: { kind: "rule", ruleIndex: 1 } },
+      { next: { kind: "rule", ruleIndex: 0 } },
+    ]);
+    assert.deepEqual([...set].sort(), [0, 1]);
+  });
+
+  it("three-node full cycle 0→1→2→0 yields {0,1,2}", () => {
+    const set = findCycleNodes([
+      { next: { kind: "rule", ruleIndex: 1 } },
+      { next: { kind: "rule", ruleIndex: 2 } },
+      { next: { kind: "rule", ruleIndex: 0 } },
+    ]);
+    assert.deepEqual([...set].sort(), [0, 1, 2]);
+  });
+
+  it("linear three-node chain (terminal) has no cycle", () => {
+    const set = findCycleNodes([
+      { next: { kind: "rule", ruleIndex: 1 } },
+      { next: { kind: "rule", ruleIndex: 2 } },
+      { next: null },
+    ]);
+    assert.equal(set.size, 0);
+  });
+
+  it("warm-up + 2-node loop: cycle is the loop subset {1,2}, not the warm-up rule 0", () => {
+    // Rule 0 (warm-up) → rule 1 → rule 2 → rule 1 (loop). Rule 0 is
+    // not part of the cycle.
+    const set = findCycleNodes([
+      { next: { kind: "rule", ruleIndex: 1 } },
+      { next: { kind: "rule", ruleIndex: 2 } },
+      { next: { kind: "rule", ruleIndex: 1 } },
+    ]);
+    assert.deepEqual([...set].sort(), [1, 2]);
   });
 });
