@@ -436,6 +436,11 @@ export async function sendChainCreate(params: {
   wallet: {
     publicKey: PublicKey;
     signTransaction: <T extends Transaction>(tx: T) => Promise<T>;
+    /** Required when the chain doesn't fit in a single tx — the setup
+     *  ixs (ATA creates + SOL wrap) get split into a separate tx that
+     *  must land before the chain-create ixs. Wallet adapter always
+     *  provides this for any modern wallet; pass it through. */
+    signAllTransactions?: <T extends Transaction>(txs: T[]) => Promise<T[]>;
   };
   nodes: ChainNodeDraft[];
   /** Loop topology applied at submit time. When set, every rule's
@@ -528,7 +533,14 @@ export async function sendChainCreate(params: {
     .slice(0, -1)
     .map((node, i) => classifyChainLink(node.result, nodes[i + 1].result));
 
-  const ixs: TransactionInstruction[] = [];
+  // Two ix buckets. The setup bucket (ATA creates + SOL wrap) goes into
+  // a dedicated pre-tx when the combined chain doesn't fit in a single
+  // legacy tx (Solana's v0 wire cap is 1232 bytes; even a 2-card chain
+  // typically overruns once you add 8 ATA creates + 2 create_automation_
+  // swap_linked ixs). Splitting keeps each tx well under the cap and only
+  // costs one extra prompt-less signature (signAllTransactions).
+  const setupIxs: TransactionInstruction[] = [];
+  const chainIxs: TransactionInstruction[] = [];
   const seedAmounts: BN[] = [];
 
   for (let i = 0; i < nodes.length; i++) {
@@ -598,7 +610,7 @@ export async function sendChainCreate(params: {
     // output ATA (idempotent, no-ops if exists).
     const ownerInputAta = associatedTokenAddress(owner, onChainAction.swap.inputMint);
     if (onChainAction.swap.inputMint.toBase58() !== SOL_MINT_STR) {
-      ixs.push(
+      setupIxs.push(
         createAssociatedTokenAccountIdempotentInstruction(
           owner,
           ownerInputAta,
@@ -614,7 +626,7 @@ export async function sendChainCreate(params: {
     if (isHead && onChainAction.swap.inputMint.toBase58() === SOL_MINT_STR) {
       const wrapLamports = BigInt(seedAmount.toString());
       const ownerWsolAta = associatedTokenAddress(owner, NATIVE_MINT);
-      ixs.push(
+      setupIxs.push(
         createAssociatedTokenAccountIdempotentInstruction(
           owner,
           ownerWsolAta,
@@ -623,21 +635,21 @@ export async function sendChainCreate(params: {
           SPL_TOKEN_PROGRAM_ID,
         ),
       );
-      ixs.push(
+      setupIxs.push(
         SystemProgram.transfer({
           fromPubkey: owner,
           toPubkey: ownerWsolAta,
           lamports: wrapLamports,
         }),
       );
-      ixs.push(createSyncNativeInstruction(ownerWsolAta, SPL_TOKEN_PROGRAM_ID));
+      setupIxs.push(createSyncNativeInstruction(ownerWsolAta, SPL_TOKEN_PROGRAM_ID));
     }
     const automationPdaForNode = nodePdas[i];
     const automationInputAta = associatedTokenAddress(
       automationPdaForNode,
       onChainAction.swap.inputMint,
     );
-    ixs.push(
+    setupIxs.push(
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         automationInputAta,
@@ -653,7 +665,7 @@ export async function sendChainCreate(params: {
       destinations[i],
       onChainAction.swap.outputMint,
     );
-    ixs.push(
+    setupIxs.push(
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         destOutputAta,
@@ -665,7 +677,7 @@ export async function sendChainCreate(params: {
     // Treasury's output ATA — receives the protocol swap fee on every
     // execute_swap fire of this rule. Idempotent across chain links
     // that share an output mint and across all users system-wide.
-    ixs.push(
+    setupIxs.push(
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         associatedTokenAddress(config.treasury, onChainAction.swap.outputMint),
@@ -721,20 +733,56 @@ export async function sendChainCreate(params: {
       bridgeEnabled,
       nextNonce: startNonce + BigInt(i),
     });
-    ixs.push(built.ix);
+    chainIxs.push(built.ix);
   }
 
-  const tx = new Transaction();
-  for (const ix of ixs) tx.add(ix);
-  tx.feePayer = owner;
+  // Build setup + chain as two separate legacy txs, then dispatch
+  // sequentially with a single wallet prompt via signAllTransactions.
+  // Setup ixs (ATA creates + SOL wrap) are idempotent, so a partial
+  // failure leaves the user only out the ATA rent (~0.002 SOL each)
+  // and a retry is safe. Chain create is atomic across all rules in
+  // its own tx — either all rules land or none do.
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-  tx.recentBlockhash = blockhash;
 
-  const signed = await wallet.signTransaction(tx);
-  const sig = await connection.sendRawTransaction(signed.serialize(), {
-    skipPreflight: false,
-    preflightCommitment: "confirmed",
-  });
+  const setupTx = new Transaction();
+  for (const ix of setupIxs) setupTx.add(ix);
+  setupTx.feePayer = owner;
+  setupTx.recentBlockhash = blockhash;
+
+  const chainTx = new Transaction();
+  for (const ix of chainIxs) chainTx.add(ix);
+  chainTx.feePayer = owner;
+  chainTx.recentBlockhash = blockhash;
+
+  const txsToSign: Transaction[] = setupIxs.length > 0 ? [setupTx, chainTx] : [chainTx];
+  let signedTxs: Transaction[];
+  if (wallet.signAllTransactions) {
+    signedTxs = await wallet.signAllTransactions(txsToSign);
+  } else {
+    signedTxs = [];
+    for (const t of txsToSign) signedTxs.push(await wallet.signTransaction(t));
+  }
+
+  let sig = "";
+  if (setupIxs.length > 0) {
+    const setupSig = await connection.sendRawTransaction(signedTxs[0].serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+    await connection.confirmTransaction(
+      { signature: setupSig, blockhash, lastValidBlockHeight },
+      "confirmed",
+    );
+    sig = await connection.sendRawTransaction(signedTxs[1].serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+  } else {
+    sig = await connection.sendRawTransaction(signedTxs[0].serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+  }
   await connection.confirmTransaction(
     { signature: sig, blockhash, lastValidBlockHeight },
     "confirmed",

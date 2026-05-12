@@ -100,11 +100,15 @@ export function ChainDepositSheet({
     try {
       const owner = wallet.publicKey;
       const signTx = wallet.signTransaction;
+      const signAll = wallet.signAllTransactions;
       const result: ChainCreateResult = await sendChainCreate({
         connection,
         wallet: {
           publicKey: owner,
           signTransaction: <T extends Transaction>(tx: T) => signTx(tx),
+          signAllTransactions: signAll
+            ? <T extends Transaction>(txs: T[]) => signAll(txs)
+            : undefined,
         },
         nodes,
         loopMode,

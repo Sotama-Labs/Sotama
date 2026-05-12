@@ -134,7 +134,7 @@ export function SwapEditor({
         </div>
       )}
 
-      {linkClassUpstream === "inverted_pair" && (
+      {linkClassUpstream != null && (
         <button
           type="button"
           onClick={() =>
