@@ -1070,7 +1070,14 @@ export function summarizeChain(
       if (seedAmount > 0) {
         totalsByToken[seedToken] = (totalsByToken[seedToken] || 0) + seedAmount;
       }
-      actionSummary = `swap ${action.amount} ${action.inputToken.symbol} → ${action.outputToken.symbol}`;
+      // `consumeUpstreamOutput` cards have `amount === 0` by design
+      // (the keeper resolves the real amount from the input ATA at
+      // fire time — see SwapEditor.tsx commit ef23f7f). Rendering the
+      // literal "0" reads as a misconfiguration; show what's actually
+      // happening — the rule will swap whatever upstream produced.
+      actionSummary = action.consumeUpstreamOutput
+        ? `swap upstream output ${action.inputToken.symbol} → ${action.outputToken.symbol}`
+        : `swap ${action.amount} ${action.inputToken.symbol} → ${action.outputToken.symbol}`;
     }
     const trigger = node.result.triggers[0];
     let triggerSummary = "—";

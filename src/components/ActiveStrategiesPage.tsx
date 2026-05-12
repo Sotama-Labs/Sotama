@@ -189,6 +189,77 @@ function ExecutionRow({ e, isLast }: { e: Execution; isLast: boolean }) {
   );
 }
 
+/** Group automations by `link.chainId` (standalone rules each get their
+ *  own singleton group). Preserves insertion order so the chain badge
+ *  positions (1/2, 2/2, …) still line up. */
+function groupByChain(items: Automation[]): Automation[][] {
+  const groups: Automation[][] = [];
+  const idx = new Map<string, number>();
+  for (const a of items) {
+    // Standalone rules get a unique key per id so they never merge.
+    const key = a.link?.chainId ?? `__solo_${a.id}`;
+    let i = idx.get(key);
+    if (i === undefined) {
+      i = groups.length;
+      idx.set(key, i);
+      groups.push([]);
+    }
+    groups[i].push(a);
+  }
+  return groups;
+}
+
+/** Render a list of automations as separate bordered cards, one per
+ *  chain (or per standalone rule). Replaces the prior single bordered
+ *  container so chains read as visually distinct units. */
+function RowCardGroup({
+  items,
+  onToggle,
+  onDelete,
+  refreshKey,
+  waitingIds,
+}: {
+  items: Automation[];
+  onToggle: (id: string) => void;
+  onDelete: (id: string) => void;
+  refreshKey: number;
+  waitingIds: Set<string>;
+}) {
+  const groups = useMemo(() => groupByChain(items), [items]);
+  return (
+    <>
+      {groups.map((group, gi) => (
+        <div
+          key={group[0]?.link?.chainId ?? group[0]?.id ?? `g${gi}`}
+          style={{
+            background: "var(--bg-system)",
+            border: "0.5px solid var(--separator)",
+            borderRadius: "var(--radius-card)",
+            boxShadow: "var(--shadow-1)",
+            overflow: "hidden",
+            // Small gap between chain cards. Keep zero on the last
+            // group so the section's outer marginBottom controls
+            // spacing to the next section.
+            marginBottom: gi === groups.length - 1 ? 0 : "0.5rem",
+          }}
+        >
+          {group.map((a, i) => (
+            <AutomationRow
+              key={a.id}
+              a={a}
+              onToggle={onToggle}
+              onDelete={onDelete}
+              isLast={i === group.length - 1}
+              refreshKey={refreshKey}
+              waitingOnUpstream={waitingIds.has(a.id)}
+            />
+          ))}
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function ActiveStrategiesPage({
   automations,
   onToggle,
@@ -417,106 +488,52 @@ export function ActiveStrategiesPage({
       {running.length > 0 && (
         <section style={{ width: "100%", marginBottom: "1.5rem" }}>
           <SectionHeader title="Running" count={running.length} />
-          <div
-            style={{
-              background: "var(--bg-system)",
-              border: "0.5px solid var(--separator)",
-              borderRadius: "var(--radius-card)",
-              boxShadow: "var(--shadow-1)",
-              overflow: "hidden",
-            }}
-          >
-            {running.map((a, i) => (
-              <AutomationRow
-                key={a.id}
-                a={a}
-                onToggle={onToggle}
-                onDelete={onDelete}
-                isLast={i === running.length - 1}
-                refreshKey={refreshKey}
-                waitingOnUpstream={waitingIds.has(a.id)}
-              />
-            ))}
-          </div>
+          <RowCardGroup
+            items={running}
+            onToggle={onToggle}
+            onDelete={onDelete}
+            refreshKey={refreshKey}
+            waitingIds={waitingIds}
+          />
         </section>
       )}
 
       {completed.length > 0 && (
         <section style={{ width: "100%", marginBottom: "1.5rem" }}>
           <SectionHeader title="Completed" count={completed.length} />
-          <div
-            style={{
-              background: "var(--bg-system)",
-              border: "0.5px solid var(--separator)",
-              borderRadius: "var(--radius-card)",
-              boxShadow: "var(--shadow-1)",
-              overflow: "hidden",
-            }}
-          >
-            {completed.map((a, i) => (
-              <AutomationRow
-                key={a.id}
-                a={a}
-                onToggle={onToggle}
-                onDelete={onDelete}
-                isLast={i === completed.length - 1}
-                refreshKey={refreshKey}
-              />
-            ))}
-          </div>
+          <RowCardGroup
+            items={completed}
+            onToggle={onToggle}
+            onDelete={onDelete}
+            refreshKey={refreshKey}
+            waitingIds={waitingIds}
+          />
         </section>
       )}
 
       {closedOnly.length > 0 && (
         <section style={{ width: "100%", marginBottom: "1.5rem" }}>
           <SectionHeader title="Closed" count={closedOnly.length} />
-          <div
-            style={{
-              background: "var(--bg-system)",
-              border: "0.5px solid var(--separator)",
-              borderRadius: "var(--radius-card)",
-              boxShadow: "var(--shadow-1)",
-              overflow: "hidden",
-            }}
-          >
-            {closedOnly.map((a, i) => (
-              <AutomationRow
-                key={a.id}
-                a={a}
-                onToggle={onToggle}
-                onDelete={onDelete}
-                isLast={i === closedOnly.length - 1}
-                refreshKey={refreshKey}
-              />
-            ))}
-          </div>
+          <RowCardGroup
+            items={closedOnly}
+            onToggle={onToggle}
+            onDelete={onDelete}
+            refreshKey={refreshKey}
+            waitingIds={waitingIds}
+          />
         </section>
       )}
 
       {paused.length > 0 && (
         <section style={{ width: "100%", marginBottom: "1.5rem" }}>
           <SectionHeader title="Paused" count={paused.length} />
-          <div
-            style={{
-              background: "var(--bg-system)",
-              border: "0.5px solid var(--separator)",
-              borderRadius: "var(--radius-card)",
-              boxShadow: "var(--shadow-1)",
-              overflow: "hidden",
-            }}
-          >
-            {paused.map((a, i) => (
-              <AutomationRow
-                key={a.id}
-                a={a}
-                onToggle={onToggle}
-                onDelete={onDelete}
-                isLast={i === paused.length - 1}
-                refreshKey={refreshKey}
-                waitingOnUpstream={waitingIds.has(a.id)}
-              />
-            ))}
-          </div>
+          <RowCardGroup
+            items={paused}
+            onToggle={onToggle}
+            onDelete={onDelete}
+            refreshKey={refreshKey}
+            waitingIds={waitingIds}
+          />
         </section>
       )}
 
