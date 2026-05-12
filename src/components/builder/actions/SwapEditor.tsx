@@ -54,10 +54,16 @@ export function SwapEditor({
       <TokenPicker
         title="Swap from"
         selected={draft.inputToken}
-        exclude={draft.outputToken}
         onBack={() => setPicking(null)}
         onSelect={(token) => {
-          onChange({ ...draft, inputToken: token });
+          const collides =
+            draft.outputToken != null &&
+            draft.outputToken.mint === token.mint;
+          onChange({
+            ...draft,
+            inputToken: token,
+            outputToken: collides ? null : draft.outputToken,
+          });
           setPicking(null);
         }}
       />
@@ -68,11 +74,17 @@ export function SwapEditor({
       <TokenPicker
         title="Swap to"
         selected={draft.outputToken}
-        exclude={draft.inputToken}
         blocked={blockOutputMint}
         onBack={() => setPicking(null)}
         onSelect={(token) => {
-          onChange({ ...draft, outputToken: token });
+          const collides =
+            draft.inputToken != null &&
+            draft.inputToken.mint === token.mint;
+          onChange({
+            ...draft,
+            outputToken: token,
+            inputToken: collides ? null : draft.inputToken,
+          });
           setPicking(null);
         }}
       />
