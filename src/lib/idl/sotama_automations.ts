@@ -1726,22 +1726,18 @@ export type SotamaAutomations = {
           "writable": true
         },
         {
-          "name": "outputMint",
-          "docs": [
-            "Output mint of the swap. Passed as an account here (rather than",
-            "pulled from `action`) because `transfer_checked` requires the",
-            "mint account in the CPI, AND we need its `decimals` value. The",
-            "handler validates the key against `ActionSpec::Swap.output_mint`",
-            "so the caller can't sneak in the wrong mint. Polymorphic over",
-            "legacy SPL vs Token-2022."
-          ]
-        },
-        {
           "name": "tokenProgram",
           "docs": [
             "Token program for the output mint. Accepts either legacy SPL or",
             "Token-2022 at runtime; Anchor validates it matches the mint's",
-            "owning program."
+            "owning program.",
+            "",
+            "Note: the output MINT account itself is NOT a top-level account",
+            "here — it's read from `remaining_accounts` at",
+            "`output_mint_index` (the keeper locates it within Jupiter's",
+            "inner ix accounts). Keeps the outer tx ~32 bytes smaller, which",
+            "is what holds the Sender-mode worst-case route under the",
+            "1232-byte v0 wire cap."
           ]
         }
       ],
@@ -1766,6 +1762,10 @@ export type SotamaAutomations = {
         },
         {
           "name": "outputAtaIndex",
+          "type": "u8"
+        },
+        {
+          "name": "outputMintIndex",
           "type": "u8"
         }
       ]
