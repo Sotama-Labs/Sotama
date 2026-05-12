@@ -736,55 +736,53 @@ export async function sendChainCreate(params: {
     chainIxs.push(built.ix);
   }
 
-  // Build setup + chain as two separate legacy txs, then dispatch
-  // sequentially with a single wallet prompt via signAllTransactions.
-  // Setup ixs (ATA creates + SOL wrap) are idempotent, so a partial
-  // failure leaves the user only out the ATA rent (~0.002 SOL each)
-  // and a retry is safe. Chain create is atomic across all rules in
-  // its own tx — either all rules land or none do.
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-
-  const setupTx = new Transaction();
-  for (const ix of setupIxs) setupTx.add(ix);
-  setupTx.feePayer = owner;
-  setupTx.recentBlockhash = blockhash;
-
-  const chainTx = new Transaction();
-  for (const ix of chainIxs) chainTx.add(ix);
-  chainTx.feePayer = owner;
-  chainTx.recentBlockhash = blockhash;
-
-  const txsToSign: Transaction[] = setupIxs.length > 0 ? [setupTx, chainTx] : [chainTx];
-  let signedTxs: Transaction[];
-  if (wallet.signAllTransactions) {
-    signedTxs = await wallet.signAllTransactions(txsToSign);
-  } else {
-    signedTxs = [];
-    for (const t of txsToSign) signedTxs.push(await wallet.signTransaction(t));
-  }
-
-  let sig = "";
+  // Send setup tx first (sign + submit + confirm) and ONLY then build,
+  // sign and submit the chain tx. We deliberately don't use
+  // signAllTransactions here: when both txs are signed upfront,
+  // preflight simulation of the chain tx runs against current state
+  // (where the PDA input ATA still doesn't exist) and reverts with
+  // AnchorError 3012 / 0xbc4 (AccountNotInitialized). Two prompts is
+  // worth not having to chase that ordering bug. Setup ixs are
+  // idempotent ATA creates + an optional wSOL wrap, so a partial
+  // failure leaves the user only out the ATA rent (~0.002 SOL each).
+  let sig: string;
   if (setupIxs.length > 0) {
-    const setupSig = await connection.sendRawTransaction(signedTxs[0].serialize(), {
+    const setupBh = await connection.getLatestBlockhash("confirmed");
+    const setupTx = new Transaction();
+    for (const ix of setupIxs) setupTx.add(ix);
+    setupTx.feePayer = owner;
+    setupTx.recentBlockhash = setupBh.blockhash;
+    const signedSetup = await wallet.signTransaction(setupTx);
+    const setupSig = await connection.sendRawTransaction(signedSetup.serialize(), {
       skipPreflight: false,
       preflightCommitment: "confirmed",
     });
     await connection.confirmTransaction(
-      { signature: setupSig, blockhash, lastValidBlockHeight },
+      {
+        signature: setupSig,
+        blockhash: setupBh.blockhash,
+        lastValidBlockHeight: setupBh.lastValidBlockHeight,
+      },
       "confirmed",
     );
-    sig = await connection.sendRawTransaction(signedTxs[1].serialize(), {
-      skipPreflight: false,
-      preflightCommitment: "confirmed",
-    });
-  } else {
-    sig = await connection.sendRawTransaction(signedTxs[0].serialize(), {
-      skipPreflight: false,
-      preflightCommitment: "confirmed",
-    });
   }
+
+  const chainBh = await connection.getLatestBlockhash("confirmed");
+  const chainTx = new Transaction();
+  for (const ix of chainIxs) chainTx.add(ix);
+  chainTx.feePayer = owner;
+  chainTx.recentBlockhash = chainBh.blockhash;
+  const signedChain = await wallet.signTransaction(chainTx);
+  sig = await connection.sendRawTransaction(signedChain.serialize(), {
+    skipPreflight: false,
+    preflightCommitment: "confirmed",
+  });
   await connection.confirmTransaction(
-    { signature: sig, blockhash, lastValidBlockHeight },
+    {
+      signature: sig,
+      blockhash: chainBh.blockhash,
+      lastValidBlockHeight: chainBh.lastValidBlockHeight,
+    },
     "confirmed",
   );
 
