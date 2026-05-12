@@ -995,8 +995,19 @@ function parseAllAutomationCreated(
   const parser = new EventParser(program.programId, coder);
   for (const evt of parser.parseLogs(logs)) {
     if (evt.name === "AutomationCreated" || evt.name === "automationCreated") {
-      const data = evt.data as { pubkey: PublicKey; nonce: BN };
-      out.push({ pubkey: data.pubkey.toBase58(), nonce: data.nonce.toString() });
+      // IDL field is `automation` (per the on-chain `#[event] struct
+      // AutomationCreated`); the older `pubkey` name shipped before
+      // Anchor 0.30's IDL rewrite. Read both so this code survives a
+      // future IDL rename without throwing on undefined.toBase58().
+      // Same fallback pattern as program.ts::parseAutomationCreated.
+      const data = evt.data as {
+        automation?: PublicKey;
+        pubkey?: PublicKey;
+        nonce: BN;
+      };
+      const automationPk = data.automation ?? data.pubkey;
+      if (!automationPk) continue;
+      out.push({ pubkey: automationPk.toBase58(), nonce: data.nonce.toString() });
     }
   }
   return out;
