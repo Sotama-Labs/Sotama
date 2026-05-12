@@ -26,12 +26,15 @@ export function TokenPicker({
   onSelect,
   onBack,
   exclude,
+  blocked,
 }: {
   title?: string;
   selected?: TokenRef | null;
   onSelect: (token: TokenRef) => void;
   onBack?: () => void;
   exclude?: TokenRef | null;
+  /** Return a non-empty string to block a mint and explain why; return null to allow. */
+  blocked?: (mint: string) => string | null;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
@@ -44,7 +47,11 @@ export function TokenPicker({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = POPULAR_TOKENS.filter((t) => !exclude || t.mint !== exclude.mint);
+    const list = POPULAR_TOKENS.filter(
+      (t) =>
+        (!exclude || t.mint !== exclude.mint) &&
+        (!blocked || blocked(t.mint) == null),
+    );
     if (!q) return list;
     return list.filter(
       (t) =>
@@ -52,7 +59,10 @@ export function TokenPicker({
         t.name.toLowerCase().includes(q) ||
         t.mint.toLowerCase().startsWith(q),
     );
-  }, [query, exclude]);
+  }, [query, exclude, blocked]);
+
+  const blockedReason =
+    state.phase === "resolved" && blocked ? blocked(state.token.mint) : null;
 
   useEffect(() => {
     const trimmed = query.trim();
@@ -180,7 +190,7 @@ export function TokenPicker({
         </div>
       )}
 
-      {state.phase === "resolved" && (
+      {state.phase === "resolved" && blockedReason == null && (
         <button
           onClick={() => onSelect(state.token)}
           style={{
@@ -201,6 +211,29 @@ export function TokenPicker({
             {metadataSourceLabel(state.token.metadataSource)}
           </span>
         </button>
+      )}
+
+      {state.phase === "resolved" && blockedReason != null && (
+        <div
+          className="hig-caption-1"
+          style={{
+            padding: "0.5rem 0.75rem",
+            margin: "0.25rem 0 0.5rem",
+            borderRadius: "0.5rem",
+            background: "color-mix(in oklab, var(--orange) 12%, transparent)",
+            border: "0.5px solid color-mix(in oklab, var(--orange) 32%, transparent)",
+            color: "var(--label-primary)",
+            lineHeight: 1.4,
+          }}
+        >
+          <strong>{state.token.symbol}</strong> isn&rsquo;t selectable here.
+          <div
+            className="hig-caption-2"
+            style={{ color: "var(--label-tertiary)", marginTop: "0.375rem" }}
+          >
+            {blockedReason}
+          </div>
+        </div>
       )}
 
       {state.phase === "manual" && (

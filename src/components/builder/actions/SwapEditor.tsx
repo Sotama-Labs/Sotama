@@ -9,6 +9,19 @@ import { EditorShell, FieldRow } from "../EditorShell";
 
 type Picking = "input" | "output" | null;
 
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+// Jupiter v6 `route_v2` bundles a setup ix that creates a temporary
+// program-owned wSOL account and a cleanup ix that unwraps it to the
+// PDA. Our `execute_swap` only CPI-relays the swap ix, so the temp
+// account never exists and Jupiter rejects with 6025 InvalidTokenAccount.
+// Until execute_swap is upgraded to relay setup + cleanup (and the
+// destination accounting is reworked for native-SOL output), block wSOL
+// as a swap destination at the UI layer.
+const OUTPUT_WSOL_BLOCKED =
+  "Swapping into SOL isn't supported yet — Jupiter's native-SOL path needs setup/cleanup steps the on-chain program doesn't relay. Pick any SPL token (USDC, USDT, JUP, BONK, …) instead.";
+const blockOutputMint = (mint: string): string | null =>
+  mint === WSOL_MINT ? OUTPUT_WSOL_BLOCKED : null;
+
 export function SwapEditor({
   draft,
   onChange,
@@ -26,9 +39,13 @@ export function SwapEditor({
 
   // Hooks must run in the same order every render — keep them above
   // any conditional return.
+  const outputBlockedReason = draft.outputToken
+    ? blockOutputMint(draft.outputToken.mint)
+    : null;
   const ready =
     draft.inputToken != null &&
     draft.outputToken != null &&
+    outputBlockedReason == null &&
     (draft.consumeUpstreamOutput === true ||
       (draft.amount != null && draft.amount > 0));
 
@@ -52,6 +69,7 @@ export function SwapEditor({
         title="Swap to"
         selected={draft.outputToken}
         exclude={draft.inputToken}
+        blocked={blockOutputMint}
         onBack={() => setPicking(null)}
         onSelect={(token) => {
           onChange({ ...draft, outputToken: token });
@@ -98,6 +116,23 @@ export function SwapEditor({
           </span>
         </button>
       </FieldRow>
+
+      {outputBlockedReason != null && (
+        <div
+          className="hig-caption-1"
+          style={{
+            padding: "0.5rem 0.75rem",
+            margin: "-0.25rem 0 0.25rem",
+            borderRadius: "0.5rem",
+            background: "color-mix(in oklab, var(--orange) 12%, transparent)",
+            border: "0.5px solid color-mix(in oklab, var(--orange) 32%, transparent)",
+            color: "var(--label-primary)",
+            lineHeight: 1.4,
+          }}
+        >
+          {outputBlockedReason}
+        </div>
+      )}
 
       {linkClassUpstream === "inverted_pair" && (
         <button
