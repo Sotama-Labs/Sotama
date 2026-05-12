@@ -10,17 +10,16 @@ import { EditorShell, FieldRow } from "../EditorShell";
 type Picking = "input" | "output" | null;
 
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
-// Jupiter v6 `route_v2` bundles a setup ix that creates a temporary
-// program-owned wSOL account and a cleanup ix that unwraps it to the
-// PDA. Our `execute_swap` only CPI-relays the swap ix, so the temp
-// account never exists and Jupiter rejects with 6025 InvalidTokenAccount.
-// Until execute_swap is upgraded to relay setup + cleanup (and the
-// destination accounting is reworked for native-SOL output), block wSOL
-// as a swap destination at the UI layer.
-const OUTPUT_WSOL_BLOCKED =
-  "Swapping into SOL isn't supported yet — Jupiter's native-SOL path needs setup/cleanup steps the on-chain program doesn't relay. Pick any SPL token (USDC, USDT, JUP, BONK, …) instead.";
-const blockOutputMint = (mint: string): string | null =>
-  mint === WSOL_MINT ? OUTPUT_WSOL_BLOCKED : null;
+// SOL output is supported via wrapped SOL: the keeper passes
+// `wrapAndUnwrapSol=false` + `destinationTokenAccount=<dest's wSOL ATA>`
+// to Jupiter, so Jupiter writes directly to the destination's wSOL ATA
+// without needing the temp-account + cleanup-unwrap flow that
+// execute_swap doesn't relay. The destination wallet sees the result
+// as a Wrapped SOL balance with a one-click "Unwrap to SOL" in Phantom
+// / Backpack / Solflare. We surface this as a soft INFO note (not a
+// block) at picker time so users aren't surprised.
+const OUTPUT_WSOL_INFO =
+  "You'll receive wrapped SOL (wSOL). Your wallet shows it as 'Wrapped SOL' with a one-click unwrap to native SOL.";
 
 export function SwapEditor({
   draft,
@@ -39,13 +38,13 @@ export function SwapEditor({
 
   // Hooks must run in the same order every render — keep them above
   // any conditional return.
-  const outputBlockedReason = draft.outputToken
-    ? blockOutputMint(draft.outputToken.mint)
-    : null;
+  // Info note (not a block) shown when the output is wSOL — explains
+  // that the deliverable is wrapped SOL, with one-click unwrap in any
+  // modern Solana wallet. Doesn't gate `ready`.
+  const outputIsWsol = draft.outputToken?.mint === WSOL_MINT;
   const ready =
     draft.inputToken != null &&
     draft.outputToken != null &&
-    outputBlockedReason == null &&
     (draft.consumeUpstreamOutput === true ||
       (draft.amount != null && draft.amount > 0));
 
@@ -56,6 +55,12 @@ export function SwapEditor({
         selected={draft.inputToken}
         onBack={() => setPicking(null)}
         onSelect={(token) => {
+          // If the user picked the same token as the current output,
+          // the swap would be in→in (no-op). Clear output so they can
+          // pick a different counter-token in the next step. Better
+          // than hiding it from the list — the user clearly wants this
+          // token as input and we shouldn't force a re-pick on the
+          // other side just to free it up.
           const collides =
             draft.outputToken != null &&
             draft.outputToken.mint === token.mint;
@@ -74,7 +79,6 @@ export function SwapEditor({
       <TokenPicker
         title="Swap to"
         selected={draft.outputToken}
-        blocked={blockOutputMint}
         onBack={() => setPicking(null)}
         onSelect={(token) => {
           const collides =
@@ -129,20 +133,20 @@ export function SwapEditor({
         </button>
       </FieldRow>
 
-      {outputBlockedReason != null && (
+      {outputIsWsol && (
         <div
           className="hig-caption-1"
           style={{
             padding: "0.5rem 0.75rem",
             margin: "-0.25rem 0 0.25rem",
             borderRadius: "0.5rem",
-            background: "color-mix(in oklab, var(--orange) 12%, transparent)",
-            border: "0.5px solid color-mix(in oklab, var(--orange) 32%, transparent)",
+            background: "color-mix(in oklab, var(--accent) 10%, transparent)",
+            border: "0.5px solid color-mix(in oklab, var(--accent) 28%, transparent)",
             color: "var(--label-primary)",
             lineHeight: 1.4,
           }}
         >
-          {outputBlockedReason}
+          {OUTPUT_WSOL_INFO}
         </div>
       )}
 
