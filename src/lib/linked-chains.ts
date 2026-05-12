@@ -395,9 +395,18 @@ function buildSwapAction(
   const inputMint = tryPubkey(a.inputToken.mint);
   const outputMint = tryPubkey(a.outputToken.mint);
   if (!inputMint || !outputMint) return null;
-  const amountIn = new BN(
-    Math.round(a.amount * Math.pow(10, a.inputToken.decimals)),
-  );
+  const consumeUpstreamOutput = a.consumeUpstreamOutput === true;
+  // When consuming upstream output, write u64::MAX so the on-chain
+  // input-consumption cap (execute_swap.rs:260, `input_consumed <=
+  // amount_in`) never clips the actual per-fire amount. The keeper
+  // resolves the real amount from the PDA's input ATA balance at fire
+  // time; the cap is a TWAP/DCA guard for fixed-amount rules and would
+  // otherwise reject swaps whenever upstream produced more than the
+  // user-typed sentinel. u64::MAX still satisfies the > 0 guard in
+  // create_automation_swap_linked.
+  const amountIn = consumeUpstreamOutput
+    ? new BN("18446744073709551615") // u64::MAX
+    : new BN(Math.round(a.amount * Math.pow(10, a.inputToken.decimals)));
   return {
     swap: {
       inputMint,
@@ -407,7 +416,7 @@ function buildSwapAction(
       minAmountOut: new BN(0),
       linkedDownstream,
       linkFeeDeposit: new BN(0),
-      consumeUpstreamOutput: a.consumeUpstreamOutput === true,
+      consumeUpstreamOutput,
     },
   };
 }
@@ -550,7 +559,16 @@ export async function sendChainCreate(params: {
     // owner.
     const linkedDownstream =
       nodes.length > 1 && node.next ? nodePdas[node.next.ruleIndex] : null;
-    const onChainAction = buildSwapAction(destinations[i], action, linkedDownstream);
+    // The head card has no upstream link, so `consumeUpstreamOutput`
+    // can't be honoured even if the draft carries it (e.g., a card was
+    // toggled to consume mode then promoted to head). Strip it here so
+    // the encoder doesn't write the u64::MAX `amount_in` sentinel and
+    // try to seed the head PDA with an overflowing balance.
+    const safeAction =
+      i === 0 && action.kind === "swap" && action.consumeUpstreamOutput
+        ? { ...action, consumeUpstreamOutput: false }
+        : action;
+    const onChainAction = buildSwapAction(destinations[i], safeAction, linkedDownstream);
     if (!onChainAction || !("swap" in onChainAction)) {
       throw new Error(`node ${i + 1}: action could not be encoded`);
     }
