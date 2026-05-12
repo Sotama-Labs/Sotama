@@ -142,7 +142,7 @@ pub struct ApiAccount {
 // fits comfortably under the 1232-byte wire cap. Going lower (e.g. 8)
 // often returns "No routes found" because the router can't find a
 // path with that few accounts.
-pub const JUPITER_MAX_ACCOUNTS_HINT: u16 = 12;
+pub const JUPITER_MAX_ACCOUNTS_HINT: u16 = 24;
 
 /// Number of 429 retries before bubbling the error. At 10 rpm even a
 /// brief burst can trip the limit, so the client backs off rather than

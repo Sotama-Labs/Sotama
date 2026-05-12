@@ -740,22 +740,20 @@ async fn build_action_ix(
             // hostile keeper can't substitute a different mint.
             let output_mint_idx = jupiter::locate_mint_index(&inner_accounts, output_mint)?;
 
-            // Per Jupiter docs: "CPI cannot use Address Lookup Tables"
-            // (https://dev.jup.ag/docs/swap/build/common-instructions).
-            // Wrapping Jupiter's swap_ix in our execute_swap CPI breaks
-            // when ALT compression is used on the parent tx —
-            // RPC preflight rejects with "Transaction failed to sanitize
-            // accounts offsets correctly". So we resolve no ALTs and
-            // inline every account; JUPITER_MAX_ACCOUNTS_HINT=16 keeps
-            // the tx within the 1232-byte wire cap.
+            // Re-enable ALT compression on the parent tx. The prior
+            // "Jupiter CPI cannot use ALTs" claim came from a 2026-05-12
+            // sanitize-error we never root-caused at the time; per the
+            // v0_with_alts_fits_under_wire_cap test, the same shape
+            // compiles fine offline. Without ALTs, Jupiter routes deeper
+            // than ~22 accounts (most non-trivial pairs — USDC↔W, JUP,
+            // niche memes) can't fit under Solana's 1232-byte v0 cap.
+            // With ALTs we comfortably handle 40+ accounts.
             //
-            // _lookup_table_cache is kept in the executor signature for
-            // the bridge dispatcher path (which doesn't CPI-relay
-            // Jupiter and therefore CAN use ALTs); deliberately unused
-            // here.
-            let _ = lookup_table_cache;
-            let _ = build.addresses_by_lookup_table_address;
-            let alts: Vec<solana_sdk::address_lookup_table::AddressLookupTableAccount> = Vec::new();
+            // If a sanitize error re-surfaces we'll have a real tx
+            // signature this time (preflight is on) and can investigate
+            // the actual cause rather than speculate.
+            let alt_keys = jupiter::lookup_table_pubkeys(&build.addresses_by_lookup_table_address)?;
+            let alts = lookup_table_cache.resolve_many(rpc, &alt_keys).await?;
 
             // Treasury's output ATA — derived from on-chain
             // Config.treasury (cached) and the swap's output mint. The
