@@ -24,6 +24,17 @@ primary_region = 'iad'
 [deploy]
   strategy = 'immediate'
 
+# Auto-respawn on panic / OOM-kill / SIGKILL. Without this, an unclean
+# exit leaves Fly's init alive while the keeper binary is gone, machine
+# state reads `started` but the bot is dark until a manual
+# `fly machine restart`. Incident on 2026-05-12 lost ~26 minutes this
+# way after a successful fire. `on-failure` (not `always`) means a
+# clean exit 0 won't loop; retries=20 absorbs transient RPC/WS outages
+# without infinite-looping on a deterministic crash.
+[[restart]]
+  policy = 'on-failure'
+  retries = 20
+
 [env]
   CLUSTER = 'mainnet-beta'
 
