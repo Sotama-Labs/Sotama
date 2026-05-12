@@ -732,6 +732,13 @@ async fn build_action_ix(
                 &automation_input_ata,
                 &destination_output_ata,
             )?;
+            // Locate the output mint within Jupiter's inner accounts —
+            // it's always there because the AMM hops need it for SPL
+            // transfers. The on-chain handler reads `decimals` from
+            // this account for `transfer_checked` and validates the
+            // pubkey matches `ActionSpec::Swap.output_mint` so a
+            // hostile keeper can't substitute a different mint.
+            let output_mint_idx = jupiter::locate_mint_index(&inner_accounts, output_mint)?;
 
             // Per Jupiter docs: "CPI cannot use Address Lookup Tables"
             // (https://dev.jup.ag/docs/swap/build/common-instructions).
@@ -773,8 +780,8 @@ async fn build_action_ix(
                     inner_data,
                     input_idx,
                     output_idx,
+                    output_mint_idx,
                     &treasury_output_ata,
-                    output_mint,
                     &output_token_program,
                     linked_downstream.as_ref(),
                 ),
@@ -985,6 +992,61 @@ mod tests {
         );
     }
 
+    /// Sender-mode variant: identical 36-account Jupiter route, ALTs
+    /// covering 21 of them, BUT we additionally append the 0.0002 SOL
+    /// Jito tip ix the keeper emits when `KEEPER_USE_SENDER=1`. The
+    /// tip adds one new inline account (the random tip recipient —
+    /// not in any ALT, so 32 bytes of inline pubkey) plus ~12 bytes of
+    /// `SystemProgram::transfer` ix data and an AccountMeta header.
+    /// This proves the worst-case real-world tx — Token-2022 output
+    /// (output_mint outer account already in the scenario) + Sender
+    /// tip — still fits under 1232 bytes after the post-migration
+    /// outer-frame changes.
+    #[tokio::test]
+    async fn v0_with_alts_and_sender_tip_fits_under_wire_cap() {
+        use solana_sdk::hash::Hash;
+        use solana_sdk::message::v0::Message as MessageV0;
+        use solana_sdk::message::VersionedMessage;
+        use solana_sdk::signature::Signature;
+        use solana_sdk::transaction::VersionedTransaction;
+        use solana_sdk::system_instruction;
+
+        let (mut ixs, alts, payer) =
+            build_realistic_swap_scenario(/*alt_resident=*/ 21);
+        // Append the Jito tip ix exactly like the executor's hot path
+        // when `cfg.use_sender == true`.
+        ixs.push(system_instruction::transfer(
+            &payer,
+            &Pubkey::new_unique(),
+            200_000, // 0.0002 SOL minimum per Helius docs
+        ));
+        let blockhash = Hash::new_unique();
+        let message_v0 = MessageV0::try_compile(&payer, &ixs, &alts, blockhash)
+            .expect("MessageV0::try_compile");
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::V0(message_v0),
+        };
+        let serialized = bincode::serialize(&tx).expect("serialize");
+
+        assert!(
+            serialized.len() <= TX_WIRE_SIZE_LIMIT,
+            "Sender-mode tx (v0+ALT+tip) exceeded wire cap: {} > {} (static keys: {}, alts: {})",
+            serialized.len(),
+            TX_WIRE_SIZE_LIMIT,
+            tx.message.static_account_keys().len(),
+            alts.len(),
+        );
+        // Surface the margin in CI logs so a future change tightening
+        // the budget is visible before it bites in production.
+        eprintln!(
+            "Sender-mode wire-size headroom: {} bytes (limit {}, actual {})",
+            TX_WIRE_SIZE_LIMIT - serialized.len(),
+            TX_WIRE_SIZE_LIMIT,
+            serialized.len(),
+        );
+    }
+
     /// Shared fixture for both v0 tests. Builds the same instructions
     /// list send_one builds in production:
     ///   1. ComputeBudget::set_compute_unit_limit
@@ -1051,10 +1113,13 @@ mod tests {
             &automation,
             &inner_accounts,
             inner_data,
-            0,
-            1,
+            0, // input_ata_index
+            1, // output_ata_index
+            2, // output_mint_index — points into inner_accounts (any
+               // index is fine for the byte-count test; on-chain
+               // validates the pubkey matches action.output_mint, but
+               // production won't reach the wire-size compile).
             &Pubkey::new_unique(), // treasury_output_ata
-            &Pubkey::new_unique(), // output_mint
             &crate::program::spl_token_program_id().clone(), // token_program (legacy SPL for the wire-size test)
             None,
         );

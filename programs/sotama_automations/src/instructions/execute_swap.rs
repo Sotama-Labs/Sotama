@@ -3,9 +3,7 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::invoke_signed,
 };
-use anchor_spl::token_interface::{
-    self, Mint as TokenInterfaceMint, TokenInterface, TransferChecked,
-};
+use anchor_spl::token_interface::{self, TokenInterface, TransferChecked};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationExecuted, AutomationFilled, AutomationFinished};
@@ -40,6 +38,22 @@ fn decode_token_account_base(data: &[u8]) -> Result<(Pubkey, Pubkey, u64)> {
             .map_err(|_| error!(SotamaError::BadSwapAccounts))?,
     );
     Ok((mint, owner, amount))
+}
+
+/// Decimals byte of an SPL Mint account. Position 44 in both legacy
+/// SPL and Token-2022 base mint layouts (the extension area starts
+/// past byte 82 in Token-2022, so the base field offset is identical).
+/// Used in execute_swap to read the output mint's decimals from a
+/// `remaining_accounts` entry without materializing a typed
+/// `InterfaceAccount<Mint>` — the wire-size savings of NOT putting
+/// the mint in the outer account list is what keeps Sender-mode swap
+/// txs comfortably under Solana's 1232-byte v0 cap (Token-2022 routes
+/// can return 36+ inner accounts; every byte counts).
+fn read_mint_decimals(data: &[u8]) -> Result<u8> {
+    if data.len() < 82 {
+        return err!(SotamaError::BadCloseMint);
+    }
+    Ok(data[44])
 }
 
 /// Execute a Jupiter v6 swap using funds held in the Automation PDA's
@@ -100,17 +114,16 @@ pub struct ExecuteSwap<'info> {
     #[account(mut)]
     pub treasury_output_ata: UncheckedAccount<'info>,
 
-    /// Output mint of the swap. Passed as an account here (rather than
-    /// pulled from `action`) because `transfer_checked` requires the
-    /// mint account in the CPI, AND we need its `decimals` value. The
-    /// handler validates the key against `ActionSpec::Swap.output_mint`
-    /// so the caller can't sneak in the wrong mint. Polymorphic over
-    /// legacy SPL vs Token-2022.
-    pub output_mint: InterfaceAccount<'info, TokenInterfaceMint>,
-
     /// Token program for the output mint. Accepts either legacy SPL or
     /// Token-2022 at runtime; Anchor validates it matches the mint's
     /// owning program.
+    ///
+    /// Note: the output MINT account itself is NOT a top-level account
+    /// here — it's read from `remaining_accounts` at
+    /// `output_mint_index` (the keeper locates it within Jupiter's
+    /// inner ix accounts). Keeps the outer tx ~32 bytes smaller, which
+    /// is what holds the Sender-mode worst-case route under the
+    /// 1232-byte v0 wire cap.
     pub token_program: Interface<'info, TokenInterface>,
 }
 
@@ -120,6 +133,16 @@ pub fn handler<'info>(
     inner_ix_account_metas: Vec<SwapAccountMeta>,
     input_ata_index: u8,
     output_ata_index: u8,
+    // Index into `remaining_accounts` (specifically into the Jupiter
+    // inner ix's accounts at positions 0..inner_count) where the
+    // output mint account lives. Jupiter always includes both mints
+    // in its swap-ix accounts; the keeper locates the output mint's
+    // position and passes it here so the on-chain handler can read
+    // the mint's `decimals` and use it as the `mint` account in the
+    // fee-debit `transfer_checked` CPI. Validated against the
+    // action's locked-in `output_mint` pubkey below — a malicious
+    // keeper can't substitute a different mint at this index.
+    output_mint_index: u8,
 ) -> Result<()> {
     require!(!ctx.accounts.config.paused, SotamaError::Paused);
     require!(!ctx.accounts.config.shutdown, SotamaError::Shutdown);
@@ -181,7 +204,8 @@ pub fn handler<'info>(
     );
     require!(
         (input_ata_index as usize) < inner_count
-            && (output_ata_index as usize) < inner_count,
+            && (output_ata_index as usize) < inner_count
+            && (output_mint_index as usize) < inner_count,
         SotamaError::BadSwapAccounts
     );
     require!(
@@ -205,18 +229,19 @@ pub fn handler<'info>(
     let input_ata_info = &remaining[input_ata_index as usize];
     let output_ata_info = &remaining[output_ata_index as usize];
 
-    // Validate that the on-stack `output_mint` account matches the
-    // action's recorded output mint — the keeper supplies this account
-    // but on-chain decides whether to trust it. Without this check, a
-    // misformed (or hostile) keeper-built ix could pass a different
-    // mint whose decimals mismatch the actual output ATA, leading
-    // `transfer_checked` to fail with `MintMismatch` (safe failure) or
-    // worse, allow a tax-extension fee miscalculation.
-    require_keys_eq!(
-        ctx.accounts.output_mint.key(),
-        output_mint,
-        SotamaError::WrongOutputMint
-    );
+    // Validate the keeper-supplied output_mint_index points at the
+    // action's recorded output mint. We read the mint from
+    // `remaining_accounts` rather than as a typed outer account to
+    // save ~32 bytes of inline tx data per swap (critical for Sender-
+    // mode wire-size budget — Token-2022 routes can be 36+ accounts).
+    // The action's locked-in output_mint is canonical, so a hostile
+    // keeper can't substitute a different mint at this index.
+    let output_mint_info = &remaining[output_mint_index as usize];
+    require_keys_eq!(*output_mint_info.key, output_mint, SotamaError::WrongOutputMint);
+    let output_mint_decimals = {
+        let mint_data = output_mint_info.try_borrow_data()?;
+        read_mint_decimals(&mint_data)?
+    };
 
     // Snapshot balances so we can verify the post-CPI increase and
     // compute the actual fill amounts for the AutomationFilled event.
@@ -358,14 +383,14 @@ pub fn handler<'info>(
                 ctx.accounts.token_program.to_account_info(),
                 TransferChecked {
                     from: output_ata_info.to_account_info(),
-                    mint: ctx.accounts.output_mint.to_account_info(),
+                    mint: output_mint_info.to_account_info(),
                     to: ctx.accounts.treasury_output_ata.to_account_info(),
                     authority: automation.to_account_info(),
                 },
                 signer_seeds,
             ),
             swap_fee,
-            ctx.accounts.output_mint.decimals,
+            output_mint_decimals,
         )?;
     }
     // `received` for the user-facing fill is what stays in the output

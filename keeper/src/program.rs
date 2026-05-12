@@ -206,15 +206,20 @@ pub fn build_execute_swap_ix(
     inner_data: Vec<u8>,
     input_ata_index: u8,
     output_ata_index: u8,
+    // Index into `inner_accounts` where the output mint pubkey
+    // appears. Jupiter always includes both mints in its swap ix's
+    // accounts; the keeper locates the output mint's position via
+    // `locate_mint_index` (jupiter.rs) and passes it here. The
+    // on-chain handler reads the mint at this index for
+    // `transfer_checked`'s mint argument + decimals — saves ~32 bytes
+    // of inline tx data vs adding the mint as a separate outer
+    // account, which is what keeps Sender-mode swap txs under the
+    // 1232-byte cap even with 36-account Jupiter routes.
+    output_mint_index: u8,
     // Treasury's ATA for the swap's output mint. The handler enforces
     // mint = output_mint and owner = Config.treasury, then routes the
     // protocol fee here.
     treasury_output_ata: &Pubkey,
-    // Output mint pubkey. Added in the Token-2022 migration: the
-    // on-chain handler needs `transfer_checked` for the fee debit,
-    // which requires the mint account in the CPI. Address-checked
-    // against `ActionSpec::Swap.output_mint` on-chain.
-    output_mint: &Pubkey,
     // Token program owning the output mint. Pass
     // `spl_token_program_id()` for legacy SPL mints and
     // `token_2022_program_id()` for Token-2022. Anchor validates this
@@ -244,23 +249,27 @@ pub fn build_execute_swap_ix(
         data.push(if m.is_writable { 1 } else { 0 });
     }
 
-    // input_ata_index, output_ata_index
+    // input_ata_index, output_ata_index, output_mint_index — order
+    // MUST match the on-chain handler's positional Borsh decoding.
     data.push(input_ata_index);
     data.push(output_ata_index);
+    data.push(output_mint_index);
 
     // Outer accounts: keeper, config, automation, jupiter_program,
-    // treasury_output_ata, output_mint, token_program, then every
-    // Jupiter inner-ix account, then optionally the downstream PDA.
-    // The PDA itself signs via invoke_signed (the keeper just
-    // authorizes). Order MUST match the on-chain `ExecuteSwap` struct
-    // field order — Anchor positional-decodes the outer accounts.
+    // treasury_output_ata, token_program, then every Jupiter inner-ix
+    // account, then optionally the downstream PDA. The PDA itself
+    // signs via invoke_signed (the keeper just authorizes). Order
+    // MUST match the on-chain `ExecuteSwap` struct field order —
+    // Anchor positional-decodes the outer accounts. The output_mint
+    // is NOT a top-level account anymore — the handler reads it from
+    // remaining_accounts at output_mint_index (Jupiter's inner ix
+    // already carries it), saving ~32 bytes of inline tx data.
     let mut accounts = vec![
         AccountMeta::new_readonly(*keeper, true),
         AccountMeta::new_readonly(*config, false),
         AccountMeta::new(*automation, false),
         AccountMeta::new_readonly(*jupiter_program_id(), false),
         AccountMeta::new(*treasury_output_ata, false),
-        AccountMeta::new_readonly(*output_mint, false),
         AccountMeta::new_readonly(*token_program, false),
     ];
     // Strip the `is_signer` flag from every inner account before adding

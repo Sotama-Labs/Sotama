@@ -345,6 +345,25 @@ pub fn locate_ata_indices(
     Ok((i as u8, o as u8))
 }
 
+/// Find the index of a specific mint pubkey in the inner-ix accounts
+/// list. Jupiter always includes both input and output mints among
+/// the swap's accounts (the AMMs need them for SPL transfers). We
+/// reuse this index in `execute_swap` so the on-chain handler can
+/// read the output mint's decimals + use it as the `mint` account in
+/// `transfer_checked` for the fee debit — without adding a separate
+/// outer mint account (which would cost ~32 bytes of inline tx data
+/// and tip Sender-mode swap txs over the 1232-byte wire cap).
+pub fn locate_mint_index(accounts: &[AccountMeta], mint: &Pubkey) -> Result<u8> {
+    let i = accounts
+        .iter()
+        .position(|a| a.pubkey == *mint)
+        .ok_or_else(|| anyhow!("mint {mint} missing from Jupiter accounts"))?;
+    if i > u8::MAX as usize {
+        return Err(anyhow!("Jupiter returned > 255 accounts; impossible under CPI"));
+    }
+    Ok(i as u8)
+}
+
 /// Decode the base64 ix data returned by `/swap/v2/build`.
 pub fn decode_inner_data(data_b64: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD

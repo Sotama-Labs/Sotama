@@ -174,6 +174,7 @@ pub mod sotama_automations {
         inner_ix_account_metas: Vec<jupiter::SwapAccountMeta>,
         input_ata_index: u8,
         output_ata_index: u8,
+        output_mint_index: u8,
     ) -> Result<()> {
         instructions::execute_swap::handler(
             ctx,
@@ -181,6 +182,7 @@ pub mod sotama_automations {
             inner_ix_account_metas,
             input_ata_index,
             output_ata_index,
+            output_mint_index,
         )
     }
 
