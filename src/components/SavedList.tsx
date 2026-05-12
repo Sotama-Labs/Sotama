@@ -18,12 +18,19 @@ function AutomationRow({
   onDelete,
   isLast,
   refreshKey,
+  waitingOnUpstream = false,
 }: {
   a: Automation;
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
   isLast: boolean;
   refreshKey: number;
+  /** Chain downstream rule with `consume_upstream_output: true` whose
+   *  upstream hasn't fired yet. The keeper is technically polling its
+   *  trigger but every executor entry short-circuits via
+   *  `SkipEmptyUpstreamATA` — surface that as a distinct visual state
+   *  rather than the misleading green "Running" pulse. */
+  waitingOnUpstream?: boolean;
 }) {
   const [hover, setHover] = useState(false);
 
@@ -69,6 +76,13 @@ function AutomationRow({
   const link = a.link;
   const fundingError = link?.fundingError;
 
+  // "Waiting on upstream" overrides the running treatment for chain
+  // downstream rules whose upstream hasn't produced input yet — the
+  // keeper will silently skip every trigger fire because the rule's
+  // input ATA is empty, so calling it "Running · pulse" is dishonest.
+  // Only meaningful when the rule isn't terminal and isn't paused.
+  const waiting = waitingOnUpstream && a.running && !terminal && !fundingError;
+
   // Status copy + colors
   const dotColor = fundingError
     ? "var(--red)"
@@ -76,6 +90,8 @@ function AutomationRow({
     ? "var(--accent)"
     : closed
     ? "var(--label-quaternary)"
+    : waiting
+    ? "var(--label-tertiary)"
     : a.running
     ? "var(--green)"
     : "var(--label-quaternary)";
@@ -86,6 +102,8 @@ function AutomationRow({
     ? `Completed${a.executedAt ? ` · fired ${formatTimeAgo(a.executedAt)}` : ""}`
     : closed
     ? `Closed${a.closedAt ? ` · refunded ${formatTimeAgo(a.closedAt)}` : ""}`
+    : waiting
+    ? "Waiting on upstream"
     : a.running
     ? `Running · last checked ${a.lastCheck}`
     : "Paused";
@@ -124,7 +142,7 @@ function AutomationRow({
         </span>
       ) : (
         <span
-          className={a.running && !terminal ? "pulse-dot" : ""}
+          className={a.running && !terminal && !waiting ? "pulse-dot" : ""}
           style={{
             width: "0.5rem",
             height: "0.5rem",

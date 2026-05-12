@@ -60,6 +60,43 @@ export async function fetchJupiterPriceUSD(
   }
 }
 
+/** Batched USD-price fetch for many mints in one round-trip. Returns a
+ *  `Record<mint, usdPerUnit>` for whichever mints Jupiter could price;
+ *  missing entries get omitted (the caller decides whether to treat them
+ *  as 0 or as "unknown").
+ *
+ *  Used by the StatsStrip volume calculation, where we need a USD value
+ *  for every input mint that ever fired. Doing one batched call instead
+ *  of N parallel ones keeps a dashboard render at ~1 outbound HTTP hit
+ *  rather than ~N. */
+export async function fetchJupiterPricesBatchUSD(
+  mints: string[],
+): Promise<Record<string, number>> {
+  const uniq = Array.from(new Set(mints.filter(Boolean)));
+  if (uniq.length === 0) return {};
+  // Jupiter Price v3 accepts comma-separated ids in one request.
+  const url = `${JUPITER_PRICE_URL}?ids=${uniq.map(encodeURIComponent).join(",")}`;
+  try {
+    const res = await fetch(url, { cache: "no-store", headers: jupiterHeaders() });
+    if (!res.ok) return {};
+    const json = (await res.json()) as Record<
+      string,
+      { usdPrice?: number | null } | undefined
+    >;
+    const out: Record<string, number> = {};
+    for (const m of uniq) {
+      const entry = json?.[m];
+      const usd = entry?.usdPrice;
+      if (typeof usd === "number" && Number.isFinite(usd) && usd > 0) {
+        out[m] = usd;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** Token metadata from Jupiter's tokens-v2 search endpoint. The mint is
  *  passed as the query string so the endpoint returns a single (or
  *  near-single) result keyed by ticker substring match — the first hit

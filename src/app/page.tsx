@@ -353,10 +353,24 @@ export default function Page() {
 
   useOnChainAutomationSync(automations, patchAutomation);
 
-  /** Close one rule on-chain (refund deposit) and remove from local state.
-   *  Returns true if the close succeeded (or wasn't needed); false on
-   *  error. The error surface lives in the calling cascade so partial
-   *  failures can be reported without losing already-closed siblings. */
+  /** Close one rule on-chain (refund deposit) and preserve it in local
+   *  state as terminal/closed history. Returns true if the close
+   *  succeeded (or wasn't needed); false on error. The error surface
+   *  lives in the calling cascade so partial failures can be reported
+   *  without losing already-closed siblings.
+   *
+   *  Two paths:
+   *  1. Live rule (pubkey set, closedAt unset): close on chain, then
+   *     mark the record `closedAt + running:false`. Record stays in
+   *     localStorage so the user can see their completed/closed history
+   *     in Active Strategies, even after no active rule is running.
+   *  2. Already-terminal record (closedAt set, or never funded): treat
+   *     as a local-only "Remove" — fully drop from state. This is the
+   *     hover-only "Remove" affordance on terminal rows.
+   *
+   *  Prior behavior unconditionally `filter`-removed on success, which
+   *  meant "Close & collect" on a fired rule would erase its history
+   *  from the UI the moment the refund tx landed. */
   const closeOneRule = useCallback(
     async (id: string): Promise<boolean> => {
       const target = automations.find((a) => a.id === id);
@@ -378,9 +392,10 @@ export default function Page() {
         } catch (e) {
           if (e instanceof OrphanedAutomationError) {
             // PDA belongs to a previous program ID (devnet rotation
-            // orphaned this record). Drop the local entry; deposit, if
-            // any, is recoverable only by closing against the prior
-            // program.
+            // orphaned this record). The local record references a
+            // dead program — fully drop it (no point preserving
+            // unactionable history). Deposit, if any, is recoverable
+            // only by closing against the prior program.
             console.warn(
               "automation orphaned by program rotation; removing locally",
               id,
@@ -389,15 +404,36 @@ export default function Page() {
             setToast(
               "Removed stale rule from prior program version — funds (if any) require manual recovery",
             );
-            // fall through to local cleanup below
-          } else {
-            const msg = (e as Error).message || "close failed";
-            console.error("close_automation failed", id, e);
-            setToast(`Close tx failed: ${msg.slice(0, 80)}`);
-            return false;
+            setAutomations((prev) => prev.filter((a) => a.id !== id));
+            try {
+              await deleteAutomation(id);
+            } catch {
+              // local removal succeeded; backend will reconcile
+            }
+            return true;
           }
+          const msg = (e as Error).message || "close failed";
+          console.error("close_automation failed", id, e);
+          setToast(`Close tx failed: ${msg.slice(0, 80)}`);
+          return false;
         }
+        // On-chain close succeeded — keep the record as terminal history.
+        const now = new Date().toISOString();
+        setAutomations((prev) =>
+          prev.map((a) =>
+            a.id === id ? { ...a, closedAt: now, running: false } : a,
+          ),
+        );
+        try {
+          await deleteAutomation(id);
+        } catch {
+          // local state already patched; backend will reconcile
+        }
+        return true;
       }
+      // Already terminal (closedAt set OR never on chain) — explicit
+      // local-only remove. This is the hover-only "Remove" button on
+      // terminal rows in SavedList / ActiveStrategiesPage.
       setAutomations((prev) => prev.filter((a) => a.id !== id));
       try {
         await deleteAutomation(id);
