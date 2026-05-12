@@ -137,12 +137,18 @@ export function SwapEditor({
       {linkClassUpstream != null && (
         <button
           type="button"
-          onClick={() =>
+          onClick={() => {
+            const nextConsume = !draft.consumeUpstreamOutput;
             onChange({
               ...draft,
-              consumeUpstreamOutput: !draft.consumeUpstreamOutput,
-            })
-          }
+              consumeUpstreamOutput: nextConsume,
+              // Default amount to 0 when turning consume ON so the
+              // frozen SwapAction.amount stays a `number` (the on-chain
+              // amount_in is overridden to u64::MAX in this case
+              // anyway — see linked-chains.ts:buildSwapAction).
+              amount: nextConsume && draft.amount == null ? 0 : draft.amount,
+            });
+          }}
           style={{
             display: "inline-flex",
             alignItems: "center",

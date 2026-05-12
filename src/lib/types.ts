@@ -532,7 +532,13 @@ export function isActionComplete(draft: DraftAction): draft is Action {
         draft.inputToken != null &&
         draft.outputToken != null &&
         draft.amount != null &&
-        draft.amount > 0
+        // When consuming upstream output the keeper resolves the per-fire
+        // amount from the PDA's input ATA balance at fire time, so a
+        // zero (or any) typed amount is fine — the typed value is only
+        // used as a hint that's overridden on-chain with u64::MAX in
+        // linked-chains.ts:buildSwapAction. Only fixed-amount rules
+        // need amount > 0 at the UI gate.
+        (draft.consumeUpstreamOutput === true || draft.amount > 0)
       );
   }
 }
