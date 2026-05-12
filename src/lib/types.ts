@@ -18,6 +18,14 @@ export type TokenRef = {
   logo?: string;
   decimals: number;
   metadataSource: TokenMetadataSource;
+  /** Token program that owns this mint. `TokenkegQ…` for legacy SPL,
+   *  `TokenzQdB…` for Token-2022. Drives ATA derivation (the token
+   *  program ID is a PDA seed for the associated-token-account
+   *  address) and the `token_program` slot in
+   *  `create_automation_swap[_linked]` / `execute_swap`. Optional
+   *  because canonical hardcoded mints (SOL, USDC, …) are always
+   *  legacy SPL; callers default to legacy when unset. */
+  tokenProgram?: string;
 };
 
 export type AssetClass = "Crypto" | "Equity" | "Commodity" | "FX" | "Metal";

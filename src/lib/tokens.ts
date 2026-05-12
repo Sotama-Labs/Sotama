@@ -1,8 +1,70 @@
 "use client";
 
+import { Connection, PublicKey } from "@solana/web3.js";
 import type { TokenRef, TokenMetadataSource } from "./types";
 import { RPC_URL, MAINNET_METADATA_RPC_URL } from "./rpc";
 import { fetchJupiterTokenMetadata } from "./jupiter";
+
+/** Token-2022 mint extension type code for the TransferHook extension.
+ *  Hook code runs via CPI on every transfer and can fail closed, drain
+ *  ATAs, or sandwich the caller — we can't safely relay a Jupiter swap
+ *  through such a mint. Other Token-2022 extensions (transfer fees,
+ *  confidential transfers, metadata, …) are fine because
+ *  `transfer_checked` handles them deterministically.
+ *  Reference: spl-token-2022/src/extension/mod.rs, ExtensionType variants. */
+const EXTENSION_TYPE_TRANSFER_HOOK = 14;
+
+/** Parse a Token-2022 Mint account's TLV extension list and return
+ *  `true` iff the `TransferHook` extension is present. Returns `false`
+ *  for legacy SPL mints (which have no extension area) and for
+ *  Token-2022 mints that don't carry the hook.
+ *
+ *  Layout (spl-token-2022):
+ *    bytes 0-81  : base mint data (same as legacy SPL)
+ *    bytes 82-164: zero padding to the standard token-account length (165)
+ *    byte  165   : account-type marker (1 = Mint) — only present when the
+ *                  mint has at least one extension
+ *    bytes 166+  : repeated TLV records:
+ *                    u16 LE extension type
+ *                    u16 LE extension length
+ *                    `length` bytes of extension data
+ *
+ *  Mints exactly 82 bytes long have no extensions. We only scan past 166
+ *  if the data length warrants it. */
+function mintBytesContainTransferHook(raw: Uint8Array): boolean {
+  if (raw.length <= 165) return false; // legacy SPL or extension-less Token-2022
+  // Optional sanity: byte 165 should be 1 (Mint marker) but the TLV scan
+  // is conservative regardless — if the marker is missing we'd just walk
+  // off the end without matching anything.
+  let offset = 166;
+  while (offset + 4 <= raw.length) {
+    const extType = raw[offset] | (raw[offset + 1] << 8);
+    const extLen = raw[offset + 2] | (raw[offset + 3] << 8);
+    if (extType === EXTENSION_TYPE_TRANSFER_HOOK) return true;
+    // 0 = Uninitialized — end of TLV list (or zero-padding). Stop.
+    if (extType === 0) return false;
+    offset += 4 + extLen;
+  }
+  return false;
+}
+
+/** True iff `mint`'s on-chain account carries the TransferHook
+ *  extension. Performs ONE `getAccountInfo` and returns `false` on any
+ *  error (cautious default — if we can't tell, we let the standard
+ *  validation flow decide). For Token-2022 mints flagged here, we
+ *  reject at the picker so the user sees a clean explanation before
+ *  attempting to fund an automation. */
+async function mintHasTransferHook(rpcUrl: string, mint: string): Promise<boolean> {
+  try {
+    const conn = new Connection(rpcUrl, "confirmed");
+    const info = await conn.getAccountInfo(new PublicKey(mint), "confirmed");
+    if (!info) return false;
+    const bytes = info.data instanceof Uint8Array ? info.data : new Uint8Array(info.data);
+    return mintBytesContainTransferHook(bytes);
+  } catch {
+    return false;
+  }
+}
 
 /* ── Canonical mints that always resolve nicely ───────────────────── */
 /* Mainnet mints; symbols + logos hold across networks. The devnet wallet
@@ -213,27 +275,40 @@ function dasToTokenRef(
   };
 }
 
-/** Regular SPL Token program. Sotama's on-chain handlers use
- *  `anchor_spl::token::TokenAccount` which only deserializes accounts
- *  owned by this program. Token-2022 mints are gated out at resolve
- *  time so users get a clear message instead of a cryptic
- *  `IncorrectProgramId` simulation failure. */
+/** Token program IDs. Token-2022 mints WITHOUT `transfer_hook` are now
+ *  supported end-to-end (program uses `token_interface::transfer_checked`
+ *  which dispatches to either runtime). Hook-bearing mints stay
+ *  blocked because the hook can execute arbitrary CPI on every
+ *  transfer — a hostile-code surface we won't relay. */
 const REGULAR_SPL_TOKEN_PROGRAM =
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM =
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 export type ResolveResult =
   | { status: "ok"; token: TokenRef }
   | { status: "manual"; mint: string }
   | { status: "invalid" }
   | {
-      /** Mint exists and is tradable on Jupiter, but lives on the
-       *  Token-2022 program. Sotama doesn't yet support those
-       *  (transfer hooks / fees require InterfaceAccount-based
-       *  handlers in the program). */
-      status: "token2022_unsupported";
+      /** Mint is a Token-2022 mint carrying the `transfer_hook`
+       *  extension. The hook runs arbitrary CPI on every transfer and
+       *  is unsafe to relay; the on-chain program refuses these at
+       *  create time too. Surface a clean "not supported" message so
+       *  users don't waste a tx attempting it. */
+      status: "transfer_hook_unsupported";
       mint: string;
       symbol: string;
       name: string;
+    }
+  | {
+      /** Mint is owned by some program other than legacy SPL or
+       *  Token-2022. Almost certainly an NFT or a misformed token; we
+       *  can't route swaps through it. */
+      status: "unknown_token_program";
+      mint: string;
+      symbol: string;
+      name: string;
+      tokenProgram: string;
     };
 
 /** Resolve a pasted contract address to a TokenRef, with cache + fallback chain. */
@@ -261,23 +336,39 @@ export async function resolveToken(input: string): Promise<ResolveResult> {
   // logo even when the local devnet RPC has no metadata for them.
   const fromJupiter = await fetchJupiterTokenMetadata(mint);
   if (fromJupiter) {
-    // Token-2022 mints (transfer hooks, fees, confidential transfers,
-    // …) are gated out at the resolver layer so the picker can surface
-    // a clean "coming soon" message before the user tries to fund the
-    // automation. Without this, the create_automation tx fails at sim
-    // with a cryptic `IncorrectProgramId` because anchor_spl::token's
-    // ATA-create ix asks the regular SPL Token program to size a mint
-    // it doesn't own.
+    // Allow legacy SPL and Token-2022 mints; reject anything else.
+    // The on-chain program now uses `Interface<TokenInterface>` so
+    // both runtimes work end-to-end — but Token-2022 mints that
+    // carry the `transfer_hook` extension stay blocked because the
+    // hook can run arbitrary CPI on every transfer (security gate
+    // matched by the program's `assert_no_transfer_hook` check).
     if (
       fromJupiter.tokenProgram &&
-      fromJupiter.tokenProgram !== REGULAR_SPL_TOKEN_PROGRAM
+      fromJupiter.tokenProgram !== REGULAR_SPL_TOKEN_PROGRAM &&
+      fromJupiter.tokenProgram !== TOKEN_2022_PROGRAM
     ) {
       return {
-        status: "token2022_unsupported",
+        status: "unknown_token_program",
         mint: fromJupiter.mint,
         symbol: fromJupiter.symbol,
         name: fromJupiter.name,
+        tokenProgram: fromJupiter.tokenProgram,
       };
+    }
+    if (fromJupiter.tokenProgram === TOKEN_2022_PROGRAM) {
+      // One on-chain probe to confirm the mint isn't carrying the
+      // hostile `transfer_hook` extension. The on-chain program would
+      // also reject at create time, but failing here saves the user
+      // a wasted signing flow.
+      const hasHook = await mintHasTransferHook(RPC_URL, fromJupiter.mint);
+      if (hasHook) {
+        return {
+          status: "transfer_hook_unsupported",
+          mint: fromJupiter.mint,
+          symbol: fromJupiter.symbol,
+          name: fromJupiter.name,
+        };
+      }
     }
     const token: TokenRef = {
       mint: fromJupiter.mint,
@@ -286,6 +377,7 @@ export async function resolveToken(input: string): Promise<ResolveResult> {
       logo: fromJupiter.logo,
       decimals: fromJupiter.decimals,
       metadataSource: "mainnet",
+      tokenProgram: fromJupiter.tokenProgram,
     };
     writeCache(token);
     return { status: "ok", token };

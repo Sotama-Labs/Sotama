@@ -18,7 +18,8 @@ type ResolveState =
   | { phase: "resolved"; token: TokenRef }
   | { phase: "manual"; mint: string; symbol: string; decimals: string }
   | { phase: "invalid"; input: string }
-  | { phase: "token2022"; mint: string; symbol: string; name: string };
+  | { phase: "transferHook"; mint: string; symbol: string; name: string }
+  | { phase: "unknownProgram"; mint: string; symbol: string; name: string; tokenProgram: string };
 
 export function TokenPicker({
   title = "Pick a token",
@@ -77,12 +78,20 @@ export function TokenPicker({
       if (res.status === "ok") setState({ phase: "resolved", token: res.token });
       else if (res.status === "manual")
         setState({ phase: "manual", mint: res.mint, symbol: "", decimals: "" });
-      else if (res.status === "token2022_unsupported")
+      else if (res.status === "transfer_hook_unsupported")
         setState({
-          phase: "token2022",
+          phase: "transferHook",
           mint: res.mint,
           symbol: res.symbol,
           name: res.name,
+        });
+      else if (res.status === "unknown_token_program")
+        setState({
+          phase: "unknownProgram",
+          mint: res.mint,
+          symbol: res.symbol,
+          name: res.name,
+          tokenProgram: res.tokenProgram,
         });
       else setState({ phase: "invalid", input: trimmed });
     });
@@ -326,7 +335,7 @@ export function TokenPicker({
         </div>
       )}
 
-      {state.phase === "token2022" && (
+      {state.phase === "transferHook" && (
         <div
           className="hig-caption-1"
           style={{
@@ -339,10 +348,11 @@ export function TokenPicker({
             lineHeight: 1.4,
           }}
         >
-          <strong>{state.symbol}</strong> ({state.name}) is a Token-2022 mint.
-          Sotama doesn&rsquo;t support tokenized stocks (xStocks) or other
-          Token-2022 mints yet — they need custom on-chain handling for
-          transfer hooks and compliance checks.
+          <strong>{state.symbol}</strong> ({state.name}) is a Token-2022 mint
+          with a <em>transfer hook</em> extension. Transfer hooks run
+          arbitrary code on every transfer, which we can&rsquo;t safely
+          relay through automation — your funds could be redirected or
+          frozen by the hook.
           <div
             className="hig-caption-2"
             style={{
@@ -350,9 +360,28 @@ export function TokenPicker({
               marginTop: "0.375rem",
             }}
           >
-            Coming in a future release. Use regular SPL tokens (SOL, USDC,
-            USDT, BONK, JUP, …) for now.
+            Other Token-2022 mints (transfer fees, confidential transfers,
+            metadata, …) work fine. Only transfer-hook mints are blocked.
           </div>
+        </div>
+      )}
+
+      {state.phase === "unknownProgram" && (
+        <div
+          className="hig-caption-1"
+          style={{
+            padding: "0.5rem 0.75rem",
+            margin: "0.25rem 0 0.5rem",
+            borderRadius: "0.5rem",
+            background: "color-mix(in oklab, var(--red) 10%, transparent)",
+            border: "0.5px solid color-mix(in oklab, var(--red) 32%, transparent)",
+            color: "var(--label-primary)",
+            lineHeight: 1.4,
+          }}
+        >
+          <strong>{state.symbol}</strong> ({state.name}) is owned by an
+          unknown program ({state.tokenProgram.slice(0, 8)}…). Sotama
+          only supports legacy SPL and Token-2022 mints.
         </div>
       )}
 
