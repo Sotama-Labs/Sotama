@@ -45,15 +45,17 @@ import {
 import { BorshCoder, EventParser, type Idl } from "@coral-xyz/anchor";
 import BN from "bn.js";
 import {
-  associatedTokenAddress,
+  associatedTokenAddressForProgram,
   automationPda,
   buildCreateAutomationSwapLinkedIx,
   cadenceToOnChain,
   getProgram,
   isProgramConfigured,
   fetchConfig,
+  resolveMintTokenProgram,
   SOTAMA_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   type OnChainActionSpec,
   type OnChainTriggerSpec,
 } from "./program";
@@ -633,9 +635,32 @@ export async function sendChainCreate(params: {
     }
     seedAmounts.push(seedAmount);
 
+    // Resolve each mint's token program before deriving any ATA. Use
+    // the TokenRef-carried tokenProgram when available (set by
+    // resolveToken at picker time); otherwise probe on-chain. Doing
+    // this once per node keeps the chain-create flow at ≤ 2 extra RPC
+    // calls per node (skipped entirely when canonical / cached).
+    const swapAction = node.result.actions[0];
+    if (!swapAction || swapAction.kind !== "swap") {
+      throw new Error(`node ${i + 1}: chain rule must be Swap action`);
+    }
+    const inputTokenProgram = swapAction.inputToken.tokenProgram
+      ? new PublicKey(swapAction.inputToken.tokenProgram)
+      : await resolveMintTokenProgram(connection, onChainAction.swap.inputMint);
+    const outputTokenProgram = swapAction.outputToken.tokenProgram
+      ? new PublicKey(swapAction.outputToken.tokenProgram)
+      : await resolveMintTokenProgram(connection, onChainAction.swap.outputMint);
+
     // Pre-create owner input ATA + automation input ATA + destination
-    // output ATA (idempotent, no-ops if exists).
-    const ownerInputAta = associatedTokenAddress(owner, onChainAction.swap.inputMint);
+    // output ATA (idempotent, no-ops if exists). ATA derivation MUST
+    // use the mint's actual token program — Token-2022 mints derive a
+    // different ATA than legacy SPL for the same (owner, mint) pair
+    // because the token program is part of the PDA seed.
+    const ownerInputAta = associatedTokenAddressForProgram(
+      owner,
+      onChainAction.swap.inputMint,
+      inputTokenProgram,
+    );
     if (onChainAction.swap.inputMint.toBase58() !== SOL_MINT_STR) {
       setupIxs.push(
         createAssociatedTokenAccountIdempotentInstruction(
@@ -643,17 +668,23 @@ export async function sendChainCreate(params: {
           ownerInputAta,
           owner,
           onChainAction.swap.inputMint,
-          SPL_TOKEN_PROGRAM_ID,
+          inputTokenProgram,
         ),
       );
     }
     // Special-case wrapped SOL: head node may wrap user's native SOL
-    // into wSOL for the seed transfer. Downstream nodes don't need
-    // wrapping (they receive wSOL from the upstream swap).
+    // into wSOL for the seed transfer. wSOL (`So111…1112`) is always a
+    // legacy SPL mint — hardcoding SPL_TOKEN_PROGRAM_ID here is
+    // intentional regardless of inputTokenProgram (which equals legacy
+    // SPL too in this branch anyway, since the wSOL mint is legacy).
     if (isHead && onChainAction.swap.inputMint.toBase58() === SOL_MINT_STR) {
       const wrapLamports = BigInt(seedAmount.toString());
       estimatedWrapLamports += wrapLamports;
-      const ownerWsolAta = associatedTokenAddress(owner, NATIVE_MINT);
+      const ownerWsolAta = associatedTokenAddressForProgram(
+        owner,
+        NATIVE_MINT,
+        SPL_TOKEN_PROGRAM_ID,
+      );
       setupIxs.push(
         createAssociatedTokenAccountIdempotentInstruction(
           owner,
@@ -673,9 +704,10 @@ export async function sendChainCreate(params: {
       setupIxs.push(createSyncNativeInstruction(ownerWsolAta, SPL_TOKEN_PROGRAM_ID));
     }
     const automationPdaForNode = nodePdas[i];
-    const automationInputAta = associatedTokenAddress(
+    const automationInputAta = associatedTokenAddressForProgram(
       automationPdaForNode,
       onChainAction.swap.inputMint,
+      inputTokenProgram,
     );
     setupIxs.push(
       createAssociatedTokenAccountIdempotentInstruction(
@@ -683,15 +715,16 @@ export async function sendChainCreate(params: {
         automationInputAta,
         automationPdaForNode,
         onChainAction.swap.inputMint,
-        SPL_TOKEN_PROGRAM_ID,
+        inputTokenProgram,
       ),
     );
     // Destination output ATA: when destination = next node's PDA,
     // this ATA equals the next node's input ATA (idempotent create
     // dedups against the prior loop iteration, no harm done).
-    const destOutputAta = associatedTokenAddress(
+    const destOutputAta = associatedTokenAddressForProgram(
       destinations[i],
       onChainAction.swap.outputMint,
+      outputTokenProgram,
     );
     setupIxs.push(
       createAssociatedTokenAccountIdempotentInstruction(
@@ -699,7 +732,7 @@ export async function sendChainCreate(params: {
         destOutputAta,
         destinations[i],
         onChainAction.swap.outputMint,
-        SPL_TOKEN_PROGRAM_ID,
+        outputTokenProgram,
       ),
     );
     // Treasury's output ATA — receives the protocol swap fee on every
@@ -708,10 +741,14 @@ export async function sendChainCreate(params: {
     setupIxs.push(
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
-        associatedTokenAddress(config.treasury, onChainAction.swap.outputMint),
+        associatedTokenAddressForProgram(
+          config.treasury,
+          onChainAction.swap.outputMint,
+          outputTokenProgram,
+        ),
         config.treasury,
         onChainAction.swap.outputMint,
-        SPL_TOKEN_PROGRAM_ID,
+        outputTokenProgram,
       ),
     );
 
@@ -764,6 +801,7 @@ export async function sendChainCreate(params: {
       seedAmount,
       bridgeEnabled,
       nextNonce: startNonce + BigInt(i),
+      inputTokenProgram,
     });
     chainIxs.push(built.ix);
   }

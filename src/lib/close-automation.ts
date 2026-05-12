@@ -14,14 +14,17 @@ import {
 } from "@solana/spl-token";
 import type { Automation } from "@/lib/types";
 import {
+  associatedTokenAddressForProgram,
   buildCloseAutomationIx,
   buildCloseAutomationSplIx,
   buildCloseAutomationSwapIx,
   configPda,
   fetchConfig,
   getProgram,
+  resolveMintTokenProgram,
   SOTAMA_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
 } from "@/lib/program";
 
 /** Thrown when the on-chain account at `target.pubkey` exists but is
@@ -146,39 +149,54 @@ export async function closeAutomationOnChain(
 
   if (action.kind === "transfer" && action.token.mint !== SOL_MINT) {
     const mint = new PublicKey(action.token.mint);
+    // Detect the mint's token program — TokenRef carries it when known,
+    // else probe the mint account directly. Determines both the ATA
+    // derivation seed AND the token_program slot on the close ix.
+    const tokenProgram = await pickTokenProgram(connection, action.token.tokenProgram, mint);
     const built = await buildCloseAutomationSplIx({
       program,
       owner,
       automation,
       mint,
       treasury,
+      tokenProgram,
     });
-    tx.add(prependOwnerAtaCreate(owner, built.ownerAta, mint));
+    tx.add(prependOwnerAtaCreate(owner, built.ownerAta, mint, tokenProgram));
     tx.add(built.ix);
   } else if (action.kind === "swap") {
     const inputMint = new PublicKey(action.inputToken.mint);
+    const inputTokenProgram = await pickTokenProgram(
+      connection,
+      action.inputToken.tokenProgram,
+      inputMint,
+    );
     const built = await buildCloseAutomationSwapIx({
       program,
       owner,
       automation,
       inputMint,
       treasury,
+      inputTokenProgram,
     });
-    tx.add(prependOwnerAtaCreate(owner, built.ownerInputAta, inputMint));
+    tx.add(prependOwnerAtaCreate(owner, built.ownerInputAta, inputMint, inputTokenProgram));
 
     // Enumerate any non-input-mint ATAs the PDA may hold (dust from a
-    // bridge that failed mid-flight, stale chain output, etc.) and pass
-    // each (pda_ata, owner_ata) pair as remaining accounts so the
-    // on-chain handler drains and closes them. For each, idempotently
-    // create the owner's same-mint ATA so the on-chain `transfer` CPI
-    // has a valid destination.
+    // bridge that failed mid-flight, stale chain output, etc.). The
+    // on-chain handler now expects triples (pda_ata, owner_ata, mint)
+    // per dust entry because transfer_checked needs the mint+decimals.
+    // We also scan BOTH the legacy SPL and Token-2022 programs because
+    // a Token-2022 dust mint lives in its own getTokenAccountsByOwner
+    // namespace; missing it would leave funds stranded.
     const dust = await collectPdaDustAtas(connection, automation, inputMint);
     const remaining: AccountMeta[] = [];
-    for (const { pdaAta, mint } of dust) {
-      const ownerForeignAta = getAssociatedTokenAddressSync(mint, owner);
-      tx.add(prependOwnerAtaCreate(owner, ownerForeignAta, mint));
+    for (const { pdaAta, mint, tokenProgram } of dust) {
+      const ownerForeignAta = associatedTokenAddressForProgram(owner, mint, tokenProgram);
+      tx.add(prependOwnerAtaCreate(owner, ownerForeignAta, mint, tokenProgram));
       remaining.push({ pubkey: pdaAta, isSigner: false, isWritable: true });
       remaining.push({ pubkey: ownerForeignAta, isSigner: false, isWritable: true });
+      // Mint account — newly required by close_automation_swap so
+      // transfer_checked can read decimals. Not writable, not signer.
+      remaining.push({ pubkey: mint, isSigner: false, isWritable: false });
     }
     if (remaining.length === 0) {
       tx.add(built.ix);
@@ -194,7 +212,7 @@ export async function closeAutomationOnChain(
           inputMint,
           ownerInputAta: built.ownerInputAta,
           automationInputAta: built.automationInputAta,
-          tokenProgram: SPL_TOKEN_PROGRAM_ID,
+          tokenProgram: inputTokenProgram,
         })
         .remainingAccounts(remaining)
         .instruction();
@@ -226,14 +244,30 @@ function prependOwnerAtaCreate(
   owner: PublicKey,
   ownerAta: PublicKey,
   mint: PublicKey,
+  tokenProgram: PublicKey = SPL_TOKEN_PROGRAM_ID,
 ): TransactionInstruction {
   return createAssociatedTokenAccountIdempotentInstruction(
     owner,
     ownerAta,
     owner,
     mint,
-    SPL_TOKEN_PROGRAM_ID,
+    tokenProgram,
   );
+}
+
+/** Resolve a mint's token program from cached TokenRef metadata if
+ *  available, else probe on-chain. Used by the close path where the
+ *  TokenRef might predate the Token-2022 unblock (in which case
+ *  tokenProgram is undefined). */
+async function pickTokenProgram(
+  connection: Connection,
+  cached: string | undefined,
+  mint: PublicKey,
+): Promise<PublicKey> {
+  if (cached) {
+    return new PublicKey(cached);
+  }
+  return resolveMintTokenProgram(connection, mint);
 }
 
 /**
@@ -251,28 +285,33 @@ async function collectPdaDustAtas(
   connection: Connection,
   pda: PublicKey,
   inputMint: PublicKey,
-): Promise<{ pdaAta: PublicKey; mint: PublicKey }[]> {
-  const accounts = await connection.getTokenAccountsByOwner(pda, {
-    programId: SPL_TOKEN_PROGRAM_ID,
-  });
-  const out: { pdaAta: PublicKey; mint: PublicKey }[] = [];
-  for (const a of accounts.value) {
-    // Mint pubkey lives at offset 0 of the SPL token account layout.
-    const mint = new PublicKey(a.account.data.subarray(0, 32));
-    if (mint.equals(inputMint)) continue;
-    // Confirm the account is the canonical ATA for (pda, mint); if a
-    // non-ATA token account ever appeared we'd skip it (the on-chain
-    // handler validates owner+mint anyway, but mismatched ATA derivation
-    // would cause downstream caller assumptions to break).
-    const expectedAta = getAssociatedTokenAddressSync(
-      mint,
-      pda,
-      true,
-      SPL_TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID,
-    );
-    if (!expectedAta.equals(a.pubkey)) continue;
-    out.push({ pdaAta: a.pubkey, mint });
+): Promise<{ pdaAta: PublicKey; mint: PublicKey; tokenProgram: PublicKey }[]> {
+  // Scan BOTH the legacy SPL and Token-2022 namespaces — each program
+  // exposes a separate ATA universe for the same wallet, and missing
+  // either would leave dust stranded after close.
+  const out: { pdaAta: PublicKey; mint: PublicKey; tokenProgram: PublicKey }[] = [];
+  for (const tokenProgram of [SPL_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    const accounts = await connection.getTokenAccountsByOwner(pda, {
+      programId: tokenProgram,
+    });
+    for (const a of accounts.value) {
+      // Mint pubkey lives at offset 0 of both legacy SPL and Token-2022
+      // token-account layouts (the base account structure is identical).
+      const mint = new PublicKey(a.account.data.subarray(0, 32));
+      if (mint.equals(inputMint)) continue;
+      // Confirm the account is the canonical ATA for (pda, mint,
+      // tokenProgram). Non-canonical accounts would cause downstream
+      // caller derivations to disagree with what's on-chain.
+      const expectedAta = getAssociatedTokenAddressSync(
+        mint,
+        pda,
+        true,
+        tokenProgram,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      );
+      if (!expectedAta.equals(a.pubkey)) continue;
+      out.push({ pdaAta: a.pubkey, mint, tokenProgram });
+    }
   }
   return out;
 }

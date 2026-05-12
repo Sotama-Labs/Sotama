@@ -14,7 +14,7 @@ import { MAX_TIME_ELAPSED_SECS, timeElapsedToSecs } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import type { BuilderResult } from "./builder/ConditionalBuilder";
 import {
-  associatedTokenAddress,
+  associatedTokenAddressForProgram,
   buildCreateAutomationIx,
   buildCreateAutomationSplIx,
   buildCreateAutomationSwapIx,
@@ -23,8 +23,10 @@ import {
   isProgramConfigured,
   fetchConfig,
   parseAutomationCreated,
+  resolveMintTokenProgram,
   SOTAMA_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   type OnChainActionSpec,
   type OnChainTriggerSpec,
 } from "@/lib/program";
@@ -108,6 +110,10 @@ type SplSpec = {
   mint: PublicKey;
   ownerAta: PublicKey;
   destinationAta: PublicKey;
+  /** Token program owning the mint. Drives ATA derivation seeds AND
+   *  the `tokenProgram` slot on `create_automation_spl` /
+   *  `close_automation_spl`. */
+  tokenProgram: PublicKey;
 };
 type SwapSpec = {
   kind: "swap";
@@ -129,6 +135,12 @@ type SwapSpec = {
   destination: PublicKey;
   ownerInputAta: PublicKey;
   destinationOutputAta: PublicKey;
+  /** Input mint's token program. Used for the create_automation_swap
+   *  `tokenProgram` slot AND for deriving every input-side ATA. */
+  inputTokenProgram: PublicKey;
+  /** Output mint's token program. Used for deriving every output-side
+   *  ATA (destination's output ATA, treasury's output ATA). */
+  outputTokenProgram: PublicKey;
 };
 type OnChainSpec = SolSpec | SplSpec | SwapSpec;
 
@@ -384,17 +396,28 @@ async function getOnChainSpec(
     const spl = action.spec as {
       transferSpl: { destination: PublicKey; mint: PublicKey; amount: BN };
     };
+    // Read the token program off the TokenRef when the picker resolved
+    // it (legacy SPL or Token-2022); fall back to legacy SPL when
+    // unset — every canonical mint we ship is legacy and the picker
+    // populates tokenProgram for non-canonical mints via Jupiter.
+    const splAction = actions[0];
+    if (splAction.kind !== "transfer") return null;
+    const tokenProgram = splAction.token.tokenProgram
+      ? new PublicKey(splAction.token.tokenProgram)
+      : SPL_TOKEN_PROGRAM_ID;
     return {
       kind: "spl",
       trigger,
       action: spl,
       destination: spl.transferSpl.destination,
       mint: spl.transferSpl.mint,
-      ownerAta: associatedTokenAddress(owner, spl.transferSpl.mint),
-      destinationAta: associatedTokenAddress(
+      ownerAta: associatedTokenAddressForProgram(owner, spl.transferSpl.mint, tokenProgram),
+      destinationAta: associatedTokenAddressForProgram(
         spl.transferSpl.destination,
-        spl.transferSpl.mint
+        spl.transferSpl.mint,
+        tokenProgram,
       ),
+      tokenProgram,
     };
   }
   if (action.kind === "swap") {
@@ -410,6 +433,14 @@ async function getOnChainSpec(
         consumeUpstreamOutput: boolean;
       };
     };
+    const swapAction = actions[0];
+    if (swapAction.kind !== "swap") return null;
+    const inputTokenProgram = swapAction.inputToken.tokenProgram
+      ? new PublicKey(swapAction.inputToken.tokenProgram)
+      : SPL_TOKEN_PROGRAM_ID;
+    const outputTokenProgram = swapAction.outputToken.tokenProgram
+      ? new PublicKey(swapAction.outputToken.tokenProgram)
+      : SPL_TOKEN_PROGRAM_ID;
     return {
       kind: "swap",
       trigger,
@@ -417,11 +448,18 @@ async function getOnChainSpec(
       inputMint: swap.swap.inputMint,
       outputMint: swap.swap.outputMint,
       destination: swap.swap.destination,
-      ownerInputAta: associatedTokenAddress(owner, swap.swap.inputMint),
-      destinationOutputAta: associatedTokenAddress(
+      ownerInputAta: associatedTokenAddressForProgram(
+        owner,
+        swap.swap.inputMint,
+        inputTokenProgram,
+      ),
+      destinationOutputAta: associatedTokenAddressForProgram(
         swap.swap.destination,
         swap.swap.outputMint,
+        outputTokenProgram,
       ),
+      inputTokenProgram,
+      outputTokenProgram,
     };
   }
   return null;
@@ -856,6 +894,7 @@ async function sendCreateAutomation(
       cadence: onChainCadence,
       minIntervalSecs,
       nextNonce: nonce,
+      tokenProgram: spec.tokenProgram,
     });
     tx.add(
       createAssociatedTokenAccountIdempotentInstruction(
@@ -863,7 +902,7 @@ async function sendCreateAutomation(
         spec.ownerAta,
         owner,
         spec.mint,
-        SPL_TOKEN_PROGRAM_ID
+        spec.tokenProgram,
       )
     );
     tx.add(
@@ -872,7 +911,7 @@ async function sendCreateAutomation(
         spec.destinationAta,
         spec.destination,
         spec.mint,
-        SPL_TOKEN_PROGRAM_ID
+        spec.tokenProgram,
       )
     );
     tx.add(
@@ -881,7 +920,7 @@ async function sendCreateAutomation(
         builtBefore.automationAta,
         builtBefore.automation,
         spec.mint,
-        SPL_TOKEN_PROGRAM_ID
+        spec.tokenProgram,
       )
     );
     tx.add(builtBefore.ix);
@@ -900,6 +939,7 @@ async function sendCreateAutomation(
       cadence: onChainCadence,
       minIntervalSecs,
       nextNonce: nonce,
+      inputTokenProgram: spec.inputTokenProgram,
     });
 
     // If the swap input is native SOL, the on-chain create handler
@@ -907,13 +947,9 @@ async function sendCreateAutomation(
     // (1) creating the owner's wSOL ATA if missing, (2) transferring
     // the deposit-sized lamports into it, (3) syncNative so the SPL
     // Token program rolls the lamport balance into the token amount.
-    // This lets users pick "SOL" in the swap editor without an
-    // out-of-band wrap step. The exact wrap amount mirrors the
-    // on-chain `total_deposit = amount_in × max_runs` calculation.
-    // Always idempotent-create the owner's input ATA so a missing ATA
-    // surfaces as a friendlier error. The SOL input branch below also
-    // creates this same ATA via NATIVE_MINT (idempotent — no double
-    // creation tx for the same address).
+    // wSOL is always a legacy SPL mint — keep SPL_TOKEN_PROGRAM_ID
+    // here regardless of inputTokenProgram (which equals legacy SPL
+    // in this branch too, since the mint is legacy).
     if (spec.inputMint.toBase58() !== SOL_MINT_STR) {
       tx.add(
         createAssociatedTokenAccountIdempotentInstruction(
@@ -921,7 +957,7 @@ async function sendCreateAutomation(
           spec.ownerInputAta,
           owner,
           spec.inputMint,
-          SPL_TOKEN_PROGRAM_ID,
+          spec.inputTokenProgram,
         ),
       );
     }
@@ -934,7 +970,11 @@ async function sendCreateAutomation(
             : 1; // until is rejected on-chain for swap; default to 1
       const amountInLamports = BigInt(spec.action.swap.amountIn.toString());
       const wrapLamports = amountInLamports * BigInt(totalFires);
-      const ownerWsolAta = associatedTokenAddress(owner, NATIVE_MINT);
+      const ownerWsolAta = associatedTokenAddressForProgram(
+        owner,
+        NATIVE_MINT,
+        SPL_TOKEN_PROGRAM_ID,
+      );
       tx.add(
         createAssociatedTokenAccountIdempotentInstruction(
           owner,
@@ -960,7 +1000,7 @@ async function sendCreateAutomation(
         builtBefore.automationInputAta,
         builtBefore.automation,
         spec.inputMint,
-        SPL_TOKEN_PROGRAM_ID,
+        spec.inputTokenProgram,
       ),
     );
     tx.add(
@@ -969,7 +1009,7 @@ async function sendCreateAutomation(
         spec.destinationOutputAta,
         spec.destination,
         spec.outputMint,
-        SPL_TOKEN_PROGRAM_ID,
+        spec.outputTokenProgram,
       ),
     );
     // Treasury's output ATA — receives the protocol swap fee at every
@@ -978,10 +1018,14 @@ async function sendCreateAutomation(
     tx.add(
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
-        associatedTokenAddress(config.treasury, spec.outputMint),
+        associatedTokenAddressForProgram(
+          config.treasury,
+          spec.outputMint,
+          spec.outputTokenProgram,
+        ),
         config.treasury,
         spec.outputMint,
-        SPL_TOKEN_PROGRAM_ID,
+        spec.outputTokenProgram,
       ),
     );
     tx.add(builtBefore.ix);

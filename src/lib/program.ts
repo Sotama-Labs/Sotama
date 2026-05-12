@@ -37,9 +37,46 @@ export const PROGRAM_CLUSTER: Cluster = CLUSTER;
 export const SPL_TOKEN_PROGRAM_ID = new PublicKey(
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 );
+/** Token-2022 program. Used when the input/output mint is owned by
+ *  Token-2022 — ATA derivation seeds and the `token_program` slot on
+ *  create_automation_* / close_automation_* must match the mint's
+ *  actual owning program, else Anchor's `Interface<TokenInterface>`
+ *  rejects with `IncorrectProgramId`. */
+export const TOKEN_2022_PROGRAM_ID = new PublicKey(
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+);
 export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
   "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 );
+
+/** True iff `program` is one of the two known SPL token programs. */
+export function isKnownTokenProgram(program: PublicKey): boolean {
+  return program.equals(SPL_TOKEN_PROGRAM_ID) || program.equals(TOKEN_2022_PROGRAM_ID);
+}
+
+/** Lazy mint → token-program lookup. The keeper has a parallel cache
+ *  (`caches::mint_program`); on the FE we typically know the program
+ *  from the TokenRef carried in the UI state (resolveToken stamps it
+ *  from Jupiter metadata). This helper is the fallback when only the
+ *  mint pubkey is available — e.g. enumerating dust ATAs during a
+ *  close. Throws if the mint is owned by an unknown program.
+ *
+ *  One getAccountInfo per call; callers that loop should cache. */
+export async function resolveMintTokenProgram(
+  connection: Connection,
+  mint: PublicKey,
+): Promise<PublicKey> {
+  const info = await connection.getAccountInfo(mint, "confirmed");
+  if (!info) {
+    throw new Error(`Mint ${mint.toBase58()} does not exist on-chain`);
+  }
+  if (!isKnownTokenProgram(info.owner)) {
+    throw new Error(
+      `Mint ${mint.toBase58()} is owned by ${info.owner.toBase58()}; not a known SPL token program`,
+    );
+  }
+  return info.owner;
+}
 
 export function isProgramConfigured(): boolean {
   return Boolean(SOTAMA_PROGRAM_ID);
@@ -62,15 +99,32 @@ export function automationPda(
   )[0];
 }
 
-/** Off-curve ATA derivation. Used both for the automation PDA's holding
- *  account (SPL transfer source) and for destination wallets. */
+/** Legacy-SPL ATA derivation. Kept as the no-argument default for
+ *  callers that only ever deal with legacy mints (canonical SOL/USDC
+ *  flows, manual entry). Token-2022-capable callers must use
+ *  `associatedTokenAddressForProgram` with the resolved program. */
 export function associatedTokenAddress(
   owner: PublicKey,
-  mint: PublicKey
+  mint: PublicKey,
+): PublicKey {
+  return associatedTokenAddressForProgram(owner, mint, SPL_TOKEN_PROGRAM_ID);
+}
+
+/** ATA derivation that takes the token program as a seed. Required
+ *  for Token-2022 — its ATAs derive from the Token-2022 program ID,
+ *  NOT from the legacy SPL program ID. Without this, every Token-2022
+ *  swap/spl create reverts because the address we ship in the ix
+ *  doesn't match what `Interface<TokenInterface>` expects.
+ *
+ *  Mirror of `associated_token_address_for_program` in the keeper. */
+export function associatedTokenAddressForProgram(
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgram: PublicKey,
 ): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID
+    [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
   )[0];
 }
 
@@ -208,17 +262,32 @@ export async function buildCreateAutomationSplIx(params: {
   cadence: OnChainCadence;
   minIntervalSecs: number;
   nextNonce: bigint;
+  /** Token program owning the mint. Defaults to legacy SPL; pass
+   *  `TOKEN_2022_PROGRAM_ID` for Token-2022 mints. Anchor enforces
+   *  this matches the mint's actual owning program via the
+   *  `Interface<TokenInterface>` constraint. */
+  tokenProgram?: PublicKey;
 }): Promise<{
   ix: TransactionInstruction;
   automation: PublicKey;
   ownerAta: PublicKey;
   automationAta: PublicKey;
 }> {
-  const { program, owner, keeper, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
+  const {
+    program,
+    owner,
+    keeper,
+    trigger,
+    action,
+    cadence,
+    minIntervalSecs,
+    nextNonce,
+    tokenProgram = SPL_TOKEN_PROGRAM_ID,
+  } = params;
   const mint = action.transferSpl.mint;
   const automation = automationPda(owner, nextNonce, program.programId);
-  const ownerAta = associatedTokenAddress(owner, mint);
-  const automationAta = associatedTokenAddress(automation, mint);
+  const ownerAta = associatedTokenAddressForProgram(owner, mint, tokenProgram);
+  const automationAta = associatedTokenAddressForProgram(automation, mint, tokenProgram);
   const ix = await program.methods
     .createAutomationSpl(trigger as never, action as never, cadence as never, minIntervalSecs)
     .accountsStrict({
@@ -229,7 +298,7 @@ export async function buildCreateAutomationSplIx(params: {
       ownerAta,
       automationAta,
       keeper,
-      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      tokenProgram,
       systemProgram: new PublicKey("11111111111111111111111111111111"),
     })
     .instruction();
@@ -253,17 +322,34 @@ export async function buildCreateAutomationSwapIx(params: {
   cadence: OnChainCadence;
   minIntervalSecs: number;
   nextNonce: bigint;
+  /** Token program owning the input mint. Defaults to legacy SPL.
+   *  See `buildCreateAutomationSplIx` for rationale. */
+  inputTokenProgram?: PublicKey;
 }): Promise<{
   ix: TransactionInstruction;
   automation: PublicKey;
   ownerInputAta: PublicKey;
   automationInputAta: PublicKey;
 }> {
-  const { program, owner, keeper, trigger, action, cadence, minIntervalSecs, nextNonce } = params;
+  const {
+    program,
+    owner,
+    keeper,
+    trigger,
+    action,
+    cadence,
+    minIntervalSecs,
+    nextNonce,
+    inputTokenProgram = SPL_TOKEN_PROGRAM_ID,
+  } = params;
   const inputMint = action.swap.inputMint;
   const automation = automationPda(owner, nextNonce, program.programId);
-  const ownerInputAta = associatedTokenAddress(owner, inputMint);
-  const automationInputAta = associatedTokenAddress(automation, inputMint);
+  const ownerInputAta = associatedTokenAddressForProgram(owner, inputMint, inputTokenProgram);
+  const automationInputAta = associatedTokenAddressForProgram(
+    automation,
+    inputMint,
+    inputTokenProgram,
+  );
   const ix = await program.methods
     .createAutomationSwap(
       trigger as never,
@@ -280,7 +366,7 @@ export async function buildCreateAutomationSwapIx(params: {
       ownerInputAta,
       automationInputAta,
       keeper,
-      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      tokenProgram: inputTokenProgram,
       systemProgram: new PublicKey("11111111111111111111111111111111"),
     })
     .instruction();
@@ -313,6 +399,8 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
   seedAmount: BN;
   bridgeEnabled: boolean;
   nextNonce: bigint;
+  /** Token program owning the input mint. Defaults to legacy SPL. */
+  inputTokenProgram?: PublicKey;
 }): Promise<{
   ix: TransactionInstruction;
   automation: PublicKey;
@@ -331,11 +419,16 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
     seedAmount,
     bridgeEnabled,
     nextNonce,
+    inputTokenProgram = SPL_TOKEN_PROGRAM_ID,
   } = params;
   const inputMint = action.swap.inputMint;
   const automation = automationPda(owner, nextNonce, program.programId);
-  const ownerInputAta = associatedTokenAddress(owner, inputMint);
-  const automationInputAta = associatedTokenAddress(automation, inputMint);
+  const ownerInputAta = associatedTokenAddressForProgram(owner, inputMint, inputTokenProgram);
+  const automationInputAta = associatedTokenAddressForProgram(
+    automation,
+    inputMint,
+    inputTokenProgram,
+  );
   // Anchor types haven't been regenerated since the new ix shipped; use
   // the dynamic methods accessor and cast through unknown so tsc accepts
   // the call. The wire format is the same — name → discriminator lookup
@@ -374,7 +467,7 @@ export async function buildCreateAutomationSwapLinkedIx(params: {
       ownerInputAta,
       automationInputAta,
       keeper,
-      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      tokenProgram: inputTokenProgram,
       systemProgram: new PublicKey("11111111111111111111111111111111"),
     })
     .instruction();
@@ -408,14 +501,25 @@ export async function buildCloseAutomationSplIx(params: {
   automation: PublicKey;
   mint: PublicKey;
   treasury: PublicKey;
+  /** Token program owning `mint`. Defaults to legacy SPL; pass
+   *  `TOKEN_2022_PROGRAM_ID` for Token-2022. Mismatch ⇒ on-chain
+   *  IncorrectProgramId revert. */
+  tokenProgram?: PublicKey;
 }): Promise<{
   ix: TransactionInstruction;
   ownerAta: PublicKey;
   automationAta: PublicKey;
 }> {
-  const { program, owner, automation, mint, treasury } = params;
-  const ownerAta = associatedTokenAddress(owner, mint);
-  const automationAta = associatedTokenAddress(automation, mint);
+  const {
+    program,
+    owner,
+    automation,
+    mint,
+    treasury,
+    tokenProgram = SPL_TOKEN_PROGRAM_ID,
+  } = params;
+  const ownerAta = associatedTokenAddressForProgram(owner, mint, tokenProgram);
+  const automationAta = associatedTokenAddressForProgram(automation, mint, tokenProgram);
   const ix = await program.methods
     .closeAutomationSpl()
     .accountsStrict({
@@ -426,7 +530,7 @@ export async function buildCloseAutomationSplIx(params: {
       mint,
       ownerAta,
       automationAta,
-      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      tokenProgram,
     })
     .instruction();
   return { ix, ownerAta, automationAta };
@@ -440,14 +544,27 @@ export async function buildCloseAutomationSwapIx(params: {
   automation: PublicKey;
   inputMint: PublicKey;
   treasury: PublicKey;
+  /** Token program owning the input mint. Defaults to legacy SPL. */
+  inputTokenProgram?: PublicKey;
 }): Promise<{
   ix: TransactionInstruction;
   ownerInputAta: PublicKey;
   automationInputAta: PublicKey;
 }> {
-  const { program, owner, automation, inputMint, treasury } = params;
-  const ownerInputAta = associatedTokenAddress(owner, inputMint);
-  const automationInputAta = associatedTokenAddress(automation, inputMint);
+  const {
+    program,
+    owner,
+    automation,
+    inputMint,
+    treasury,
+    inputTokenProgram = SPL_TOKEN_PROGRAM_ID,
+  } = params;
+  const ownerInputAta = associatedTokenAddressForProgram(owner, inputMint, inputTokenProgram);
+  const automationInputAta = associatedTokenAddressForProgram(
+    automation,
+    inputMint,
+    inputTokenProgram,
+  );
   const ix = await program.methods
     .closeAutomationSwap()
     .accountsStrict({
@@ -458,7 +575,7 @@ export async function buildCloseAutomationSwapIx(params: {
       inputMint,
       ownerInputAta,
       automationInputAta,
-      tokenProgram: SPL_TOKEN_PROGRAM_ID,
+      tokenProgram: inputTokenProgram,
     })
     .instruction();
   return { ix, ownerInputAta, automationInputAta };
