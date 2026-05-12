@@ -77,6 +77,18 @@ pub fn spl_token_program_id() -> &'static Pubkey {
     CELL.get_or_init(|| Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap())
 }
 
+/// Token-2022 program ID (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`). The
+/// keeper uses this when a mint is owned by Token-2022 — both for the
+/// outer ix's `token_program` slot (so transfer_checked dispatches to
+/// the right runtime) and as the ATA-seed program when deriving the
+/// PDA's input/output ATAs. The on-chain handler accepts whichever
+/// program the caller specifies through `Interface<TokenInterface>`,
+/// as long as it matches the mint's owning program.
+pub fn token_2022_program_id() -> &'static Pubkey {
+    static CELL: OnceLock<Pubkey> = OnceLock::new();
+    CELL.get_or_init(|| Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap())
+}
+
 pub fn associated_token_program_id() -> &'static Pubkey {
     static CELL: OnceLock<Pubkey> = OnceLock::new();
     CELL.get_or_init(|| Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap())
@@ -87,14 +99,27 @@ pub fn sysvar_clock_id() -> &'static Pubkey {
     CELL.get_or_init(|| Pubkey::from_str("SysvarC1ock11111111111111111111111111111111").unwrap())
 }
 
-/// Off-curve PDA derivation for a SPL associated token account.
+/// Legacy-SPL ATA derivation. Kept for back-compat with callers that
+/// only ever deal with legacy SPL mints (TransferSpl, fee_topup wSOL
+/// ATA, …). For Token-2022-capable callers, use
+/// `associated_token_address_for_program`.
 pub fn associated_token_address(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+    associated_token_address_for_program(owner, mint, spl_token_program_id())
+}
+
+/// ATA derivation that takes the token program ID as a seed input.
+/// Required for Token-2022 — its ATA addresses differ from legacy SPL
+/// because the third PDA seed is the mint's owning program. Pass
+/// `spl_token_program_id()` for legacy mints, `token_2022_program_id()`
+/// for Token-2022 mints. The caller is expected to discover the right
+/// program via a `MintProgramCache` lookup (see `caches::mint_program`).
+pub fn associated_token_address_for_program(
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Pubkey {
     Pubkey::find_program_address(
-        &[
-            owner.as_ref(),
-            spl_token_program_id().as_ref(),
-            mint.as_ref(),
-        ],
+        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
         associated_token_program_id(),
     )
     .0
@@ -172,7 +197,6 @@ pub struct SwapAccountMeta {
 ///     `inner_accounts`. The on-chain handler uses these to mint-check
 ///     before invoking.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn build_execute_swap_ix(
     program_id: &Pubkey,
     keeper: &Pubkey,
@@ -186,6 +210,17 @@ pub fn build_execute_swap_ix(
     // mint = output_mint and owner = Config.treasury, then routes the
     // protocol fee here.
     treasury_output_ata: &Pubkey,
+    // Output mint pubkey. Added in the Token-2022 migration: the
+    // on-chain handler needs `transfer_checked` for the fee debit,
+    // which requires the mint account in the CPI. Address-checked
+    // against `ActionSpec::Swap.output_mint` on-chain.
+    output_mint: &Pubkey,
+    // Token program owning the output mint. Pass
+    // `spl_token_program_id()` for legacy SPL mints and
+    // `token_2022_program_id()` for Token-2022. Anchor validates this
+    // matches the mint's actual owning program via the
+    // `Interface<TokenInterface>` constraint.
+    token_program: &Pubkey,
     // Optional linked-downstream PDA. When set, gets appended as the
     // LAST remaining account so the on-chain handler can transfer the
     // auto-deposit fee to it after the swap CPI succeeds.
@@ -214,16 +249,19 @@ pub fn build_execute_swap_ix(
     data.push(output_ata_index);
 
     // Outer accounts: keeper, config, automation, jupiter_program,
-    // treasury_output_ata, token_program, then every Jupiter inner-ix
-    // account, then optionally the downstream PDA. The PDA itself
-    // signs via invoke_signed (the keeper just authorizes).
+    // treasury_output_ata, output_mint, token_program, then every
+    // Jupiter inner-ix account, then optionally the downstream PDA.
+    // The PDA itself signs via invoke_signed (the keeper just
+    // authorizes). Order MUST match the on-chain `ExecuteSwap` struct
+    // field order — Anchor positional-decodes the outer accounts.
     let mut accounts = vec![
         AccountMeta::new_readonly(*keeper, true),
         AccountMeta::new_readonly(*config, false),
         AccountMeta::new(*automation, false),
         AccountMeta::new_readonly(*jupiter_program_id(), false),
         AccountMeta::new(*treasury_output_ata, false),
-        AccountMeta::new_readonly(*spl_token_program_id(), false),
+        AccountMeta::new_readonly(*output_mint, false),
+        AccountMeta::new_readonly(*token_program, false),
     ];
     // Strip the `is_signer` flag from every inner account before adding
     // to the outer ix's account list. Jupiter marks the taker (our

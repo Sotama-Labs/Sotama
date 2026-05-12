@@ -130,6 +130,27 @@ pub struct KeeperConfig {
     /// the baseline for p95 escalation on retryable send failures.
     /// Env: KEEPER_PRIORITY_FEE_FLOOR. Default 50_000.
     pub priority_fee_floor: u64,
+    /// Ceiling on the per-tx priority fee in microlamports per compute
+    /// unit. Caps a runaway `getPriorityFeeEstimate` spike (we've seen
+    /// Helius briefly return multi-SOL/CU under abusive on-chain
+    /// conditions) so a single landing can't drain operating SOL. Sits
+    /// well above any realistic congestion fee but inside the SOL
+    /// budget — at the default 1_000_000 and CU limit 1M, max cost is
+    /// 0.001 SOL per swap tx. Env: KEEPER_PRIORITY_FEE_CEILING.
+    pub priority_fee_ceiling: u64,
+    /// Compute-unit limit for `execute_swap` relays. The Jupiter route
+    /// dominates; deep routes (3-4 AMM hops) burn 600-900k CU. Static
+    /// over-pay until we wire `simulateTransaction` to size per-tx.
+    /// Env: KEEPER_CU_LIMIT_SWAP. Default 800_000.
+    pub cu_limit_swap: u32,
+    /// Compute-unit limit for `execute_bridge`. Same shape as swap but
+    /// no downstream-deposit branch, so ~100k CU cheaper. Env:
+    /// KEEPER_CU_LIMIT_BRIDGE. Default 700_000.
+    pub cu_limit_bridge: u32,
+    /// Compute-unit limit for non-swap actions (TransferSol,
+    /// TransferSpl). Anchor handlers are small; 200k is plenty. Env:
+    /// KEEPER_CU_LIMIT_DEFAULT.
+    pub cu_limit_default: u32,
     /// Streaming price path mode. See [`StreamMode`] for semantics.
     /// Env: KEEPER_STREAM_MODE (off | shadow | on). Default: off.
     pub stream_mode: StreamMode,
@@ -137,6 +158,28 @@ pub struct KeeperConfig {
     /// cache survives keeper restarts (redeploy, crash, host migration).
     /// Env: KEEPER_FILL_CACHE_PATH. Default: None (in-memory only).
     pub fill_cache_path: Option<PathBuf>,
+    /// Opt-in for Helius Sender dual-routing (validators + Jito).
+    /// When true, the executor and bridge dispatcher append a Jito tip
+    /// ix (0.0002 SOL minimum) and post to `sender.helius-rpc.com/fast`
+    /// with `skipPreflight: true, maxRetries: 0` (per Helius docs,
+    /// 2026-02-27 spec). Sender gives 50 TPS at 0 credits/tx, dual-
+    /// routes to validators + Jito for max inclusion. Off by default
+    /// because Sender requires the tip — we charge it from the
+    /// keeper's operating SOL, and operators want to enable it
+    /// deliberately. Env: KEEPER_USE_SENDER.
+    pub use_sender: bool,
+    /// Jito tip in lamports when Sender is enabled. 0.0002 SOL = 200_000
+    /// lamports is the minimum per Helius docs; raise for competitive
+    /// landing during MEV-heavy windows. Env: KEEPER_SENDER_TIP_LAMPORTS.
+    pub sender_tip_lamports: u64,
+    /// Helius Sender regional endpoint preference. When set, the keeper
+    /// uses `https://{region}-sender.helius-rpc.com/fast` instead of
+    /// the global frontend hostname — lower latency for backend-only
+    /// senders. Valid regions per Helius docs (2026-02-27): slc, ewr,
+    /// lon, fra, ams, sg, tyo. Env: KEEPER_SENDER_REGION. Auto-detects
+    /// from `FLY_REGION` when unset; falls back to the global hostname
+    /// for unknown regions.
+    pub sender_region: Option<String>,
 }
 
 impl KeeperConfig {
@@ -216,12 +259,48 @@ impl KeeperConfig {
             .filter(|s| !s.trim().is_empty());
 
         let priority_fee_floor = parse_or::<u64>("KEEPER_PRIORITY_FEE_FLOOR", 50_000)?;
+        let priority_fee_ceiling = parse_or::<u64>("KEEPER_PRIORITY_FEE_CEILING", 1_000_000)?;
+        // Sanity: ceiling must be >= floor; otherwise the clamp is
+        // ill-defined. Misordered values usually mean a typo in env
+        // wiring — fail loudly at startup rather than silently
+        // misbehave at fire time.
+        if priority_fee_ceiling < priority_fee_floor {
+            return Err(anyhow!(
+                "KEEPER_PRIORITY_FEE_CEILING ({}) < KEEPER_PRIORITY_FEE_FLOOR ({}); refusing to start",
+                priority_fee_ceiling,
+                priority_fee_floor
+            ));
+        }
+        let cu_limit_swap = parse_or::<u32>("KEEPER_CU_LIMIT_SWAP", 800_000)?;
+        let cu_limit_bridge = parse_or::<u32>("KEEPER_CU_LIMIT_BRIDGE", 700_000)?;
+        let cu_limit_default = parse_or::<u32>("KEEPER_CU_LIMIT_DEFAULT", 200_000)?;
         let stream_mode = StreamMode::from_env();
 
         let fill_cache_path = std::env::var("KEEPER_FILL_CACHE_PATH")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from);
+
+        let use_sender = parse_or::<u8>("KEEPER_USE_SENDER", 0)? != 0;
+        let sender_tip_lamports = parse_or::<u64>("KEEPER_SENDER_TIP_LAMPORTS", 200_000)?;
+        // Per Helius docs (2026-02-27), the min is 0.0002 SOL = 200_000
+        // lamports. Refuse to start with a sub-minimum tip — Sender would
+        // reject the tx with `-32602 Invalid request` on every send.
+        if use_sender && sender_tip_lamports < 200_000 {
+            return Err(anyhow!(
+                "KEEPER_SENDER_TIP_LAMPORTS ({}) is below Helius Sender's required minimum (200_000 = 0.0002 SOL)",
+                sender_tip_lamports
+            ));
+        }
+        // Region preference: explicit env wins, else honour FLY_REGION
+        // when it matches a Sender region. Anything else stays None
+        // (use the global frontend hostname).
+        let valid_sender_regions = ["slc", "ewr", "lon", "fra", "ams", "sg", "tyo"];
+        let sender_region = std::env::var("KEEPER_SENDER_REGION")
+            .ok()
+            .or_else(|| std::env::var("FLY_REGION").ok())
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| valid_sender_regions.contains(&s.as_str()));
 
         Ok(Self {
             cluster,
@@ -251,8 +330,15 @@ impl KeeperConfig {
             jupiter_price_url,
             jupiter_api_key,
             priority_fee_floor,
+            priority_fee_ceiling,
+            cu_limit_swap,
+            cu_limit_bridge,
+            cu_limit_default,
             stream_mode,
             fill_cache_path,
+            use_sender,
+            sender_tip_lamports,
+            sender_region,
         })
     }
 }

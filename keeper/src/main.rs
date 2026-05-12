@@ -19,6 +19,7 @@ mod mints;
 mod price_watcher;
 mod program;
 mod pyth_catalog;
+mod sender_helius;
 mod shard;
 mod signer;
 mod state;
@@ -73,6 +74,14 @@ async fn main() -> Result<()> {
     // swap fire, used to derive the treasury's output ATA for the
     // protocol swap fee.
     let treasury_handle = caches::treasury::TreasuryHandle::new();
+
+    // Mint → token-program cache. Lazily looked up on first sight of
+    // each mint (one `getAccountInfo`), then cached forever (program
+    // ownership is immutable per mint). Used by the executor + bridge
+    // dispatcher to (a) derive Token-2022-aware ATA addresses and (b)
+    // pick the correct `token_program` slot when relaying
+    // `transfer_checked` through Sotama's handlers.
+    let mint_program_cache = caches::mint_program::MintProgramCache::new();
 
     let priority_fee_cache = caches::priority_fee::PriorityFeeCache::new();
     let representative_accounts = vec![cfg.program_id.to_string()];
@@ -478,6 +487,7 @@ async fn main() -> Result<()> {
         let blockhash_cache_for_bridge = blockhash_cache.clone();
         let priority_fee_cache_for_bridge = priority_fee_cache.clone();
         let lookup_table_cache_for_bridge = lookup_table_cache.clone();
+        let mint_program_cache_for_bridge = mint_program_cache.clone();
         tokio::spawn(async move {
             if let Err(e) = bridge_dispatcher::run(
                 cfg,
@@ -486,6 +496,7 @@ async fn main() -> Result<()> {
                 blockhash_cache_for_bridge,
                 priority_fee_cache_for_bridge,
                 lookup_table_cache_for_bridge,
+                mint_program_cache_for_bridge,
             )
             .await
             {
@@ -520,6 +531,7 @@ async fn main() -> Result<()> {
         let priority_fee_cache = priority_fee_cache.clone();
         let lookup_table_cache = lookup_table_cache.clone();
         let treasury_handle = treasury_handle.clone();
+        let mint_program_cache = mint_program_cache.clone();
         tokio::spawn(async move {
             if let Err(e) = executor::run(
                 cfg,
@@ -529,6 +541,7 @@ async fn main() -> Result<()> {
                 priority_fee_cache,
                 lookup_table_cache,
                 treasury_handle,
+                mint_program_cache,
             )
             .await
             {

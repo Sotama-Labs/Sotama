@@ -43,11 +43,13 @@ use tracing::{debug, info, warn};
 use crate::caches;
 use crate::caches::blockhash::CachedBlockhash;
 use crate::caches::lookup_table::LookupTableCache;
+use crate::caches::mint_program::MintProgramCache;
 use crate::config::KeeperConfig;
 use crate::indexer::WatchedSet;
 use crate::jupiter::{self, JupiterClient};
 use crate::program::{
-    associated_token_address, build_execute_bridge_ix, config_pda, jupiter_program_id,
+    associated_token_address, associated_token_address_for_program, build_execute_bridge_ix,
+    config_pda, jupiter_program_id,
 };
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
@@ -58,11 +60,6 @@ use crate::vaults::VaultCache;
 /// constant in `executor.rs` for the rationale.
 const TX_WIRE_SIZE_LIMIT: usize = 1232;
 
-/// Compute-unit ceiling for `execute_bridge`. Same as a normal swap —
-/// the relayed Jupiter route is the dominant cost and 1M is the same
-/// upper bound the executor uses for `execute_swap`.
-const COMPUTE_UNIT_LIMIT_BRIDGE: u32 = 1_000_000;
-
 pub async fn run(
     cfg: Arc<KeeperConfig>,
     set_rx: watch::Receiver<WatchedSet>,
@@ -70,6 +67,7 @@ pub async fn run(
     blockhash_cache: caches::blockhash::BlockhashCache,
     priority_fee_cache: caches::priority_fee::PriorityFeeCache,
     lookup_table_cache: LookupTableCache,
+    mint_program_cache: MintProgramCache,
 ) -> Result<()> {
     info!(
         scan_interval_secs = 2,
@@ -124,6 +122,7 @@ pub async fn run(
                 &blockhash_cache,
                 &priority_fee_cache,
                 &lookup_table_cache,
+                &mint_program_cache,
             )
             .await
             {
@@ -151,6 +150,7 @@ async fn scan_pda_cached(
     blockhash_cache: &caches::blockhash::BlockhashCache,
     priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
     lookup_table_cache: &LookupTableCache,
+    mint_program_cache: &MintProgramCache,
 ) -> Result<()> {
     // Bridge only makes sense for Swap actions — that's where there's a
     // canonical "input mint" to converge on. A non-Swap automation with
@@ -170,7 +170,14 @@ async fn scan_pda_cached(
     // should already hold fresh data pushed by accountSubscribe.
     let targets = ctx.vault_targets();
     for target in &targets {
-        let ata = associated_token_address(&target.owner, &target.mint);
+        // Resolve the mint's token program (legacy SPL vs Token-2022)
+        // so the ATA derivation matches the actual on-chain PDA.
+        let target_token_program = mint_program_cache.resolve(rpc, &target.mint).await?;
+        let ata = associated_token_address_for_program(
+            &target.owner,
+            &target.mint,
+            &target_token_program,
+        );
         let update = match vault_cache.get(&ata).await {
             Some(u) => u,
             None => {
@@ -218,6 +225,7 @@ async fn scan_pda_cached(
             blockhash_cache,
             priority_fee_cache,
             lookup_table_cache,
+            mint_program_cache,
         )
         .await
         {
@@ -245,6 +253,7 @@ async fn bridge_one(
     blockhash_cache: &caches::blockhash::BlockhashCache,
     priority_fee_cache: &caches::priority_fee::PriorityFeeCache,
     lookup_table_cache: &LookupTableCache,
+    mint_program_cache: &MintProgramCache,
 ) -> Result<()> {
     info!(
         automation = %ctx.pubkey,
@@ -317,8 +326,11 @@ async fn bridge_one(
     // The on-chain handler expects the destination (input_mint) ATA to
     // appear in the relayed accounts list at `output_ata_index`. Locate
     // it and bail if missing rather than handing the chain a sentinel
-    // index it'll reject.
-    let dest_ata = associated_token_address(&ctx.pubkey, input_mint);
+    // index it'll reject. ATA derivation must use the dest mint's
+    // token program (legacy SPL vs Token-2022) since that's a PDA seed.
+    let dest_token_program = mint_program_cache.resolve(rpc, input_mint).await?;
+    let dest_ata =
+        associated_token_address_for_program(&ctx.pubkey, input_mint, &dest_token_program);
     let pos = inner_accounts
         .iter()
         .position(|a| a.pubkey == dest_ata)
@@ -389,13 +401,21 @@ async fn submit_with_priority(
         }
     };
 
-    let micro_lamports = priority_fee_cache.buffered(cfg.priority_fee_floor).await;
+    let micro_lamports = priority_fee_cache
+        .buffered_clamped(cfg.priority_fee_floor, cfg.priority_fee_ceiling)
+        .await;
 
-    let ixs = vec![
-        ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_BRIDGE),
+    let mut ixs = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(cfg.cu_limit_bridge),
         ComputeBudgetInstruction::set_compute_unit_price(micro_lamports),
         action_ix,
     ];
+    if cfg.use_sender {
+        ixs.push(crate::sender_helius::build_jito_tip_ix(
+            &cfg.keeper_pubkey,
+            cfg.sender_tip_lamports,
+        ));
+    }
     let tx = sign_tx(cfg.signer.as_ref(), &cfg.keeper_pubkey, &ixs, alts, bh.hash).await?;
     let serialized = bincode::serialize(&tx).map_err(|e| anyhow!("bincode serialize: {e}"))?;
     if serialized.len() > TX_WIRE_SIZE_LIMIT {
@@ -406,7 +426,10 @@ async fn submit_with_priority(
             tx.message.static_account_keys().len(),
         ));
     }
-    send_via_helius(http, &cfg.sender_url, &serialized).await
+    match crate::sender_helius::sender_endpoint(cfg) {
+        Some(endpoint) => send_via_sender(http, &endpoint, &serialized).await,
+        None => send_via_helius(http, &cfg.sender_url, &serialized).await,
+    }
 }
 
 async fn sign_tx(
@@ -433,13 +456,17 @@ async fn send_via_helius(
     serialized: &[u8],
 ) -> Result<String> {
     let b64 = base64::engine::general_purpose::STANDARD.encode(serialized);
+    // Match executor.rs::send_via_helius (5296a0c): preflight on, 3 retries,
+    // processed commitment for the preflight sim. The previous
+    // skipPreflight=true / maxRetries=0 combo here silently swallowed
+    // sanitize and program errors, hiding bridge regressions for hours.
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "sendTransaction",
         "params": [
             b64,
-            { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
+            { "encoding": "base64", "skipPreflight": false, "maxRetries": 3, "preflightCommitment": "processed" }
         ]
     });
     let resp: Value = http.post(sender_url).json(&body).send().await?.json().await?;
@@ -451,6 +478,32 @@ async fn send_via_helius(
         .ok_or_else(|| anyhow!("missing signature in {resp}"))?
         .to_string();
     Ok(sig)
+}
+
+/// Helius Sender variant — see `executor::send_via_sender` for spec.
+async fn send_via_sender(
+    http: &reqwest::Client,
+    endpoint: &str,
+    serialized: &[u8],
+) -> Result<String> {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(serialized);
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "sendTransaction",
+        "params": [
+            b64,
+            { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
+        ]
+    });
+    let resp: Value = http.post(endpoint).json(&body).send().await?.json().await?;
+    if let Some(err) = resp.get("error") {
+        return Err(anyhow!("helius Sender sendTransaction error: {err}"));
+    }
+    resp["result"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing signature in Sender response {resp}"))
+        .map(|s| s.to_string())
 }
 
 /// Minimal projection of an SPL token account we actually use.

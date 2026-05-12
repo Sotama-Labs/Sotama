@@ -19,13 +19,15 @@ use tracing::{debug, error, info, warn};
 
 use crate::caches::blockhash::{BlockhashCache, CachedBlockhash};
 use crate::caches::lookup_table::LookupTableCache;
+use crate::caches::mint_program::MintProgramCache;
 use crate::caches::priority_fee::PriorityFeeCache;
 use crate::caches::treasury::TreasuryHandle;
 use crate::config::KeeperConfig;
 use crate::jupiter::{self, JupiterClient};
 use crate::program::{
-    associated_token_address, build_execute_automation_ix, build_execute_automation_spl_ix,
-    build_execute_swap_ix, config_pda, jupiter_program_id,
+    associated_token_address, associated_token_address_for_program,
+    build_execute_automation_ix, build_execute_automation_spl_ix, build_execute_swap_ix,
+    config_pda, jupiter_program_id,
 };
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
@@ -36,28 +38,43 @@ use crate::types::{AutomationCtx, TriggerEvent};
 /// change or signature path doesn't tip us over.
 const TX_WIRE_SIZE_LIMIT: usize = 1232;
 
-/// Default compute-unit limit for SOL/SPL transfers.
-const COMPUTE_UNIT_LIMIT_DEFAULT: u32 = 200_000;
-/// Compute-unit limit for Jupiter swap relays. Routes through 3-4 AMMs
-/// can consume 600k-1.2M CU; we allocate the upper bound so a deeper
-/// route doesn't silently exceed and revert at the end.
-const COMPUTE_UNIT_LIMIT_SWAP: u32 = 1_000_000;
 const RECENT_TRIGGER_CACHE_SIZE: usize = 4_096;
 
 /// Per-action compute budget selector. Matched on the action variant so
 /// future ix types (fee topup, link fee debit) can declare their own
-/// ceilings without cluttering the executor's hot path.
-fn compute_unit_limit_for(action: &ActionSpec) -> u32 {
+/// ceilings without cluttering the executor's hot path. Caller-supplied
+/// limits come from `KeeperConfig::cu_limit_*` so operators can tune in
+/// production without a redeploy.
+fn compute_unit_limit_for(action: &ActionSpec, cfg: &KeeperConfig) -> u32 {
     match action {
-        ActionSpec::Swap { .. } => COMPUTE_UNIT_LIMIT_SWAP,
-        _ => COMPUTE_UNIT_LIMIT_DEFAULT,
+        ActionSpec::Swap { .. } => cfg.cu_limit_swap,
+        _ => cfg.cu_limit_default,
     }
 }
 
-/// Per-keeper-session deduplication state — see executor module docs in
-/// the v1 keeper (kept verbatim).
+/// Per-keeper-session deduplication state.
+///
+/// Three layers of guard:
+///   * `terminal_fired` — rules we've observed transition to a terminal
+///     state in this session (AutomationFinished / DeadlineExpired). Once
+///     added, the rule is permanently skipped until the indexer's next
+///     reconcile pass drops it from the watched set entirely.
+///   * `recent_triggers` — bounded LRU of (automation, correlation-sig)
+///     pairs we've already processed. Stops the keeper from re-acting
+///     on the same trigger event arriving twice (Hermes SSE + 12s poll
+///     both crossing the threshold in the same window).
+///   * `in_flight` — rules with an outstanding sendTransaction. Prevents
+///     parallel re-fires while a tx is between sign and confirm.
+///
+/// Historical note: a prior version added EVERY successful fire to
+/// `terminal_fired` (then named `fired`), which trapped multi-fire
+/// `Cadence::Repeat { total: N > 1 }` rules after their first fire —
+/// the on-chain `check_can_fire` would have allowed the second fire
+/// (interval permitting), but the keeper refused to send it. Fixed by
+/// only inserting into `terminal_fired` when the on-chain handler
+/// returns one of the terminal-state error codes.
 struct Dedupe {
-    fired: HashSet<Pubkey>,
+    terminal_fired: HashSet<Pubkey>,
     recent_triggers: HashSet<(Pubkey, String)>,
     recent_order: VecDeque<(Pubkey, String)>,
     in_flight: HashSet<Pubkey>,
@@ -66,7 +83,7 @@ struct Dedupe {
 impl Dedupe {
     fn new() -> Self {
         Self {
-            fired: HashSet::new(),
+            terminal_fired: HashSet::new(),
             recent_triggers: HashSet::new(),
             recent_order: VecDeque::new(),
             in_flight: HashSet::new(),
@@ -74,8 +91,8 @@ impl Dedupe {
     }
 
     fn try_claim(&mut self, pubkey: Pubkey, sig: &str) -> Option<&'static str> {
-        if self.fired.contains(&pubkey) {
-            return Some("already fired this session");
+        if self.terminal_fired.contains(&pubkey) {
+            return Some("rule is terminal");
         }
         let key = (pubkey, sig.to_string());
         if self.recent_triggers.contains(&key) {
@@ -95,15 +112,21 @@ impl Dedupe {
         None
     }
 
+    /// Successful fire. Clears the in-flight bit so the next trigger
+    /// event for this rule (different correlation sig) can claim again.
+    /// Does NOT mark the rule terminal — that's the on-chain handler's
+    /// call, surfaced to us via the terminal-state error codes.
     fn release_success(&mut self, pubkey: Pubkey) {
         self.in_flight.remove(&pubkey);
-        self.fired.insert(pubkey);
     }
 
+    /// Failed fire. `treat_as_done=true` means the on-chain handler
+    /// returned a terminal-state error (AutomationFinished /
+    /// DeadlineExpired) — promote to `terminal_fired` so we stop trying.
     fn release_failure(&mut self, pubkey: Pubkey, treat_as_done: bool) {
         self.in_flight.remove(&pubkey);
         if treat_as_done {
-            self.fired.insert(pubkey);
+            self.terminal_fired.insert(pubkey);
         }
     }
 }
@@ -116,6 +139,7 @@ pub async fn run(
     priority_fee_cache: PriorityFeeCache,
     lookup_table_cache: LookupTableCache,
     treasury_handle: TreasuryHandle,
+    mint_program_cache: MintProgramCache,
 ) -> Result<()> {
     let config = config_pda(&cfg.program_id);
     let dedupe: Arc<Mutex<Dedupe>> = Arc::new(Mutex::new(Dedupe::new()));
@@ -140,6 +164,7 @@ pub async fn run(
         let priority_fee_cache_task = priority_fee_cache.clone();
         let alt_cache_task = lookup_table_cache.clone();
         let treasury_task = treasury_handle.clone();
+        let mint_cache_task = mint_program_cache.clone();
         tokio::spawn(async move {
             process_event(
                 cfg_task,
@@ -151,6 +176,7 @@ pub async fn run(
                 priority_fee_cache_task,
                 alt_cache_task,
                 treasury_task,
+                mint_cache_task,
             )
             .await;
         });
@@ -168,6 +194,7 @@ async fn process_event(
     priority_fee_cache: PriorityFeeCache,
     lookup_table_cache: LookupTableCache,
     treasury_handle: TreasuryHandle,
+    mint_program_cache: MintProgramCache,
 ) {
     let depth = evt.depth;
     let mut matches = evt.matches;
@@ -226,6 +253,7 @@ async fn process_event(
             &priority_fee_cache,
             &lookup_table_cache,
             &treasury_handle,
+            &mint_program_cache,
         )
         .await;
         match result {
@@ -321,9 +349,19 @@ async fn execute_one(
     priority_fee_cache: &PriorityFeeCache,
     lookup_table_cache: &LookupTableCache,
     treasury_handle: &TreasuryHandle,
+    mint_program_cache: &MintProgramCache,
 ) -> Result<String> {
-    let (exec_ix, alts) =
-        build_action_ix(cfg, http, rpc, config, ctx, lookup_table_cache, treasury_handle).await?;
+    let (exec_ix, alts) = build_action_ix(
+        cfg,
+        http,
+        rpc,
+        config,
+        ctx,
+        lookup_table_cache,
+        treasury_handle,
+        mint_program_cache,
+    )
+    .await?;
 
     // Resolve blockhash from cache; fall back to live RPC on cold start
     // (cache empty) or if the cached entry is more than 5 s old.
@@ -341,9 +379,11 @@ async fn execute_one(
         }
     };
 
-    let fee_microlamports_per_cu = priority_fee_cache.buffered(cfg.priority_fee_floor).await;
+    let fee_microlamports_per_cu = priority_fee_cache
+        .buffered_clamped(cfg.priority_fee_floor, cfg.priority_fee_ceiling)
+        .await;
 
-    let cu_limit = compute_unit_limit_for(&ctx.action);
+    let cu_limit = compute_unit_limit_for(&ctx.action, cfg);
     let mut ixs = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(cu_limit),
         ComputeBudgetInstruction::set_compute_unit_price(fee_microlamports_per_cu),
@@ -363,6 +403,18 @@ async fn execute_one(
         ));
     }
     ixs.push(exec_ix);
+    // Helius Sender opt-in: every Sender tx must include a Jito tip
+    // SystemProgram::transfer of ≥ 0.0002 SOL to one of the known tip
+    // accounts. Append last so the tip ix can be ALT-compressed if
+    // helpful and so it doesn't perturb the index-based account
+    // accounting earlier ixs do. When `use_sender` is false this is a
+    // no-op and we keep the legacy mainnet-RPC path.
+    if cfg.use_sender {
+        ixs.push(crate::sender_helius::build_jito_tip_ix(
+            &cfg.keeper_pubkey,
+            cfg.sender_tip_lamports,
+        ));
+    }
 
     debug!(
         automation = %ctx.pubkey,
@@ -452,7 +504,12 @@ async fn send_one(
             tx.message.static_account_keys().len(),
         ));
     }
-    send_via_helius(http, &cfg.sender_url, &serialized).await
+    // Route to Helius Sender when opted in (Jito tip already appended
+    // by the caller); otherwise standard mainnet RPC with preflight on.
+    match crate::sender_helius::sender_endpoint(cfg) {
+        Some(endpoint) => send_via_sender(http, &endpoint, &serialized).await,
+        None => send_via_helius(http, &cfg.sender_url, &serialized).await,
+    }
 }
 
 /// Sends the transaction. On a retryable send error (blockhash not found,
@@ -472,9 +529,16 @@ async fn send_with_one_shot_escalation(
         Ok(sig) => Ok(sig),
         Err(e) if is_retryable_send_error(&e) => {
             warn!(target: "executor", error = %e, "send failed; escalating fee and refreshing blockhash");
-            let escalated = fetch_p95_once(http, &cfg.rpc_url, &cfg.program_id)
+            // p95 escalation: bump to VeryHigh tier once. Clamp to
+            // [base × 2, priority_fee_ceiling] so a degenerate Helius
+            // response or a bug in the estimate endpoint can't burn the
+            // keeper's SOL on a single retry. The 2× floor ensures we
+            // always escalate vs the base fee even if the estimate
+            // comes back lower than what we just tried.
+            let raw = fetch_p95_once(http, &cfg.rpc_url, &cfg.program_id)
                 .await
                 .unwrap_or(base_fee_micro * 2);
+            let escalated = raw.max(base_fee_micro * 2).min(cfg.priority_fee_ceiling);
             let (hash, last_valid_block_height) = rpc
                 .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
                 .await?;
@@ -528,6 +592,7 @@ async fn build_action_ix(
     ctx: &AutomationCtx,
     lookup_table_cache: &LookupTableCache,
     treasury_handle: &TreasuryHandle,
+    mint_program_cache: &MintProgramCache,
 ) -> Result<(Instruction, Vec<AddressLookupTableAccount>)> {
     let program_id = &cfg.program_id;
     let keeper = &cfg.keeper_pubkey;
@@ -574,8 +639,23 @@ async fn build_action_ix(
             // We additionally sanity-check Jupiter's quoted out_amount
             // before submission so we don't spend gas on a quote we
             // already know will fail the on-chain slippage gate.
-            let automation_input_ata = associated_token_address(&ctx.pubkey, input_mint);
-            let destination_output_ata = associated_token_address(destination, output_mint);
+            // Per-mint token-program lookup. Token-2022 mints derive
+            // a different ATA than legacy SPL mints for the same
+            // (owner, mint) pair because the token program is part of
+            // the PDA seeds. Cache hit on the second + fire for the
+            // same mint.
+            let input_token_program = mint_program_cache.resolve(rpc, input_mint).await?;
+            let output_token_program = mint_program_cache.resolve(rpc, output_mint).await?;
+            let automation_input_ata = associated_token_address_for_program(
+                &ctx.pubkey,
+                input_mint,
+                &input_token_program,
+            );
+            let destination_output_ata = associated_token_address_for_program(
+                destination,
+                output_mint,
+                &output_token_program,
+            );
 
             // When consume_upstream_output is set, the intended amount_in is
             // whatever the upstream rule deposited into this automation's
@@ -674,8 +754,14 @@ async fn build_action_ix(
             // Config.treasury (cached) and the swap's output mint. The
             // on-chain handler enforces mint + owner, so the keeper
             // can't redirect the fee even if this resolution is wrong.
+            // ATA derivation must use the output mint's token program
+            // (legacy SPL vs Token-2022) since that's a seed input.
             let treasury_pubkey = treasury_handle.get(rpc, config).await?;
-            let treasury_output_ata = associated_token_address(&treasury_pubkey, output_mint);
+            let treasury_output_ata = associated_token_address_for_program(
+                &treasury_pubkey,
+                output_mint,
+                &output_token_program,
+            );
 
             Ok((
                 build_execute_swap_ix(
@@ -688,6 +774,8 @@ async fn build_action_ix(
                     input_idx,
                     output_idx,
                     &treasury_output_ata,
+                    output_mint,
+                    &output_token_program,
                     linked_downstream.as_ref(),
                 ),
                 alts,
@@ -728,6 +816,39 @@ async fn send_via_helius(
         .ok_or_else(|| anyhow!("missing signature in {resp}"))?
         .to_string();
     Ok(sig)
+}
+
+/// Helius Sender variant: posts to `sender.helius-rpc.com/fast` (or a
+/// regional hostname) with the Sender-specific options the docs
+/// require (`skipPreflight: true, maxRetries: 0`). Caller MUST have
+/// included a Jito tip ix on the tx — Sender returns
+/// `-32602 Invalid request` otherwise. We don't validate that here
+/// because the only call sites are the executor + bridge dispatcher
+/// hot paths that we already audited; surfacing the error from Sender
+/// is fine.
+async fn send_via_sender(
+    http: &reqwest::Client,
+    endpoint: &str,
+    serialized: &[u8],
+) -> Result<String> {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(serialized);
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "sendTransaction",
+        "params": [
+            b64,
+            { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
+        ]
+    });
+    let resp: Value = http.post(endpoint).json(&body).send().await?.json().await?;
+    if let Some(err) = resp.get("error") {
+        return Err(anyhow!("helius Sender sendTransaction error: {err}"));
+    }
+    resp["result"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing signature in Sender response {resp}"))
+        .map(|s| s.to_string())
 }
 
 /// Stable cross-user ordering used by `process_event`. Sorts by
@@ -932,7 +1053,9 @@ mod tests {
             inner_data,
             0,
             1,
-            &Pubkey::new_unique(),
+            &Pubkey::new_unique(), // treasury_output_ata
+            &Pubkey::new_unique(), // output_mint
+            &crate::program::spl_token_program_id().clone(), // token_program (legacy SPL for the wire-size test)
             None,
         );
 
