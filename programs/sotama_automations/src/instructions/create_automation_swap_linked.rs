@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{compute_time_fee, ActionSpec, Automation, Cadence, Config, TriggerSpec};
+use crate::state::{
+    assert_no_transfer_hook, compute_time_fee, ActionSpec, Automation, Cadence, Config,
+    TriggerSpec,
+};
 
 /// Create a chain-linked Swap automation.
 ///
@@ -53,7 +58,7 @@ pub struct CreateAutomationSwapLinked<'info> {
     )]
     pub automation: Account<'info, Automation>,
 
-    pub input_mint: Account<'info, Mint>,
+    pub input_mint: InterfaceAccount<'info, Mint>,
 
     /// Owner's ATA for `input_mint`. Source of the optional seed
     /// transfer. Must exist even when `seed_amount = 0` because Anchor
@@ -63,7 +68,7 @@ pub struct CreateAutomationSwapLinked<'info> {
         constraint = owner_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = owner_input_ata.owner == owner.key() @ SotamaError::BadSwapAccounts,
     )]
-    pub owner_input_ata: Account<'info, TokenAccount>,
+    pub owner_input_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Automation PDA's ATA for `input_mint`. Pre-created idempotently
     /// by the client. Receives the optional seed transfer at create
@@ -75,7 +80,7 @@ pub struct CreateAutomationSwapLinked<'info> {
         constraint = automation_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = automation_input_ata.owner == automation.key() @ SotamaError::BadSwapAccounts,
     )]
-    pub automation_input_ata: Account<'info, TokenAccount>,
+    pub automation_input_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Recipient of the upfront time fee. Address-checked against
     /// `config.keeper`.
@@ -86,7 +91,10 @@ pub struct CreateAutomationSwapLinked<'info> {
     )]
     pub keeper: AccountInfo<'info>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program for `input_mint`. Polymorphic interface that
+    /// accepts legacy SPL or Token-2022 at runtime; Anchor checks the
+    /// program ID matches the mint's owning program.
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -116,6 +124,14 @@ pub fn handler(
         ctx.accounts.input_mint.key(),
         SotamaError::WrongInputMint
     );
+    // Refuse mints with the Token-2022 TransferHook extension — see
+    // the matching call in `create_automation_swap` for rationale.
+    // Note: we only check the INPUT mint here; the output mint isn't
+    // an account on this ix. The downstream rule in a chain has its
+    // own input_mint check at create time, so a chain whose output
+    // mint has a transfer hook can't even be wired (the next rule's
+    // create would reject the same mint as its input).
+    assert_no_transfer_hook(&ctx.accounts.input_mint)?;
     trigger.validate()?;
     cadence.validate()?;
 
@@ -165,17 +181,21 @@ pub fn handler(
     // "downstream rule — wait for upstream output to fill the input
     // ATA." `seed_amount > 0` deposits exactly that many input units
     // (typically `amount_in` for the chain head, covering cycle 1).
+    // `transfer_checked` is mandatory for Token-2022 paths and works
+    // identically on legacy SPL.
     if seed_amount > 0 {
-        token::transfer(
+        token_interface::transfer_checked(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
-                SplTransfer {
+                TransferChecked {
                     from: ctx.accounts.owner_input_ata.to_account_info(),
+                    mint: ctx.accounts.input_mint.to_account_info(),
                     to: ctx.accounts.automation_input_ata.to_account_info(),
                     authority: ctx.accounts.owner.to_account_info(),
                 },
             ),
             seed_amount,
+            ctx.accounts.input_mint.decimals,
         )?;
     }
 

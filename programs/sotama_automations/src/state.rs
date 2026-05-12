@@ -1,7 +1,40 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token_2022::spl_token_2022::extension::{
+    BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+};
+use anchor_spl::token_interface::Mint as InterfaceMint;
 
 use crate::errors::SotamaError;
 use crate::events::AutomationFinished;
+
+/// Reject any mint whose Token-2022 extension set includes
+/// `TransferHook`. The hook lets the mint authority register an
+/// arbitrary program ID that gets invoked via CPI on every transfer of
+/// this mint — there's no way to relay a Jupiter swap through such a
+/// mint without trusting the hook's code, and we can't bound what the
+/// hook does (it can drain ATAs, fail closed, sandwich the caller…).
+/// Legacy SPL mints have no extension byte at offset 165, so the
+/// `StateWithExtensions::unpack` call short-circuits cleanly and the
+/// helper is a no-op for them. Token-2022 mints without the hook are
+/// fully supported via `transfer_checked` on every transfer site.
+pub fn assert_no_transfer_hook(mint: &InterfaceAccount<InterfaceMint>) -> Result<()> {
+    let mint_info = mint.to_account_info();
+    let mint_data = mint_info.try_borrow_data()?;
+    // Legacy SPL mint data is exactly 82 bytes with no extension area;
+    // shorter than the Token-2022 base + extension layout. unpack with
+    // extensions on the legacy size succeeds with zero extensions.
+    if let Ok(state) = StateWithExtensions::<
+        anchor_spl::token_2022::spl_token_2022::state::Mint,
+    >::unpack(&mint_data)
+    {
+        for ext in state.get_extension_types()?.iter() {
+            if *ext == ExtensionType::TransferHook {
+                return err!(SotamaError::TransferHookNotSupported);
+            }
+        }
+    }
+    Ok(())
+}
 
 pub const MIN_AMOUNT_LAMPORTS: u64 = 1_000_000;
 

@@ -1,9 +1,33 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, CloseAccount, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationClosed, AutomationFinished};
 use crate::state::{ActionSpec, Automation, Config};
+
+fn decode_ata_base(data: &[u8]) -> Result<(Pubkey, Pubkey, u64)> {
+    if data.len() < 165 {
+        return err!(SotamaError::BadCloseAccounts);
+    }
+    let mint = Pubkey::try_from(&data[0..32]).map_err(|_| error!(SotamaError::BadCloseAccounts))?;
+    let owner =
+        Pubkey::try_from(&data[32..64]).map_err(|_| error!(SotamaError::BadCloseAccounts))?;
+    let amount = u64::from_le_bytes(
+        data[64..72]
+            .try_into()
+            .map_err(|_| error!(SotamaError::BadCloseAccounts))?,
+    );
+    Ok((mint, owner, amount))
+}
+
+fn read_mint_decimals(data: &[u8]) -> Result<u8> {
+    if data.len() < 82 {
+        return err!(SotamaError::BadCloseMint);
+    }
+    Ok(data[44])
+}
 
 /// Admin-driven close for `Swap` automations during wind-down.
 /// Same shape as `admin_close_automation_spl` but operates on the
@@ -66,23 +90,30 @@ pub struct AdminCloseAutomationSwap<'info> {
     )]
     pub treasury: AccountInfo<'info>,
 
-    pub input_mint: Account<'info, Mint>,
+    // Boxed to keep `try_accounts`' stack frame under BPF's 4096-byte
+    // budget. `InterfaceAccount` is ~64 bytes larger than the
+    // pre-migration `Account<...>` variant (carries discriminator data
+    // for both legacy SPL and Token-2022 layouts), and this struct's
+    // three token-y fields pushed the generated frame to 4104 — just
+    // 8 bytes over. `Box` moves the storage to the heap, freeing the
+    // stack budget. Safe + idiomatic Anchor pattern.
+    pub input_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
         constraint = owner_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = owner_input_ata.owner == owner.key() @ SotamaError::WrongDestination,
     )]
-    pub owner_input_ata: Account<'info, TokenAccount>,
+    pub owner_input_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
         constraint = automation_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = automation_input_ata.owner == automation.key() @ SotamaError::BadSwapAccounts,
     )]
-    pub automation_input_ata: Account<'info, TokenAccount>,
+    pub automation_input_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handler<'info>(
@@ -114,21 +145,23 @@ pub fn handler<'info>(
 
     let token_amount = ctx.accounts.automation_input_ata.amount;
     if token_amount > 0 {
-        token::transfer(
+        token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                SplTransfer {
+                TransferChecked {
                     from: ctx.accounts.automation_input_ata.to_account_info(),
+                    mint: ctx.accounts.input_mint.to_account_info(),
                     to: ctx.accounts.owner_input_ata.to_account_info(),
                     authority: automation.to_account_info(),
                 },
                 signer_seeds,
             ),
             token_amount,
+            ctx.accounts.input_mint.decimals,
         )?;
     }
 
-    token::close_account(CpiContext::new_with_signer(
+    token_interface::close_account(CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         CloseAccount {
             account: ctx.accounts.automation_input_ata.to_account_info(),
@@ -150,38 +183,41 @@ pub fn handler<'info>(
     let automation_key = ctx.accounts.automation.key();
     let owner_key_acct = ctx.accounts.owner.key();
 
-    for chunk in ctx.remaining_accounts.chunks(2) {
-        if chunk.len() != 2 {
+    for chunk in ctx.remaining_accounts.chunks(3) {
+        if chunk.len() != 3 {
             return err!(SotamaError::BadCloseAccounts);
         }
         let pda_ata_info = &chunk[0];
         let owner_ata_info = &chunk[1];
-        let pda_ata: TokenAccount = TokenAccount::try_deserialize(
-            &mut &pda_ata_info.try_borrow_data()?[..],
-        )?;
-        let owner_ata: TokenAccount = TokenAccount::try_deserialize(
-            &mut &owner_ata_info.try_borrow_data()?[..],
-        )?;
-        require_keys_eq!(pda_ata.owner, automation_key, SotamaError::BadCloseAccounts);
-        require_keys_eq!(owner_ata.owner, owner_key_acct, SotamaError::BadCloseAccounts);
-        require_keys_eq!(pda_ata.mint, owner_ata.mint, SotamaError::BadCloseAccounts);
-        require!(pda_ata.mint != input_mint_key, SotamaError::BadCloseAccounts);
+        let mint_info = &chunk[2];
+        let (pda_mint, pda_owner, pda_amount) =
+            decode_ata_base(&pda_ata_info.try_borrow_data()?)?;
+        let (owner_mint, owner_owner, _) =
+            decode_ata_base(&owner_ata_info.try_borrow_data()?)?;
+        require_keys_eq!(pda_owner, automation_key, SotamaError::BadCloseAccounts);
+        require_keys_eq!(owner_owner, owner_key_acct, SotamaError::BadCloseAccounts);
+        require_keys_eq!(pda_mint, owner_mint, SotamaError::BadCloseAccounts);
+        require!(pda_mint != input_mint_key, SotamaError::BadCloseAccounts);
+        require_keys_eq!(*mint_info.key, pda_mint, SotamaError::BadCloseMint);
+        let decimals = read_mint_decimals(&mint_info.try_borrow_data()?)?;
 
-        if pda_ata.amount > 0 {
-            token::transfer(
+        if pda_amount > 0 {
+            token_interface::transfer_checked(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
-                    SplTransfer {
+                    TransferChecked {
                         from: pda_ata_info.clone(),
+                        mint: mint_info.clone(),
                         to: owner_ata_info.clone(),
                         authority: automation.to_account_info(),
                     },
                     signer_seeds,
                 ),
-                pda_ata.amount,
+                pda_amount,
+                decimals,
             )?;
         }
-        token::close_account(CpiContext::new_with_signer(
+        token_interface::close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             CloseAccount {
                 account: pda_ata_info.clone(),

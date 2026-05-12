@@ -3,12 +3,44 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::invoke_signed,
 };
-use anchor_spl::token::{self, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, Mint as TokenInterfaceMint, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationExecuted, AutomationFilled, AutomationFinished};
 use crate::jupiter::{self, SwapAccountMeta};
 use crate::state::{ActionSpec, Automation, Config};
+
+/// Decode the (mint, owner, amount) triple from the raw bytes of any
+/// SPL token account — legacy SPL or Token-2022. Both layouts place the
+/// base account fields at the same byte offsets:
+///   bytes  0-31: mint pubkey
+///   bytes 32-63: owner pubkey
+///   bytes 64-71: amount (u64, little-endian)
+/// Token-2022 appends an extension area after byte 165, but we only
+/// read the base fields. The `spl_token_2022` SDK's
+/// `unpack_account_state` would also work but borrows the slice as
+/// `&[u8]` with associated lifetimes that make it awkward to use
+/// inside a scoped block; raw decoding keeps the borrow window
+/// minimal so `invoke_signed` can re-borrow afterward.
+fn decode_token_account_base(data: &[u8]) -> Result<(Pubkey, Pubkey, u64)> {
+    // 165 is the legacy SPL account length; 72 is enough for just the
+    // base fields. We require at least 72 — anything shorter is not a
+    // valid token account.
+    if data.len() < 165 {
+        return err!(SotamaError::BadSwapAccounts);
+    }
+    let mint = Pubkey::try_from(&data[0..32]).map_err(|_| error!(SotamaError::BadSwapAccounts))?;
+    let owner =
+        Pubkey::try_from(&data[32..64]).map_err(|_| error!(SotamaError::BadSwapAccounts))?;
+    let amount = u64::from_le_bytes(
+        data[64..72]
+            .try_into()
+            .map_err(|_| error!(SotamaError::BadSwapAccounts))?,
+    );
+    Ok((mint, owner, amount))
+}
 
 /// Execute a Jupiter v6 swap using funds held in the Automation PDA's
 /// input ATA. The keeper queries Jupiter's `/build` API off-chain to
@@ -61,14 +93,25 @@ pub struct ExecuteSwap<'info> {
     /// swap fee (`received * config.swap_fee_bps / 10_000`) after the
     /// slippage check passes. The handler verifies mint = output_mint
     /// and owner = config.treasury directly against the account data —
-    /// no `Account<TokenAccount>` constraint here because Anchor needs
-    /// the output mint to be known at IDL-derive time and it lives in
-    /// the action spec.
+    /// no `InterfaceAccount<TokenAccount>` constraint here because
+    /// Anchor needs the output mint to be known at IDL-derive time and
+    /// it lives in the action spec.
     /// CHECK: validated in the handler.
     #[account(mut)]
     pub treasury_output_ata: UncheckedAccount<'info>,
 
-    pub token_program: Program<'info, Token>,
+    /// Output mint of the swap. Passed as an account here (rather than
+    /// pulled from `action`) because `transfer_checked` requires the
+    /// mint account in the CPI, AND we need its `decimals` value. The
+    /// handler validates the key against `ActionSpec::Swap.output_mint`
+    /// so the caller can't sneak in the wrong mint. Polymorphic over
+    /// legacy SPL vs Token-2022.
+    pub output_mint: InterfaceAccount<'info, TokenInterfaceMint>,
+
+    /// Token program for the output mint. Accepts either legacy SPL or
+    /// Token-2022 at runtime; Anchor validates it matches the mint's
+    /// owning program.
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handler<'info>(
@@ -162,32 +205,46 @@ pub fn handler<'info>(
     let input_ata_info = &remaining[input_ata_index as usize];
     let output_ata_info = &remaining[output_ata_index as usize];
 
+    // Validate that the on-stack `output_mint` account matches the
+    // action's recorded output mint — the keeper supplies this account
+    // but on-chain decides whether to trust it. Without this check, a
+    // misformed (or hostile) keeper-built ix could pass a different
+    // mint whose decimals mismatch the actual output ATA, leading
+    // `transfer_checked` to fail with `MintMismatch` (safe failure) or
+    // worse, allow a tax-extension fee miscalculation.
+    require_keys_eq!(
+        ctx.accounts.output_mint.key(),
+        output_mint,
+        SotamaError::WrongOutputMint
+    );
+
     // Snapshot balances so we can verify the post-CPI increase and
     // compute the actual fill amounts for the AutomationFilled event.
     // (Jupiter's inner ix has its own slippage guard via
     // `otherAmountThreshold`, but we enforce ours independently —
     // the keeper might pass a lax threshold.)
+    //
+    // We decode only the base SPL token-account fields (mint, owner,
+    // amount) so the same path handles both legacy SPL and Token-2022
+    // ATAs without an explicit type branch. Token-2022's extension
+    // area sits past byte 165 and is irrelevant to these checks.
     let input_before: u64;
     let output_before: u64;
     {
         let input_data = input_ata_info.try_borrow_data()?;
-        let input_ata = TokenAccount::try_deserialize(&mut &input_data[..])?;
-        require_keys_eq!(input_ata.mint, input_mint, SotamaError::WrongInputMint);
-        require_keys_eq!(
-            input_ata.owner,
-            automation.key(),
-            SotamaError::BadSwapAccounts
-        );
-        input_before = input_ata.amount;
+        let (mint_k, owner_k, amount) = decode_token_account_base(&input_data)?;
+        require_keys_eq!(mint_k, input_mint, SotamaError::WrongInputMint);
+        require_keys_eq!(owner_k, automation.key(), SotamaError::BadSwapAccounts);
+        input_before = amount;
         // input_data Ref drops here at scope end — Jupiter is free to
         // borrow the same account during invoke_signed.
     }
     {
         let output_data = output_ata_info.try_borrow_data()?;
-        let output_ata = TokenAccount::try_deserialize(&mut &output_data[..])?;
-        require_keys_eq!(output_ata.mint, output_mint, SotamaError::WrongOutputMint);
-        require_keys_eq!(output_ata.owner, destination, SotamaError::WrongDestination);
-        output_before = output_ata.amount;
+        let (mint_k, owner_k, amount) = decode_token_account_base(&output_data)?;
+        require_keys_eq!(mint_k, output_mint, SotamaError::WrongOutputMint);
+        require_keys_eq!(owner_k, destination, SotamaError::WrongDestination);
+        output_before = amount;
         // output_data Ref drops here at scope end.
     }
 
@@ -232,15 +289,23 @@ pub fn handler<'info>(
     let inner_remaining = &remaining[..inner_count];
     invoke_signed(&ix, inner_remaining, signer_seeds)?;
 
-    // Verify the swap actually delivered ≥ min_amount_out.
-    let mut post_data: &[u8] = &output_ata_info.try_borrow_data()?;
-    let post_output = TokenAccount::try_deserialize(&mut post_data)?;
-    let received = post_output
-        .amount
-        .checked_sub(output_before)
-        .ok_or(error!(SotamaError::SlippageExceeded))?;
+    // Verify the swap actually delivered ≥ min_amount_out. For
+    // Token-2022 mints with a `TransferFee` extension, `received` is
+    // the NET amount that lands in the destination ATA after the
+    // mint's transfer fee was withheld by `transfer_checked` inside
+    // the Jupiter route's leaf transfer — this is the right number
+    // to compare against `min_amount_out` because that's what the
+    // user actually got. The keeper is expected to factor expected
+    // transfer-fee deductions into the slippage budget when it picks
+    // min_amount_out (Jupiter's quote returns the post-fee out_amount).
+    let received = {
+        let post_data = output_ata_info.try_borrow_data()?;
+        let (_, _, post_amount) = decode_token_account_base(&post_data)?;
+        post_amount
+            .checked_sub(output_before)
+            .ok_or(error!(SotamaError::SlippageExceeded))?
+    };
     require!(received >= min_amount_out, SotamaError::SlippageExceeded);
-    let _ = post_data;
 
     // Cap how much input the Jupiter CPI was allowed to consume. The
     // PDA's input ATA is pre-funded with `amount_in × total_fires` at
@@ -253,14 +318,15 @@ pub fn handler<'info>(
     // swap accrues to a sandwich bot instead of being amortized across
     // separate fires. Re-read the input ATA here, before fee math
     // touches the output ATA, so we fail fast on overspend.
-    let mut post_input_data: &[u8] = &input_ata_info.try_borrow_data()?;
-    let post_input = TokenAccount::try_deserialize(&mut post_input_data)?;
-    let input_consumed = input_before.saturating_sub(post_input.amount);
+    let input_consumed = {
+        let post_input_data = input_ata_info.try_borrow_data()?;
+        let (_, _, post_input_amount) = decode_token_account_base(&post_input_data)?;
+        input_before.saturating_sub(post_input_amount)
+    };
     require!(
         input_consumed <= amount_in,
         SotamaError::InputConsumedExceedsAmountIn
     );
-    let _ = post_input_data;
 
     // Protocol swap fee on the delivered amount. `swap_fee_bps / 10_000`
     // of `received` is transferred from the output ATA to the treasury's
@@ -269,36 +335,37 @@ pub fn handler<'info>(
     // misconfigured keeper can't redirect the fee to a wallet it
     // controls. When `swap_fee_bps == 0` we still touch the treasury
     // ATA cheaply via the mint/owner read but skip the transfer.
+    //
+    // Token-2022 nuance: if the output mint carries a TransferFee
+    // extension, `transfer_checked` will withhold mint-level fees from
+    // this debit too — so the treasury receives slightly less than
+    // `swap_fee`. That's a known property of fee-extension mints and
+    // matches what users observe for any transfer; the protocol fee
+    // is still proportional to what the user received in net terms.
     let swap_fee_bps = ctx.accounts.config.swap_fee_bps;
     let treasury_pubkey = ctx.accounts.config.treasury;
     let swap_fee: u64 = ((received as u128).saturating_mul(swap_fee_bps as u128) / 10_000) as u64;
     {
         let treasury_ata_info = ctx.accounts.treasury_output_ata.to_account_info();
-        let mut treasury_data: &[u8] = &treasury_ata_info.try_borrow_data()?;
-        let treasury_ata = TokenAccount::try_deserialize(&mut treasury_data)?;
-        require_keys_eq!(
-            treasury_ata.mint,
-            output_mint,
-            SotamaError::BadTreasuryOutput
-        );
-        require_keys_eq!(
-            treasury_ata.owner,
-            treasury_pubkey,
-            SotamaError::BadTreasuryOwner
-        );
+        let treasury_data = treasury_ata_info.try_borrow_data()?;
+        let (mint_k, owner_k, _) = decode_token_account_base(&treasury_data)?;
+        require_keys_eq!(mint_k, output_mint, SotamaError::BadTreasuryOutput);
+        require_keys_eq!(owner_k, treasury_pubkey, SotamaError::BadTreasuryOwner);
     }
     if swap_fee > 0 {
-        token::transfer(
+        token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                SplTransfer {
+                TransferChecked {
                     from: output_ata_info.to_account_info(),
+                    mint: ctx.accounts.output_mint.to_account_info(),
                     to: ctx.accounts.treasury_output_ata.to_account_info(),
                     authority: automation.to_account_info(),
                 },
                 signer_seeds,
             ),
             swap_fee,
+            ctx.accounts.output_mint.decimals,
         )?;
     }
     // `received` for the user-facing fill is what stays in the output

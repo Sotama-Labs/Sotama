@@ -3,11 +3,29 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::invoke_signed,
 };
-use anchor_spl::token::TokenAccount;
 
 use crate::errors::SotamaError;
 use crate::jupiter::{self, SwapAccountMeta};
 use crate::state::{ActionSpec, Automation, Config};
+
+/// See `execute_swap::decode_token_account_base` for the layout
+/// rationale. Duplicated here so the bridge handler doesn't have to
+/// pull the helper out into a shared module (and so the compiler
+/// inlines it cheaply for the slippage check on the hot path).
+fn decode_base(data: &[u8]) -> Result<(Pubkey, Pubkey, u64)> {
+    if data.len() < 165 {
+        return err!(SotamaError::BadSwapAccounts);
+    }
+    let mint = Pubkey::try_from(&data[0..32]).map_err(|_| error!(SotamaError::BadSwapAccounts))?;
+    let owner =
+        Pubkey::try_from(&data[32..64]).map_err(|_| error!(SotamaError::BadSwapAccounts))?;
+    let amount = u64::from_le_bytes(
+        data[64..72]
+            .try_into()
+            .map_err(|_| error!(SotamaError::BadSwapAccounts))?,
+    );
+    Ok((mint, owner, amount))
+}
 
 /// Keeper-driven, per-PDA-authorized Jupiter swap that converts any
 /// non-input-mint token holdings of the PDA into its expected input
@@ -100,23 +118,20 @@ pub fn handler<'info>(
 
     // Validate the destination ATA: mint == expected_mint, owner == PDA.
     // Read amount before the CPI so we can enforce the slippage guard
-    // on the post-CPI delta.
+    // on the post-CPI delta. Base-field decode handles legacy SPL and
+    // Token-2022 ATAs uniformly.
     let output_ata_info = &remaining[output_ata_index as usize];
     let output_before;
     {
-        let mut data_buf: &[u8] = &output_ata_info.try_borrow_data()?;
-        let output_ata = TokenAccount::try_deserialize(&mut data_buf)?;
+        let data_buf = output_ata_info.try_borrow_data()?;
+        let (mint_k, owner_k, amount) = decode_base(&data_buf)?;
+        require_keys_eq!(mint_k, expected_mint, SotamaError::BadBridgeOutput);
         require_keys_eq!(
-            output_ata.mint,
-            expected_mint,
-            SotamaError::BadBridgeOutput
-        );
-        require_keys_eq!(
-            output_ata.owner,
+            owner_k,
             ctx.accounts.automation.key(),
             SotamaError::BadBridgeOwner
         );
-        output_before = output_ata.amount;
+        output_before = amount;
     } // borrow released here before invoke
 
     // Reconstruct the inner-ix AccountMeta list, then invoke as the
@@ -152,15 +167,16 @@ pub fn handler<'info>(
 
     invoke_signed(&ix, remaining, signer_seeds)?;
 
-    // Slippage guard on the output ATA delta. Re-deserialize the ATA
-    // post-CPI and require received >= min_amount_out — protects users
-    // from a misrouted or low-output Jupiter quote.
-    let mut post_data: &[u8] = &output_ata_info.try_borrow_data()?;
-    let output_after = TokenAccount::try_deserialize(&mut post_data)?;
-    let received = output_after
-        .amount
-        .checked_sub(output_before)
-        .ok_or(error!(SotamaError::BridgeSlippageExceeded))?;
+    // Slippage guard on the output ATA delta. Re-decode the ATA's
+    // base fields post-CPI and require received >= min_amount_out —
+    // protects users from a misrouted or low-output Jupiter quote.
+    let received = {
+        let post_data = output_ata_info.try_borrow_data()?;
+        let (_, _, post_amount) = decode_base(&post_data)?;
+        post_amount
+            .checked_sub(output_before)
+            .ok_or(error!(SotamaError::BridgeSlippageExceeded))?
+    };
     require!(received >= min_amount_out, SotamaError::BridgeSlippageExceeded);
 
     Ok(())

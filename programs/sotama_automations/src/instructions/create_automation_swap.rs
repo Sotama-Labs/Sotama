@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{compute_time_fee, ActionSpec, Automation, Cadence, Config, TriggerSpec};
+use crate::state::{
+    assert_no_transfer_hook, compute_time_fee, ActionSpec, Automation, Cadence, Config,
+    TriggerSpec,
+};
 
 /// Create an automation whose action is `Swap`. The owner deposits
 /// `amount_in × max_runs` of `input_mint` from their ATA into the
@@ -42,7 +47,7 @@ pub struct CreateAutomationSwap<'info> {
     )]
     pub automation: Account<'info, Automation>,
 
-    pub input_mint: Account<'info, Mint>,
+    pub input_mint: InterfaceAccount<'info, Mint>,
 
     /// Owner's ATA for `input_mint`. Source of the deposit.
     #[account(
@@ -50,7 +55,7 @@ pub struct CreateAutomationSwap<'info> {
         constraint = owner_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = owner_input_ata.owner == owner.key() @ SotamaError::BadSwapAccounts,
     )]
-    pub owner_input_ata: Account<'info, TokenAccount>,
+    pub owner_input_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Automation PDA's ATA for `input_mint`. Pre-created by the client.
     #[account(
@@ -58,7 +63,7 @@ pub struct CreateAutomationSwap<'info> {
         constraint = automation_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = automation_input_ata.owner == automation.key() @ SotamaError::BadSwapAccounts,
     )]
-    pub automation_input_ata: Account<'info, TokenAccount>,
+    pub automation_input_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Recipient of the upfront time fee. Address-checked against
     /// `config.keeper`.
@@ -69,7 +74,12 @@ pub struct CreateAutomationSwap<'info> {
     )]
     pub keeper: AccountInfo<'info>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program for `input_mint`. `Interface<TokenInterface>`
+    /// accepts either the legacy SPL Token program or Token-2022, and
+    /// Anchor validates at runtime that the program ID matches the
+    /// mint's owner program — so callers can't sneak a Token-2022 mint
+    /// through with the legacy program id.
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -96,6 +106,16 @@ pub fn handler(
         ctx.accounts.input_mint.key(),
         SotamaError::WrongInputMint
     );
+    // Reject Token-2022 mints carrying the `TransferHook` extension.
+    // Hook code is mint-authority-supplied and runs via CPI on every
+    // transfer; we can't bound its behavior, so we refuse to relay
+    // ATAs whose every transfer could trigger arbitrary execution.
+    // Legacy SPL mints and Token-2022 mints without the hook
+    // extension pass cleanly. Transfer-fee, confidential-transfer,
+    // and the other non-hook extensions are all OK because
+    // `transfer_checked` honours them deterministically and our
+    // post-CPI ATA-delta check absorbs any fee deduction.
+    assert_no_transfer_hook(&ctx.accounts.input_mint)?;
     trigger.validate()?;
     cadence.validate()?;
 
@@ -153,16 +173,23 @@ pub fn handler(
 
     // Pull `total_deposit = amount_in × total_fires` from owner's ATA
     // into the PDA's input ATA. Each fire then spends `amount_in` of it.
-    token::transfer(
+    // `transfer_checked` is required for Token-2022 (which honours the
+    // transfer-fee extension on this call) and accepted by legacy SPL.
+    // The runtime-supplied mint decimals are validated against the
+    // mint account passed here, so a misformatted ix can't silently
+    // transfer the wrong number of base units.
+    token_interface::transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
-            SplTransfer {
+            TransferChecked {
                 from: ctx.accounts.owner_input_ata.to_account_info(),
+                mint: ctx.accounts.input_mint.to_account_info(),
                 to: ctx.accounts.automation_input_ata.to_account_info(),
                 authority: ctx.accounts.owner.to_account_info(),
             },
         ),
         total_deposit,
+        ctx.accounts.input_mint.decimals,
     )?;
 
     // Upfront time fee → keeper.

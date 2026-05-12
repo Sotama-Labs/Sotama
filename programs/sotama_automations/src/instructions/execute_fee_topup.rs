@@ -3,11 +3,27 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::invoke_signed,
 };
-use anchor_spl::token::TokenAccount;
 
 use crate::errors::SotamaError;
 use crate::jupiter::{self, SwapAccountMeta};
 use crate::state::{Automation, Config};
+
+/// Polymorphic legacy-SPL / Token-2022 base-field decode. See
+/// `execute_swap::decode_token_account_base` for the layout rationale.
+fn decode_base(data: &[u8]) -> Result<(Pubkey, Pubkey, u64)> {
+    if data.len() < 165 {
+        return err!(SotamaError::BadSwapAccounts);
+    }
+    let mint = Pubkey::try_from(&data[0..32]).map_err(|_| error!(SotamaError::BadSwapAccounts))?;
+    let owner =
+        Pubkey::try_from(&data[32..64]).map_err(|_| error!(SotamaError::BadSwapAccounts))?;
+    let amount = u64::from_le_bytes(
+        data[64..72]
+            .try_into()
+            .map_err(|_| error!(SotamaError::BadSwapAccounts))?,
+    );
+    Ok((mint, owner, amount))
+}
 
 /// Keeper-driven token-to-wSOL conversion that lands the proceeds in
 /// the **keeper's** wSOL ATA. This is the auto-fee-management primitive:
@@ -119,22 +135,22 @@ pub fn handler<'info>(
     // distinguishing execute_fee_topup from execute_swap — output must
     // come back to the keeper, not to a user wallet, so the keeper can
     // convert it to operating SOL off-band. Snapshot the pre-CPI
-    // balance here so the post-CPI slippage check is provable.
+    // balance here so the post-CPI slippage check is provable. wSOL
+    // (`So111…1112`) is always a legacy SPL mint, so the base-field
+    // decode is fine here — but using the same polymorphic helper
+    // means execute_fee_topup keeps working if the keeper ever
+    // switches to a Token-2022 wrapped-SOL equivalent.
     let keeper_wsol_ata_info = &remaining[keeper_wsol_ata_index as usize];
     let wsol_before: u64 = {
-        let mut data_buf: &[u8] = &keeper_wsol_ata_info.try_borrow_data()?;
-        let keeper_wsol_ata = TokenAccount::try_deserialize(&mut data_buf)?;
+        let data_buf = keeper_wsol_ata_info.try_borrow_data()?;
+        let (mint_k, owner_k, amount) = decode_base(&data_buf)?;
         require_keys_eq!(
-            keeper_wsol_ata.mint,
+            mint_k,
             anchor_spl::token::spl_token::native_mint::ID,
             SotamaError::BadFeeTopupOutput
         );
-        require_keys_eq!(
-            keeper_wsol_ata.owner,
-            ctx.accounts.keeper.key(),
-            SotamaError::BadFeeTopupOwner
-        );
-        keeper_wsol_ata.amount
+        require_keys_eq!(owner_k, ctx.accounts.keeper.key(), SotamaError::BadFeeTopupOwner);
+        amount
     };
 
     // Reconstruct the inner-ix AccountMeta list, then invoke as the
@@ -170,18 +186,19 @@ pub fn handler<'info>(
 
     invoke_signed(&ix, remaining, signer_seeds)?;
 
-    // Post-CPI slippage check. Re-deserialize the keeper's wSOL ATA
-    // (the CPI may have rewritten its data via the token program) and
-    // assert the credited amount cleared the floor the keeper
-    // committed to at submit time. `checked_sub` catches the
+    // Post-CPI slippage check. Re-decode the keeper's wSOL ATA base
+    // fields (the CPI may have rewritten its data via the token
+    // program) and assert the credited amount cleared the floor the
+    // keeper committed to at submit time. `checked_sub` catches the
     // pathological case where the CPI somehow decreased the balance
     // (e.g. a malformed route that debits the keeper instead).
-    let mut post_data: &[u8] = &keeper_wsol_ata_info.try_borrow_data()?;
-    let keeper_wsol_ata_post = TokenAccount::try_deserialize(&mut post_data)?;
-    let received = keeper_wsol_ata_post
-        .amount
-        .checked_sub(wsol_before)
-        .ok_or(error!(SotamaError::SlippageExceeded))?;
+    let received = {
+        let post_data = keeper_wsol_ata_info.try_borrow_data()?;
+        let (_, _, post_amount) = decode_base(&post_data)?;
+        post_amount
+            .checked_sub(wsol_before)
+            .ok_or(error!(SotamaError::SlippageExceeded))?
+    };
     require!(received >= min_amount_out, SotamaError::SlippageExceeded);
 
     Ok(())

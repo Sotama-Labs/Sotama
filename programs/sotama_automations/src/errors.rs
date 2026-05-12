@@ -96,4 +96,10 @@ pub enum SotamaError {
     InputConsumedExceedsAmountIn,
     #[msg("SOL transfer would leave the automation PDA below the rent-exempt minimum without fully closing it")]
     TransferLeavesPdaBelowRent,
+    #[msg("Mint carries the Token-2022 TransferHook extension — hostile-code surface, refused at create time")]
+    TransferHookNotSupported,
+    #[msg("Mint accounts for the input and output mints must use the same token program")]
+    InconsistentTokenProgram,
+    #[msg("Provided mint account does not match the mint of the ATA it pairs with")]
+    BadCloseMint,
 }

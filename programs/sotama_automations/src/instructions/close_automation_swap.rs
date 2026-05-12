@@ -1,9 +1,46 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, CloseAccount, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationClosed, AutomationFinished};
 use crate::state::{ActionSpec, Automation, Config};
+
+/// Decode (mint, owner, amount, decimals_if_legacy) from raw bytes.
+/// For the dust loop we don't have separate mint accounts available
+/// for legacy SPL paths (legacy mint accounts are 82 bytes and live at
+/// a separate pubkey we can't synthesize), so we only use this helper
+/// to read the ATA's owner/mint/amount triple.
+fn decode_ata_base(data: &[u8]) -> Result<(Pubkey, Pubkey, u64)> {
+    if data.len() < 165 {
+        return err!(SotamaError::BadCloseAccounts);
+    }
+    let mint = Pubkey::try_from(&data[0..32]).map_err(|_| error!(SotamaError::BadCloseAccounts))?;
+    let owner =
+        Pubkey::try_from(&data[32..64]).map_err(|_| error!(SotamaError::BadCloseAccounts))?;
+    let amount = u64::from_le_bytes(
+        data[64..72]
+            .try_into()
+            .map_err(|_| error!(SotamaError::BadCloseAccounts))?,
+    );
+    Ok((mint, owner, amount))
+}
+
+/// Read just the `decimals` byte from a raw Mint account. Position 44
+/// in both legacy SPL (`MINT_LAYOUT_DECIMALS_OFFSET = 44`) and
+/// Token-2022 base layouts; extension area starts past byte 82. Used
+/// in the dust loop where we want `transfer_checked` decimals without
+/// the cost of full `InterfaceAccount<Mint>` deserialization for each
+/// dust pair.
+fn read_mint_decimals(data: &[u8]) -> Result<u8> {
+    // Legacy SPL mint = 82 bytes. Token-2022 mint is ≥ 82 bytes with
+    // optional extension area past 82.
+    if data.len() < 82 {
+        return err!(SotamaError::BadCloseMint);
+    }
+    Ok(data[44])
+}
 
 /// Close an automation whose action is `Swap`. Drains the PDA's input
 /// ATA (which holds `amount_in × max_runs` of `input_mint` from create
@@ -45,23 +82,27 @@ pub struct CloseAutomationSwap<'info> {
     )]
     pub treasury: AccountInfo<'info>,
 
-    pub input_mint: Account<'info, Mint>,
+    // Boxed for the same stack-frame reason as in
+    // `AdminCloseAutomationSwap` — InterfaceAccount is ~64 B larger
+    // than Account and three of them push `try_accounts` past BPF's
+    // 4096-byte stack budget. `Box` moves storage to the heap.
+    pub input_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
         constraint = owner_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = owner_input_ata.owner == owner.key() @ SotamaError::WrongDestination,
     )]
-    pub owner_input_ata: Account<'info, TokenAccount>,
+    pub owner_input_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
         constraint = automation_input_ata.mint == input_mint.key() @ SotamaError::WrongInputMint,
         constraint = automation_input_ata.owner == automation.key() @ SotamaError::BadSwapAccounts,
     )]
-    pub automation_input_ata: Account<'info, TokenAccount>,
+    pub automation_input_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handler<'info>(
@@ -92,21 +133,23 @@ pub fn handler<'info>(
 
     let remaining = ctx.accounts.automation_input_ata.amount;
     if remaining > 0 {
-        token::transfer(
+        token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                SplTransfer {
+                TransferChecked {
                     from: ctx.accounts.automation_input_ata.to_account_info(),
+                    mint: ctx.accounts.input_mint.to_account_info(),
                     to: ctx.accounts.owner_input_ata.to_account_info(),
                     authority: automation.to_account_info(),
                 },
                 signer_seeds,
             ),
             remaining,
+            ctx.accounts.input_mint.decimals,
         )?;
     }
 
-    token::close_account(CpiContext::new_with_signer(
+    token_interface::close_account(CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         CloseAccount {
             account: ctx.accounts.automation_input_ata.to_account_info(),
@@ -118,45 +161,55 @@ pub fn handler<'info>(
 
     // Drain any non-input-mint token balances the PDA may hold (e.g.
     // dust from interrupted bridges, stale chain output that the keeper
-    // didn't auto-bridge before close). Each pair is (pda_ata,
-    // owner_ata) for the same mint. Validate strictly so this close ix
-    // can't double as an arbitrary token-transfer primitive.
+    // didn't auto-bridge before close). Token-2022 support requires
+    // `transfer_checked`, which needs the mint account in the CPI —
+    // so the remaining-accounts layout for dust is now TRIPLES of
+    // (pda_ata, owner_ata, mint) instead of the pre-migration pairs.
+    // Validate strictly so this close ix can't double as an arbitrary
+    // token-transfer primitive.
     let input_mint_key = ctx.accounts.input_mint.key();
     let automation_key = ctx.accounts.automation.key();
     let owner_key_acct = ctx.accounts.owner.key();
 
-    for chunk in ctx.remaining_accounts.chunks(2) {
-        if chunk.len() != 2 {
+    for chunk in ctx.remaining_accounts.chunks(3) {
+        if chunk.len() != 3 {
             return err!(SotamaError::BadCloseAccounts);
         }
         let pda_ata_info = &chunk[0];
         let owner_ata_info = &chunk[1];
-        let pda_ata: TokenAccount = TokenAccount::try_deserialize(
-            &mut &pda_ata_info.try_borrow_data()?[..],
-        )?;
-        let owner_ata: TokenAccount = TokenAccount::try_deserialize(
-            &mut &owner_ata_info.try_borrow_data()?[..],
-        )?;
-        require_keys_eq!(pda_ata.owner, automation_key, SotamaError::BadCloseAccounts);
-        require_keys_eq!(owner_ata.owner, owner_key_acct, SotamaError::BadCloseAccounts);
-        require_keys_eq!(pda_ata.mint, owner_ata.mint, SotamaError::BadCloseAccounts);
-        require!(pda_ata.mint != input_mint_key, SotamaError::BadCloseAccounts);
+        let mint_info = &chunk[2];
+        let (pda_mint, pda_owner, pda_amount) =
+            decode_ata_base(&pda_ata_info.try_borrow_data()?)?;
+        let (owner_mint, owner_owner, _) =
+            decode_ata_base(&owner_ata_info.try_borrow_data()?)?;
+        require_keys_eq!(pda_owner, automation_key, SotamaError::BadCloseAccounts);
+        require_keys_eq!(owner_owner, owner_key_acct, SotamaError::BadCloseAccounts);
+        require_keys_eq!(pda_mint, owner_mint, SotamaError::BadCloseAccounts);
+        require!(pda_mint != input_mint_key, SotamaError::BadCloseAccounts);
+        // Pin the mint account to the mint pubkey from the ATAs so the
+        // caller can't pass an unrelated mint that happens to share
+        // decimals. transfer_checked would catch a decimals mismatch,
+        // but the explicit equality check produces a clearer error.
+        require_keys_eq!(*mint_info.key, pda_mint, SotamaError::BadCloseMint);
+        let decimals = read_mint_decimals(&mint_info.try_borrow_data()?)?;
 
-        if pda_ata.amount > 0 {
-            token::transfer(
+        if pda_amount > 0 {
+            token_interface::transfer_checked(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
-                    SplTransfer {
+                    TransferChecked {
                         from: pda_ata_info.clone(),
+                        mint: mint_info.clone(),
                         to: owner_ata_info.clone(),
                         authority: automation.to_account_info(),
                     },
                     signer_seeds,
                 ),
-                pda_ata.amount,
+                pda_amount,
+                decimals,
             )?;
         }
-        token::close_account(CpiContext::new_with_signer(
+        token_interface::close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             CloseAccount {
                 account: pda_ata_info.clone(),

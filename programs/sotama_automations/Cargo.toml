@@ -23,4 +23,9 @@ devnet = []
 
 [dependencies]
 anchor-lang = "0.32.1"
-anchor-spl = { version = "0.32.1", features = ["token"] }
+# Enable both token programs (legacy SPL + Token-2022) via the
+# unified `token_interface` module. `token_2022_extensions` pulls in
+# `StateWithExtensions` so we can probe a Mint's extension list at
+# create time and reject mints carrying `TransferHook` (arbitrary CPI
+# on every transfer — a hostile-code surface we can't safely relay).
+anchor-spl = { version = "0.32.1", features = ["token", "token_2022", "token_2022_extensions"] }
