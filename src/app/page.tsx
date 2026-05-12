@@ -63,8 +63,15 @@ export default function Page() {
   const { connection } = useConnection();
   const wallet = useWallet();
 
+  /** Local strategies are scoped per connected wallet so wallet B
+   *  doesn't see wallet A's saved automations. Reload whenever the
+   *  connected pubkey changes (connect / disconnect / switch). */
+  const walletOwner = wallet.publicKey?.toBase58() ?? null;
   useEffect(() => {
-    setAutomations(loadAutomations());
+    setAutomations(loadAutomations(walletOwner));
+  }, [walletOwner]);
+
+  useEffect(() => {
     setView(initialView());
     const onHash = () => setView(initialView());
     window.addEventListener("hashchange", onHash);
@@ -72,8 +79,8 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    saveAutomations(automations);
-  }, [automations]);
+    saveAutomations(walletOwner, automations);
+  }, [walletOwner, automations]);
 
   useEffect(() => {
     const wanted = view === "active" ? "#active" : "#compose";

@@ -72,7 +72,15 @@ function fillOperators<T extends string>(
   return safe;
 }
 
-const STORAGE_KEY = "sotama:automations:v2";
+/** Storage key for a given wallet's automations. Namespacing by wallet
+ *  pubkey isolates one user's saved strategies from another's on the
+ *  same browser — without this, connecting wallet B would surface
+ *  wallet A's active strategies because both read from a single global
+ *  key. `null` is the pre-connect/disconnect bucket (empty by design
+ *  so we never leak across sessions). */
+function storageKey(owner: string | null): string {
+  return owner ? `sotama:automations:v2:${owner}` : "sotama:automations:v2:__none__";
+}
 
 export function newAutomationId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -81,10 +89,10 @@ export function newAutomationId(): string {
   return `a_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function loadAutomations(): Automation[] {
-  if (typeof window === "undefined") return [];
+export function loadAutomations(owner: string | null): Automation[] {
+  if (typeof window === "undefined" || !owner) return [];
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey(owner));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as Automation[];
     if (!Array.isArray(parsed)) return [];
@@ -115,10 +123,10 @@ export function loadAutomations(): Automation[] {
   }
 }
 
-export function saveAutomations(items: Automation[]) {
-  if (typeof window === "undefined") return;
+export function saveAutomations(owner: string | null, items: Automation[]) {
+  if (typeof window === "undefined" || !owner) return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    window.localStorage.setItem(storageKey(owner), JSON.stringify(items));
   } catch {
     // quota / private mode — skip
   }
