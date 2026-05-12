@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, CloseAccount, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationClosed, AutomationFinished};
@@ -45,7 +47,7 @@ pub struct CloseAutomationSpl<'info> {
     )]
     pub treasury: AccountInfo<'info>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
 
     /// Owner's ATA for `mint`. Idempotent-created by the client tx
     /// before this ix runs, so we can deposit the refund into it.
@@ -54,7 +56,7 @@ pub struct CloseAutomationSpl<'info> {
         constraint = owner_ata.mint == mint.key() @ SotamaError::WrongMint,
         constraint = owner_ata.owner == owner.key() @ SotamaError::WrongDestination,
     )]
-    pub owner_ata: Account<'info, TokenAccount>,
+    pub owner_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Automation PDA's ATA for `mint`. Closed by this ix after its
     /// balance is drained.
@@ -63,9 +65,9 @@ pub struct CloseAutomationSpl<'info> {
         constraint = automation_ata.mint == mint.key() @ SotamaError::WrongMint,
         constraint = automation_ata.owner == automation.key() @ SotamaError::BadSplAccounts,
     )]
-    pub automation_ata: Account<'info, TokenAccount>,
+    pub automation_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
@@ -95,22 +97,24 @@ pub fn handler(ctx: Context<CloseAutomationSpl>) -> Result<()> {
 
     let remaining = ctx.accounts.automation_ata.amount;
     if remaining > 0 {
-        token::transfer(
+        token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                SplTransfer {
+                TransferChecked {
                     from: ctx.accounts.automation_ata.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.owner_ata.to_account_info(),
                     authority: automation.to_account_info(),
                 },
                 signer_seeds,
             ),
             remaining,
+            ctx.accounts.mint.decimals,
         )?;
     }
 
     // Close the now-empty automation ATA → rent refund to owner.
-    token::close_account(CpiContext::new_with_signer(
+    token_interface::close_account(CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         CloseAccount {
             account: ctx.accounts.automation_ata.to_account_info(),

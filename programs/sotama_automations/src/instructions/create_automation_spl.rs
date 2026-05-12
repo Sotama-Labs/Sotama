@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::AutomationCreated;
-use crate::state::{compute_time_fee, ActionSpec, Automation, Cadence, Config, TriggerSpec};
+use crate::state::{
+    assert_no_transfer_hook, compute_time_fee, ActionSpec, Automation, Cadence, Config,
+    TriggerSpec,
+};
 
 /// Create an automation whose action is `TransferSpl`. The owner deposits
 /// `amount` of `mint` from their ATA into the Automation PDA's ATA. The
@@ -36,7 +41,7 @@ pub struct CreateAutomationSpl<'info> {
     )]
     pub automation: Account<'info, Automation>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
 
     /// Owner's ATA — must already hold `amount` tokens of `mint`.
     #[account(
@@ -44,7 +49,7 @@ pub struct CreateAutomationSpl<'info> {
         constraint = owner_ata.mint == mint.key() @ SotamaError::WrongMint,
         constraint = owner_ata.owner == owner.key() @ SotamaError::BadSplAccounts,
     )]
-    pub owner_ata: Account<'info, TokenAccount>,
+    pub owner_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Automation PDA's ATA — must be pre-created and owned by `automation`.
     #[account(
@@ -52,7 +57,7 @@ pub struct CreateAutomationSpl<'info> {
         constraint = automation_ata.mint == mint.key() @ SotamaError::WrongMint,
         constraint = automation_ata.owner == automation.key() @ SotamaError::BadSplAccounts,
     )]
-    pub automation_ata: Account<'info, TokenAccount>,
+    pub automation_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Recipient of the upfront time fee. Address-checked against
     /// `config.keeper`.
@@ -63,7 +68,10 @@ pub struct CreateAutomationSpl<'info> {
     )]
     pub keeper: AccountInfo<'info>,
 
-    pub token_program: Program<'info, Token>,
+    /// Token program for `mint`. Polymorphic over legacy SPL and
+    /// Token-2022; Anchor validates the supplied program matches the
+    /// mint's owning program at runtime.
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -86,6 +94,10 @@ pub fn handler(
     require!(amount > 0, SotamaError::DepositTooSmall);
     require_keys_eq!(mint, ctx.accounts.mint.key(), SotamaError::WrongMint);
     let _ = destination;
+    // Refuse mints with the Token-2022 TransferHook extension — same
+    // rationale as the swap-create path. Legacy SPL and Token-2022
+    // mints without the hook pass through cleanly.
+    assert_no_transfer_hook(&ctx.accounts.mint)?;
     trigger.validate()?;
     cadence.validate()?;
 
@@ -120,17 +132,20 @@ pub fn handler(
     automation.executed_at = 0;
     automation.bump = ctx.bumps.automation;
 
-    // Pull SPL tokens from owner's ATA → automation's ATA.
-    token::transfer(
+    // Pull SPL tokens from owner's ATA → automation's ATA via
+    // transfer_checked (mandatory for Token-2022; accepted by legacy SPL).
+    token_interface::transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
-            SplTransfer {
+            TransferChecked {
                 from: ctx.accounts.owner_ata.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
                 to: ctx.accounts.automation_ata.to_account_info(),
                 authority: ctx.accounts.owner.to_account_info(),
             },
         ),
         amount,
+        ctx.accounts.mint.decimals,
     )?;
 
     // Upfront time fee → keeper. See `compute_time_fee` and

@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationExecuted, AutomationFinished};
@@ -26,7 +28,7 @@ pub struct ExecuteAutomationSpl<'info> {
     )]
     pub automation: Account<'info, Automation>,
 
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
 
     /// Source ATA owned by the automation PDA.
     #[account(
@@ -34,7 +36,7 @@ pub struct ExecuteAutomationSpl<'info> {
         constraint = automation_ata.mint == mint.key() @ SotamaError::WrongMint,
         constraint = automation_ata.owner == automation.key() @ SotamaError::BadSplAccounts,
     )]
-    pub automation_ata: Account<'info, TokenAccount>,
+    pub automation_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Destination ATA — owned by the action's declared destination
     /// wallet. Must be pre-created by the keeper / caller.
@@ -42,9 +44,9 @@ pub struct ExecuteAutomationSpl<'info> {
         mut,
         constraint = destination_ata.mint == mint.key() @ SotamaError::WrongMint,
     )]
-    pub destination_ata: Account<'info, TokenAccount>,
+    pub destination_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handler(ctx: Context<ExecuteAutomationSpl>) -> Result<()> {
@@ -97,17 +99,19 @@ pub fn handler(ctx: Context<ExecuteAutomationSpl>) -> Result<()> {
     ];
     let signer_seeds: &[&[&[u8]]] = &[pda_seeds];
 
-    token::transfer(
+    token_interface::transfer_checked(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
-            SplTransfer {
+            TransferChecked {
                 from: ctx.accounts.automation_ata.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
                 to: ctx.accounts.destination_ata.to_account_info(),
                 authority: automation.to_account_info(),
             },
             signer_seeds,
         ),
         amount,
+        ctx.accounts.mint.decimals,
     )?;
 
     automation.advance(now);

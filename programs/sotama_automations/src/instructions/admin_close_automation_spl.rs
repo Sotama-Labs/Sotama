@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer as SplTransfer};
+use anchor_spl::token_interface::{
+    self, CloseAccount, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::SotamaError;
 use crate::events::{AutomationClosed, AutomationFinished};
@@ -64,7 +66,11 @@ pub struct AdminCloseAutomationSpl<'info> {
     )]
     pub treasury: AccountInfo<'info>,
 
-    pub mint: Account<'info, Mint>,
+    // Boxed to keep try_accounts' BPF stack under 4096 bytes.
+    // InterfaceAccount is ~64B larger than Account, and three of them
+    // push this struct's generated frame over the limit. Same pattern
+    // as AdminCloseAutomationSwap / CloseAutomationSwap.
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     /// Owner's ATA for `mint`. Must be pre-created by the caller —
     /// admin pays the rent for an idempotent ATA-create when the
@@ -74,7 +80,7 @@ pub struct AdminCloseAutomationSpl<'info> {
         constraint = owner_ata.mint == mint.key() @ SotamaError::WrongMint,
         constraint = owner_ata.owner == owner.key() @ SotamaError::WrongDestination,
     )]
-    pub owner_ata: Account<'info, TokenAccount>,
+    pub owner_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
     /// PDA's ATA for `mint`. Drained then closed by this ix.
     #[account(
@@ -82,9 +88,9 @@ pub struct AdminCloseAutomationSpl<'info> {
         constraint = automation_ata.mint == mint.key() @ SotamaError::WrongMint,
         constraint = automation_ata.owner == automation.key() @ SotamaError::BadSplAccounts,
     )]
-    pub automation_ata: Account<'info, TokenAccount>,
+    pub automation_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handler(ctx: Context<AdminCloseAutomationSpl>) -> Result<()> {
@@ -108,25 +114,28 @@ pub fn handler(ctx: Context<AdminCloseAutomationSpl>) -> Result<()> {
     ];
     let signer_seeds: &[&[&[u8]]] = &[pda_seeds];
 
-    // Step 1: SPL deposit → owner's ATA (PDA signs).
+    // Step 1: SPL deposit → owner's ATA (PDA signs). transfer_checked
+    // works for both legacy SPL and Token-2022.
     let token_amount = ctx.accounts.automation_ata.amount;
     if token_amount > 0 {
-        token::transfer(
+        token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                SplTransfer {
+                TransferChecked {
                     from: ctx.accounts.automation_ata.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.owner_ata.to_account_info(),
                     authority: automation.to_account_info(),
                 },
                 signer_seeds,
             ),
             token_amount,
+            ctx.accounts.mint.decimals,
         )?;
     }
 
     // Step 2: Close PDA's ATA → ATA rent to treasury.
-    token::close_account(CpiContext::new_with_signer(
+    token_interface::close_account(CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         CloseAccount {
             account: ctx.accounts.automation_ata.to_account_info(),
