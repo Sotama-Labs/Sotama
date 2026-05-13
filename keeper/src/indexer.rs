@@ -93,13 +93,59 @@ impl WatchedSet {
     /// or equivalent. The async fetch happens *before* the mutable borrow — see
     /// `apply_lifecycle_event` free function which orchestrates this correctly.
     pub fn apply_delta(&mut self, ev: DeltaApply) -> bool {
-        match ev {
+        let changed = match ev {
             DeltaApply::Upsert(ctx) => {
                 self.remove_by_pubkey(&ctx.pubkey);
                 self.insert_ctx(ctx);
                 true
             }
             DeltaApply::Remove(pubkey) => self.remove_by_pubkey(&pubkey),
+        };
+        if changed {
+            // `armed` is a cross-rule derived flag (depends on whether
+            // an upstream rule exists with executions>0). Any insert or
+            // remove can flip the armed state of one or more rules, so
+            // recompute over the entire `by_pubkey` index and propagate
+            // back to the trigger-bucket copies before watchers next
+            // observe the set.
+            self.recompute_armed();
+        }
+        changed
+    }
+
+    /// Recompute `armed` across the full set and propagate the result
+    /// to every index bucket (`by_pubkey` + `account_triggers` +
+    /// `price_triggers` + `time_triggers`). Called by `apply_delta`
+    /// after a mutation; full reconciles use `compute_armed` on the
+    /// raw vec directly before constructing the WatchedSet.
+    fn recompute_armed(&mut self) {
+        let mut items: Vec<AutomationCtx> = self.by_pubkey.values().cloned().collect();
+        compute_armed(&mut items);
+        let armed_by_pk: HashMap<Pubkey, bool> =
+            items.iter().map(|c| (c.pubkey, c.armed)).collect();
+        for (pk, ctx) in self.by_pubkey.iter_mut() {
+            if let Some(a) = armed_by_pk.get(pk) {
+                ctx.armed = *a;
+            }
+        }
+        for ctxs in self.account_triggers.values_mut() {
+            for ctx in ctxs.iter_mut() {
+                if let Some(a) = armed_by_pk.get(&ctx.pubkey) {
+                    ctx.armed = *a;
+                }
+            }
+        }
+        for ctxs in self.price_triggers.values_mut() {
+            for ctx in ctxs.iter_mut() {
+                if let Some(a) = armed_by_pk.get(&ctx.pubkey) {
+                    ctx.armed = *a;
+                }
+            }
+        }
+        for ctx in self.time_triggers.iter_mut() {
+            if let Some(a) = armed_by_pk.get(&ctx.pubkey) {
+                ctx.armed = *a;
+            }
         }
     }
 
@@ -395,13 +441,63 @@ async fn fetch_active(client: &RpcClient, program_id: &Pubkey) -> Result<Vec<Aut
                         trigger: a.trigger,
                         action: a.action,
                         bridge_enabled: a.bridge_enabled,
+                        executions: a.executions,
+                        // Provisional; compute_armed below resolves the
+                        // cross-rule dependency once the whole set is in hand.
+                        armed: true,
                     });
                 }
             }
             Err(e) => warn!(pubkey = %pubkey, error = %e, "skipping unparseable account"),
         }
     }
+    compute_armed(&mut out);
     Ok(out)
+}
+
+/// In-place fill of `armed` for every ctx in the set.
+///
+/// A `consume_upstream_output=true` Swap rule is armed iff some other
+/// rule in the same set has `linked_downstream == Some(self.pubkey)`
+/// AND `executions > 0` — i.e., an upstream has actually fired and
+/// (presumably) deposited into this rule's input ATA.
+///
+/// Why this matters: without this gate, tail-of-chain rules whose
+/// trigger is satisfied (e.g. "sell when price > $1.002" on a pegged
+/// asset) emit a TriggerEvent on every price tick. The executor then
+/// calls `get_token_account_balance` only to discover the input ATA
+/// is empty (upstream hasn't fired yet) and skips via
+/// `SkipEmptyUpstreamATA`. Gating at the indexer level eliminates the
+/// per-tick RPC waste entirely until the upstream actually fires.
+///
+/// Non-`consume_upstream_output` rules are always armed — they fund
+/// their own input from the PDA's pre-allocated balance.
+pub fn compute_armed(items: &mut [AutomationCtx]) {
+    use crate::state::ActionSpec;
+    // Build pubkey → executions index from the current set so we can
+    // resolve each tail rule's upstream in one pass without O(N²) work.
+    let exec_by_pk: std::collections::HashMap<Pubkey, u32> =
+        items.iter().map(|c| (c.pubkey, c.executions)).collect();
+    // Map each pubkey to the set of upstreams that point at it.
+    // A pubkey can have multiple upstreams in principle (multiple
+    // chains converging) — if ANY upstream has fired, the tail is armed.
+    let mut upstream_executed: std::collections::HashMap<Pubkey, bool> =
+        std::collections::HashMap::new();
+    for c in items.iter() {
+        if let ActionSpec::Swap { linked_downstream: Some(d), .. } = &c.action {
+            let already = upstream_executed.get(d).copied().unwrap_or(false);
+            let fired = exec_by_pk.get(&c.pubkey).copied().unwrap_or(0) > 0;
+            upstream_executed.insert(*d, already || fired);
+        }
+    }
+    for c in items.iter_mut() {
+        c.armed = match &c.action {
+            ActionSpec::Swap { consume_upstream_output: true, .. } => {
+                upstream_executed.get(&c.pubkey).copied().unwrap_or(false)
+            }
+            _ => true,
+        };
+    }
 }
 
 // Suppress "unused" warning for base64 helper we keep around for future use.
@@ -439,6 +535,11 @@ fn decode_automation_to_ctx(pubkey: Pubkey, data: &[u8]) -> Option<AutomationCtx
             trigger: a.trigger,
             action: a.action,
             bridge_enabled: a.bridge_enabled,
+            executions: a.executions,
+            // Provisional; `WatchedSet::apply_delta` calls
+            // `recompute_armed` immediately after the insert so the
+            // cross-rule resolution lands before any watcher reads it.
+            armed: true,
         }),
         Ok(_) => None, // account exists but is marked finished — treat as removal
         Err(e) => {

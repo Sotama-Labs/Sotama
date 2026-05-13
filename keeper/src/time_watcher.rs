@@ -64,6 +64,12 @@ pub async fn run(
             if recently_fired.contains(&ctx.pubkey) {
                 continue;
             }
+            // Tail-of-chain rules waiting on upstream output are skipped
+            // here too: a time-trigger that fires every minute on an
+            // empty input ATA would just hit `SkipEmptyUpstreamATA`.
+            if !ctx.armed {
+                continue;
+            }
             let TriggerSpec::TimeElapsed { duration_secs } = &ctx.trigger else {
                 continue;
             };

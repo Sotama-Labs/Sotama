@@ -632,7 +632,12 @@ pub async fn run(
         drop(hermes_quote_prices);
         drop(mint_quotes);
 
-        for (correlation, (matches, snap)) in to_fire {
+        for (correlation, (mut matches, snap)) in to_fire {
+            // Drop tail-of-chain rules whose upstream hasn't fired yet.
+            matches.retain(|c| c.armed);
+            if matches.is_empty() {
+                continue;
+            }
             info!(
                 count = matches.len(),
                 correlation,
@@ -1013,6 +1018,8 @@ mod tests {
                 amount: 1_000_000,
             },
             bridge_enabled: false,
+            executions: 0,
+            armed: true,
         }
     }
 

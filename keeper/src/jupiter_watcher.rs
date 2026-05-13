@@ -259,7 +259,12 @@ pub async fn run(
             }
         }
 
-        for (correlation, (matches, snap)) in to_fire {
+        for (correlation, (mut matches, snap)) in to_fire {
+            // Drop tail-of-chain rules whose upstream hasn't fired yet.
+            matches.retain(|c| c.armed);
+            if matches.is_empty() {
+                continue;
+            }
             info!(
                 count = matches.len(),
                 correlation,

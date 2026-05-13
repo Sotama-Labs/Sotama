@@ -10,7 +10,7 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::message::{v0::Message as MessageV0, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::transaction::VersionedTransaction;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -39,6 +39,12 @@ use crate::types::{AutomationCtx, TriggerEvent};
 const TX_WIRE_SIZE_LIMIT: usize = 1232;
 
 const RECENT_TRIGGER_CACHE_SIZE: usize = 4_096;
+/// Per-(pubkey, reason) throttle for the skip-path INFO logs. First
+/// occurrence prints immediately; subsequent identical skips stay at
+/// DEBUG until this window elapses, then a fresh INFO line confirms
+/// the rule is *still* in that state. Keeps operators informed without
+/// spamming when a tail-of-chain rule waits for hours.
+const SKIP_LOG_THROTTLE_SECS: u64 = 300;
 
 /// Per-action compute budget selector. Matched on the action variant so
 /// future ix types (fee topup, link fee debit) can declare their own
@@ -78,6 +84,9 @@ struct Dedupe {
     recent_triggers: HashSet<(Pubkey, String)>,
     recent_order: VecDeque<(Pubkey, String)>,
     in_flight: HashSet<Pubkey>,
+    /// Last time we emitted an INFO log for a given (pubkey, reason)
+    /// skip event. See `should_log_skip` + `SKIP_LOG_THROTTLE_SECS`.
+    last_skip_log: HashMap<(Pubkey, &'static str), std::time::Instant>,
 }
 
 impl Dedupe {
@@ -87,7 +96,24 @@ impl Dedupe {
             recent_triggers: HashSet::new(),
             recent_order: VecDeque::new(),
             in_flight: HashSet::new(),
+            last_skip_log: HashMap::new(),
         }
+    }
+
+    /// Returns true when the caller should log this skip event at INFO;
+    /// false means DEBUG-only (throttled). Updates the throttle clock
+    /// on a true return so the next call within the window is suppressed.
+    fn should_log_skip(&mut self, pubkey: Pubkey, reason: &'static str) -> bool {
+        let now = std::time::Instant::now();
+        let key = (pubkey, reason);
+        let allow = match self.last_skip_log.get(&key) {
+            Some(prev) => prev.elapsed().as_secs() >= SKIP_LOG_THROTTLE_SECS,
+            None => true,
+        };
+        if allow {
+            self.last_skip_log.insert(key, now);
+        }
+        allow
     }
 
     fn try_claim(&mut self, pubkey: Pubkey, sig: &str) -> Option<&'static str> {
@@ -228,17 +254,35 @@ async fn process_event(
     for (i, ctx) in matches.iter().enumerate() {
         let pubkey = ctx.pubkey;
 
-        let claim_result = {
+        let (claim_result, log_at_info) = {
             let mut g = dedupe.lock().unwrap_or_else(|p| p.into_inner());
-            g.try_claim(pubkey, &evt.correlation)
+            let r = g.try_claim(pubkey, &evt.correlation);
+            let log_now = match r {
+                Some(reason) => g.should_log_skip(pubkey, reason),
+                None => false,
+            };
+            (r, log_now)
         };
         if let Some(reason) = claim_result {
-            debug!(
-                automation = %pubkey,
-                correlation = %evt.correlation,
-                reason,
-                "executor: trigger skipped"
-            );
+            // Promote the first occurrence per (pubkey, reason) window
+            // to INFO so an operator can tell *why* fires are dropping
+            // without flipping RUST_LOG. Subsequent identical skips
+            // within `SKIP_LOG_THROTTLE_SECS` stay at DEBUG.
+            if log_at_info {
+                info!(
+                    automation = %pubkey,
+                    correlation = %evt.correlation,
+                    reason,
+                    "executor: trigger skipped"
+                );
+            } else {
+                debug!(
+                    automation = %pubkey,
+                    correlation = %evt.correlation,
+                    reason,
+                    "executor: trigger skipped"
+                );
+            }
             continue;
         }
 
@@ -316,10 +360,28 @@ async fn process_event(
                         "executor: interval not elapsed yet — will retry next tick"
                     );
                 } else if skip_empty_ata {
-                    debug!(
-                        automation = %pubkey,
-                        "executor: upstream ATA empty, skipping fire until bridge lands"
-                    );
+                    // The watcher's `armed` gate should normally
+                    // prevent this from ever reaching execute_one —
+                    // but a race between an upstream firing and the
+                    // indexer re-snapshotting the set, or a Repeat-
+                    // cadence rule that drained its own input between
+                    // ticks, can still arrive here. Throttle the INFO
+                    // so the operator sees the state without spam.
+                    let log_now = {
+                        let mut g = dedupe.lock().unwrap_or_else(|p| p.into_inner());
+                        g.should_log_skip(pubkey, "upstream ATA empty")
+                    };
+                    if log_now {
+                        info!(
+                            automation = %pubkey,
+                            "executor: upstream ATA empty, skipping fire until bridge lands"
+                        );
+                    } else {
+                        debug!(
+                            automation = %pubkey,
+                            "executor: upstream ATA empty, skipping fire until bridge lands"
+                        );
+                    }
                 } else if input_overconsumed {
                     error!(
                         automation = %pubkey,
@@ -888,6 +950,8 @@ mod tests {
                 amount: 0,
             },
             bridge_enabled: false,
+            executions: 0,
+            armed: true,
         }
     }
 

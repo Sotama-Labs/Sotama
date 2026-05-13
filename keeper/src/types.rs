@@ -28,6 +28,20 @@ pub struct AutomationCtx {
     /// dispatcher doesn't have to refetch the on-chain account every
     /// tick — the indexer already pulls it during reconcile.
     pub bridge_enabled: bool,
+    /// Mirrors `Automation.executions`. Used by the indexer to compute
+    /// `armed` for downstream chain links: a `consume_upstream_output`
+    /// rule with an upstream whose `executions == 0` cannot fire yet
+    /// because its input ATA is structurally empty.
+    pub executions: u32,
+    /// True when the rule is eligible to fire right now. Computed by
+    /// the indexer after each reconcile. For `consume_upstream_output`
+    /// Swap rules this means an upstream rule (one whose
+    /// `linked_downstream` points at this pubkey) exists in the
+    /// watched set AND has fired at least once. All other rules are
+    /// always armed. Watchers consult this flag before adding a rule
+    /// to a TriggerEvent so a tail-of-chain rule doesn't spam the
+    /// executor every Pyth tick while its upstream hasn't fired yet.
+    pub armed: bool,
 }
 
 /// Carries enough information for `VaultManager` to compute the ATA
@@ -105,6 +119,8 @@ mod tests {
                 consume_upstream_output: false,
             },
             bridge_enabled,
+            executions: 0,
+            armed: true,
         }
     }
 
@@ -120,6 +136,8 @@ mod tests {
                 amount: 1_000_000,
             },
             bridge_enabled: true, // even if set, non-Swap should produce no targets
+            executions: 0,
+            armed: true,
         }
     }
 

@@ -553,6 +553,11 @@ async fn process_feed_update(
         }
     }
 
+    // Drop tail-of-chain rules whose upstream hasn't fired yet — their
+    // input ATA is structurally empty so the executor would just
+    // `SkipEmptyUpstreamATA` after one RPC round-trip. Gating here
+    // saves the per-tick RPC waste.
+    to_fire.retain(|c| c.armed);
     if to_fire.is_empty() {
         return;
     }

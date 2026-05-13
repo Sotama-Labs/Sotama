@@ -250,13 +250,19 @@ impl KeeperConfig {
             .filter(|s| !s.trim().is_empty());
 
         let jupiter_price_enabled = parse_or::<u8>("JUPITER_PRICE_ENABLED", 1)? != 0;
-        let jupiter_price_url = required_or(
-            "JUPITER_PRICE_URL",
-            "https://lite-api.jup.ag/price/v3",
-        )?;
         let jupiter_api_key = std::env::var("JUPITER_API_KEY")
             .ok()
             .filter(|s| !s.trim().is_empty());
+        // When a Pro key is configured, default the price URL to the
+        // paid host (`api.jup.ag`) so the key actually applies. The Lite
+        // host ignores the `x-api-key` header — leaving the default at
+        // `lite-api.jup.ag` here would silently rate-limit a paid setup.
+        let default_price_url = if jupiter_api_key.is_some() {
+            "https://api.jup.ag/price/v3"
+        } else {
+            "https://lite-api.jup.ag/price/v3"
+        };
+        let jupiter_price_url = required_or("JUPITER_PRICE_URL", default_price_url)?;
 
         let priority_fee_floor = parse_or::<u64>("KEEPER_PRIORITY_FEE_FLOOR", 50_000)?;
         let priority_fee_ceiling = parse_or::<u64>("KEEPER_PRIORITY_FEE_CEILING", 1_000_000)?;

@@ -177,6 +177,8 @@ async fn shard_loop(
             // a transfer-only tx shouldn't fire a "swaps" trigger.
             let filtered: Vec<_> = matches
                 .iter()
+                // Drop tail-of-chain rules whose upstream hasn't fired yet.
+                .filter(|m| m.armed)
                 .filter(|m| {
                     if let crate::state::TriggerSpec::AccountActivity { kind, .. } = &m.trigger {
                         if *kind == 1 {
