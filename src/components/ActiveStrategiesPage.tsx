@@ -6,7 +6,7 @@ import { isClosed, isCompleted, isTerminal } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import { AutomationRow } from "./SavedList";
 import { ArrowRight } from "./icons";
-import { useAutomationFills } from "@/hooks/useAutomationFills";
+import { useAutomationHistory } from "@/hooks/useAutomationFills";
 import { useUsdPrices } from "@/hooks/useUsdPrices";
 
 function SectionHeader({ title, count, trailing }: { title: string; count?: number; trailing?: React.ReactNode }) {
@@ -347,7 +347,8 @@ export function ActiveStrategiesPage({
     return waiting;
   }, [items]);
 
-  const fills = useAutomationFills(items);
+  const history = useAutomationHistory(items);
+  const fills = history.fills;
 
   // Union of input mints across owned automations — only ask Jupiter
   // about mints we actually need a price for.
@@ -364,41 +365,67 @@ export function ActiveStrategiesPage({
 
   const prices = useUsdPrices(inputMints);
 
+  const executionRunsByPda = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const e of history.executions) {
+      const prev = map.get(e.automation) ?? 0;
+      map.set(e.automation, Math.max(prev, e.executions));
+    }
+    return map;
+  }, [history.executions]);
+
   const executionsCount = useMemo(
-    () => items.reduce((s, a) => s + (a.runs || 0), 0),
-    [items],
+    () =>
+      items.reduce((s, a) => {
+        const historyRuns = a.pubkey ? executionRunsByPda.get(a.pubkey) ?? 0 : 0;
+        return s + Math.max(a.runs || 0, historyRuns);
+      }, 0),
+    [items, executionRunsByPda],
   );
 
-  // Volume = Σ over decoded fills of (input_amount / 10^decimals) × USD.
-  // Fills whose automation isn't in local state (e.g. removed locally
-  // via "Remove") or whose input mint Jupiter doesn't price are skipped
-  // — better to undercount than to render a misleading number.
+  // Volume = Σ executed token amount × USD. For swaps, the program's
+  // AutomationExecuted.amount is the received output amount, so prefer
+  // AutomationFilled.inputAmount when the fill exists for the same tx.
   const volumeUsd = useMemo(() => {
     let total = 0;
-    for (const f of fills) {
-      const a = automationByPda.get(f.automation);
-      if (!a) continue;
-      const act = a.actions[0];
-      if (!act) continue;
-      let mint: string;
-      let decimals: number;
-      if (act.kind === "swap") {
-        mint = act.inputToken.mint;
-        decimals = act.inputToken.decimals;
-      } else if (act.kind === "transfer") {
-        mint = act.token.mint;
-        decimals = act.token.decimals;
-      } else {
-        continue;
-      }
+    const fillByKey = new Map(fills.map((f) => [`${f.automation}:${f.sig}`, f]));
+    const executionKeys = new Set<string>();
+    const addTokenAmount = (mint: string, decimals: number, rawAmount: string): boolean => {
       const usd = prices[mint];
-      if (!usd) continue;
-      const native = Number(f.inputAmount) / Math.pow(10, decimals);
-      if (!Number.isFinite(native)) continue;
+      if (!usd) return false;
+      const native = Number(rawAmount) / Math.pow(10, decimals);
+      if (!Number.isFinite(native)) return false;
       total += native * usd;
+      return true;
+    };
+
+    for (const e of history.executions) {
+      const key = `${e.automation}:${e.sig}`;
+      executionKeys.add(key);
+      const a = automationByPda.get(e.automation);
+      const act = a?.actions[0];
+      if (!act) continue;
+      if (act.kind === "swap") {
+        const fill = fillByKey.get(key);
+        if (fill) {
+          addTokenAmount(act.inputToken.mint, act.inputToken.decimals, fill.inputAmount);
+        } else {
+          addTokenAmount(act.outputToken.mint, act.outputToken.decimals, e.amount);
+        }
+      } else if (act.kind === "transfer") {
+        addTokenAmount(act.token.mint, act.token.decimals, e.amount);
+      }
+    }
+    for (const f of fills) {
+      if (executionKeys.has(`${f.automation}:${f.sig}`)) continue;
+      const a = automationByPda.get(f.automation);
+      const act = a?.actions[0];
+      if (act?.kind === "swap") {
+        addTokenAmount(act.inputToken.mint, act.inputToken.decimals, f.inputAmount);
+      }
     }
     return total;
-  }, [fills, automationByPda, prices]);
+  }, [history.executions, fills, automationByPda, prices]);
 
   const running = useMemo(
     () => items.filter((a) => a.running && !isTerminal(a)),
@@ -481,7 +508,7 @@ export function ActiveStrategiesPage({
         runningCount={running.length}
         executionsCount={executionsCount}
         volumeUsd={volumeUsd}
-        hasFills={fills.length > 0}
+        hasFills={history.executions.length > 0 || fills.length > 0}
         allCount={items.length}
       />
 

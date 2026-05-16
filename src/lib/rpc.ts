@@ -12,13 +12,43 @@ const PUBLIC_FALLBACK: Record<Cluster, string> = {
   devnet: "https://api.devnet.solana.com",
 };
 
-export const RPC_URL =
-  process.env.NEXT_PUBLIC_HELIUS_RPC_URL || PUBLIC_FALLBACK[CLUSTER];
+function cleanEnvUrl(value: string | undefined): string {
+  return value?.trim() ?? "";
+}
 
-export const HAS_HELIUS = Boolean(process.env.NEXT_PUBLIC_HELIUS_RPC_URL);
+function warnIfPublicApiKeyUrl(name: string, url: string) {
+  if (typeof window === "undefined" || !url) return;
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has("api-key")) {
+      console.warn(
+        `${name} contains an api-key query parameter. ` +
+          "Use a Helius Secure RPC URL in NEXT_PUBLIC_* frontend env vars; raw API keys are public in browser bundles.",
+      );
+    }
+  } catch {
+    // Invalid URLs fail naturally at the RPC client boundary.
+  }
+}
+
+const PUBLIC_RPC_URL = cleanEnvUrl(process.env.NEXT_PUBLIC_HELIUS_RPC_URL);
+const PUBLIC_MAINNET_METADATA_RPC_URL = cleanEnvUrl(
+  process.env.NEXT_PUBLIC_HELIUS_MAINNET_RPC_URL,
+);
+
+export const RPC_URL =
+  PUBLIC_RPC_URL || PUBLIC_FALLBACK[CLUSTER];
+
+export const HAS_HELIUS = Boolean(PUBLIC_RPC_URL);
 
 export const MAINNET_METADATA_RPC_URL =
-  process.env.NEXT_PUBLIC_HELIUS_MAINNET_RPC_URL || null;
+  PUBLIC_MAINNET_METADATA_RPC_URL || null;
+
+warnIfPublicApiKeyUrl("NEXT_PUBLIC_HELIUS_RPC_URL", PUBLIC_RPC_URL);
+warnIfPublicApiKeyUrl(
+  "NEXT_PUBLIC_HELIUS_MAINNET_RPC_URL",
+  PUBLIC_MAINNET_METADATA_RPC_URL,
+);
 
 export const CLUSTER_LABEL: Record<Cluster, string> = {
   "mainnet-beta": "Mainnet",

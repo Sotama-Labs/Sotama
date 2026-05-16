@@ -727,7 +727,7 @@ export function DepositSheet({
                 ? `Solana base + priority · ${actionsList.length} actions`
                 : "Solana base + priority"
             }
-            value={`${networkFeeSol.toFixed(6)} SOL`}
+            value={`${fmt(networkFeeSol, 6)} SOL`}
           />
           {tokens.length > 0 ? (
             <div
@@ -751,7 +751,7 @@ export function DepositSheet({
                   className="hig-caption-1"
                   style={{ color: "var(--label-secondary)", marginTop: "0.0625rem" }}
                 >
-                  + {networkFeeSol.toFixed(6)} SOL
+                  + {fmt(networkFeeSol, 6)} SOL
                 </div>
               </div>
             </div>

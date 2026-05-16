@@ -284,7 +284,7 @@ export function ChainDepositSheet({
           <FeeRow
             label="Network fee"
             sub={`Solana base + priority · ${nodes.length} create ix${nodes.length === 1 ? "" : "s"}`}
-            value={`${summary.networkFeeSol.toFixed(6)} SOL`}
+            value={`${fmt(summary.networkFeeSol, 6)} SOL`}
           />
           <div
             style={{
@@ -307,7 +307,7 @@ export function ChainDepositSheet({
                 className="hig-caption-1"
                 style={{ color: "var(--label-secondary)", marginTop: "0.0625rem" }}
               >
-                + {summary.networkFeeSol.toFixed(6)} SOL
+                + {fmt(summary.networkFeeSol, 6)} SOL
               </div>
             </div>
           </div>
