@@ -25,10 +25,12 @@
 //!          numeric ids for the SubscribeRequest.
 //!
 //! Scope:
-//! - Plain `AssetPrice` triggers (`quote_mint = None`) go through Lazer.
-//! - `PriceRatio` triggers (`quote_mint = Some(mint)`) need a Jupiter
-//!   `/quote` round-trip per evaluation, which would erase the latency
-//!   win. Hermes price_watcher handles those at its 12s tick.
+//! - Plain `AssetPrice` triggers (`quote_mint = None`) can fire directly
+//!   from this watcher.
+//! - Ratio triggers stream every Pyth leg (base or quote) into PriceCache.
+//!   The cache-driven evaluator in `price_watcher.rs` combines those Pyth
+//!   snapshots with the 1s Jupiter mint cache, covering Pyth/Pyth,
+//!   Pyth/Jupiter, Jupiter/Pyth, and Jupiter/Jupiter combinations.
 
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -36,7 +38,7 @@ use pyth_lazer_protocol::api::{
     Channel, DeliveryFormat, Format, JsonBinaryEncoding, ParsedFeedPayload, SubscribeRequest,
     SubscriptionId, SubscriptionParams, SubscriptionParamsRepr, WsRequest, WsResponse,
 };
-use pyth_lazer_protocol::time::FixedRate;
+use pyth_lazer_protocol::time::{FixedRate, TimestampUs};
 use pyth_lazer_protocol::{PriceFeedId, PriceFeedProperty};
 use serde::Deserialize;
 use solana_sdk::pubkey::Pubkey;
@@ -44,6 +46,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -63,6 +66,7 @@ const LAZER_ENDPOINTS: &[&str] = &[
 ];
 
 const SYMBOLS_URL: &str = "https://history.pyth-lazer.dourolabs.app/v1/symbols";
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Cap a single reconnection backoff. Reasonable upper bound for an
 /// expired or revoked token: chatty enough that an admin notices but
@@ -76,6 +80,12 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 struct FeedMeta {
     lazer_id: u32,
     exponent: i32,
+}
+
+#[derive(Debug)]
+struct ActiveFeedUpdate {
+    endpoint: &'static str,
+    feeds: HashSet<Pubkey>,
 }
 
 // `active_feeds_tx`: set of feed pubkeys Lazer is currently streaming.
@@ -121,13 +131,65 @@ pub async fn run(
     let hermes_to_meta = Arc::new(hermes_to_meta);
     let lazer_to_hermes = Arc::new(lazer_to_hermes);
 
-    let mut endpoint_idx = 0usize;
+    let (active_update_tx, mut active_update_rx) =
+        mpsc::channel::<ActiveFeedUpdate>(LAZER_ENDPOINTS.len() * 4);
+    let active_union_tx = active_feeds_tx.clone();
+    tokio::spawn(async move {
+        let mut by_endpoint: HashMap<&'static str, HashSet<Pubkey>> = HashMap::new();
+        while let Some(update) = active_update_rx.recv().await {
+            if update.feeds.is_empty() {
+                by_endpoint.remove(update.endpoint);
+            } else {
+                by_endpoint.insert(update.endpoint, update.feeds);
+            }
+            let union = by_endpoint
+                .values()
+                .flat_map(|feeds| feeds.iter().copied())
+                .collect::<HashSet<_>>();
+            let _ = active_union_tx.send(union);
+        }
+    });
+
+    for endpoint in LAZER_ENDPOINTS {
+        let token = token.clone();
+        let set_rx = set_rx.clone();
+        let trigger_tx = trigger_tx.clone();
+        let hermes_to_meta = hermes_to_meta.clone();
+        let lazer_to_hermes = lazer_to_hermes.clone();
+        let active_update_tx = active_update_tx.clone();
+        let price_cache = price_cache.clone();
+        tokio::spawn(async move {
+            run_endpoint_loop(
+                endpoint,
+                token,
+                set_rx,
+                trigger_tx,
+                hermes_to_meta,
+                lazer_to_hermes,
+                active_update_tx,
+                price_cache,
+            )
+            .await;
+        });
+    }
+    drop(active_update_tx);
+
+    futures_util::future::pending::<()>().await;
+    Ok(())
+}
+
+async fn run_endpoint_loop(
+    endpoint: &'static str,
+    token: String,
+    set_rx: watch::Receiver<WatchedSet>,
+    trigger_tx: mpsc::Sender<TriggerEvent>,
+    hermes_to_meta: Arc<HashMap<[u8; 32], FeedMeta>>,
+    lazer_to_hermes: Arc<HashMap<u32, [u8; 32]>>,
+    active_update_tx: mpsc::Sender<ActiveFeedUpdate>,
+    price_cache: PriceCache,
+) {
     let mut backoff = Duration::from_secs(1);
-
     loop {
-        let endpoint = LAZER_ENDPOINTS[endpoint_idx % LAZER_ENDPOINTS.len()];
-        endpoint_idx = endpoint_idx.wrapping_add(1);
-
         let result = connect_and_run(
             endpoint,
             &token,
@@ -135,7 +197,7 @@ pub async fn run(
             &trigger_tx,
             &hermes_to_meta,
             &lazer_to_hermes,
-            &active_feeds_tx,
+            &active_update_tx,
             &price_cache,
         )
         .await;
@@ -143,11 +205,19 @@ pub async fn run(
         // Whether the connection ended cleanly or with an error, we're
         // no longer streaming — clear the active set so price_watcher
         // knows to take over those feeds until we reconnect.
-        let _ = active_feeds_tx.send(HashSet::new());
+        let _ = active_update_tx
+            .send(ActiveFeedUpdate {
+                endpoint,
+                feeds: HashSet::new(),
+            })
+            .await;
 
         match result {
             Ok(()) => {
-                debug!(endpoint, "lazer_watcher: stream closed cleanly; reconnecting");
+                debug!(
+                    endpoint,
+                    "lazer_watcher: stream closed cleanly; reconnecting"
+                );
                 backoff = Duration::from_secs(1);
             }
             Err(e) => {
@@ -212,20 +282,23 @@ async fn fetch_symbol_maps() -> Result<(HashMap<[u8; 32], FeedMeta>, HashMap<u32
 }
 
 async fn connect_and_run(
-    endpoint: &str,
+    endpoint: &'static str,
     token: &str,
     set_rx: &watch::Receiver<WatchedSet>,
     trigger_tx: &mpsc::Sender<TriggerEvent>,
     hermes_to_meta: &Arc<HashMap<[u8; 32], FeedMeta>>,
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
-    active_feeds_tx: &watch::Sender<HashSet<Pubkey>>,
+    active_update_tx: &mpsc::Sender<ActiveFeedUpdate>,
     price_cache: &PriceCache,
 ) -> Result<()> {
-    let mut req = endpoint.into_client_request().context("parse lazer endpoint")?;
+    let mut req = endpoint
+        .into_client_request()
+        .context("parse lazer endpoint")?;
     let auth_value: http::HeaderValue = format!("Bearer {token}")
         .parse()
         .context("build authorization header")?;
-    req.headers_mut().insert(http::header::AUTHORIZATION, auth_value);
+    req.headers_mut()
+        .insert(http::header::AUTHORIZATION, auth_value);
 
     let (ws, _resp) = connect_async(req).await.context("ws connect")?;
     debug!(endpoint, "lazer_watcher: connected");
@@ -245,9 +318,18 @@ async fn connect_and_run(
             "lazer_watcher: subscribed"
         );
     } else {
-        debug!(endpoint, "lazer_watcher: no AssetPrice triggers yet; idle");
+        info!(
+            endpoint,
+            "lazer_watcher: no PYTH AssetPrice triggers active; idle"
+        );
     }
-    publish_active_feeds(active_feeds_tx, &subscribed_lazer, lazer_to_hermes);
+    publish_active_feeds(
+        endpoint,
+        active_update_tx,
+        &subscribed_lazer,
+        lazer_to_hermes,
+    )
+    .await;
 
     let mut set_rx_local = set_rx.clone();
     // Track consecutive failed text-frame parses. A persistent stream of
@@ -256,8 +338,15 @@ async fn connect_and_run(
     // an error so the outer loop reconnects fresh (H4).
     const PARSE_ERROR_LIMIT: u32 = 5;
     let mut consecutive_parse_errors: u32 = 0;
+    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    keepalive.tick().await;
     loop {
         tokio::select! {
+            _ = keepalive.tick() => {
+                ws.send(Message::Ping(Vec::new())).await.context("ws ping")?;
+            }
+
             res = set_rx_local.changed() => {
                 if res.is_err() { break; }
                 let new_ids = current_lazer_ids(&set_rx_local, hermes_to_meta);
@@ -272,7 +361,7 @@ async fn connect_and_run(
                     debug!(removed = removed.len(), "lazer_watcher: unsubscribed from removed feeds");
                 }
                 subscribed_lazer = new_ids;
-                publish_active_feeds(active_feeds_tx, &subscribed_lazer, lazer_to_hermes);
+                publish_active_feeds(endpoint, active_update_tx, &subscribed_lazer, lazer_to_hermes).await;
             }
 
             msg = ws.next() => {
@@ -320,8 +409,9 @@ async fn connect_and_run(
 /// pubkeys and publish them on the shared "Lazer is covering these"
 /// channel. price_watcher reads this and skips polling those feeds —
 /// the two paths must not both fire on the same crossing.
-fn publish_active_feeds(
-    tx: &watch::Sender<HashSet<Pubkey>>,
+async fn publish_active_feeds(
+    endpoint: &'static str,
+    tx: &mpsc::Sender<ActiveFeedUpdate>,
     lazer_ids: &[u32],
     lazer_to_hermes: &HashMap<u32, [u8; 32]>,
 ) {
@@ -331,18 +421,31 @@ fn publish_active_feeds(
             set.insert(Pubkey::new_from_array(*bytes));
         }
     }
-    let _ = tx.send(set);
+    let _ = tx
+        .send(ActiveFeedUpdate {
+            endpoint,
+            feeds: set,
+        })
+        .await;
 }
 
 fn current_lazer_ids(
     set_rx: &watch::Receiver<WatchedSet>,
     hermes_to_meta: &HashMap<[u8; 32], FeedMeta>,
 ) -> Vec<u32> {
-    // Lazer is a Pyth wire format — only PYTH-sourced triggers are
-    // candidates. Jupiter-sourced triggers are watched by jupiter_watcher.
-    let feeds = set_rx
-        .borrow()
-        .price_feeds_for_source(crate::state::oracle_source::PYTH);
+    // Lazer is a Pyth wire format. Subscribe to every active Pyth leg:
+    // PYTH-sourced bases plus quote_mint values that are actually Pyth feed ids.
+    // Jupiter/SPL legs stay on the 1s mint probe path.
+    let set = set_rx.borrow();
+    let mut feeds: HashSet<Pubkey> = set
+        .price_feeds_for_source(crate::state::oracle_source::PYTH)
+        .into_iter()
+        .collect();
+    for quote in set.asset_price_quote_mints() {
+        if hermes_to_meta.contains_key(&quote.to_bytes()) {
+            feeds.insert(quote);
+        }
+    }
     let mut out = Vec::with_capacity(feeds.len());
     for f in feeds {
         if let Some(meta) = hermes_to_meta.get(&f.to_bytes()) {
@@ -371,7 +474,11 @@ async fn send_subscribe(
         params: SubscriptionParams::new(SubscriptionParamsRepr {
             price_feed_ids: Some(feeds.iter().copied().map(PriceFeedId).collect()),
             symbols: None,
-            properties: vec![PriceFeedProperty::Price, PriceFeedProperty::Exponent],
+            properties: vec![
+                PriceFeedProperty::Price,
+                PriceFeedProperty::Exponent,
+                PriceFeedProperty::FeedUpdateTimestamp,
+            ],
             // Lazer requires at least one signed format. Solana is the
             // smallest payload that satisfies the gate; we ignore the
             // signed bytes since we trust the keeper-as-signer model on
@@ -386,12 +493,14 @@ async fn send_subscribe(
         .map_err(|e| anyhow!("invalid subscribe params: {e}"))?,
     });
     let json = serde_json::to_string(&req).context("serialize subscribe")?;
-    ws.send(Message::Text(json.into())).await.context("ws send subscribe")?;
+    ws.send(Message::Text(json.into()))
+        .await
+        .context("ws send subscribe")?;
     Ok(())
 }
 
 async fn send_unsubscribe(
-    ws: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    _ws: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     _feeds: &[u32],
 ) -> Result<()> {
     // Lazer's UnsubscribeRequest works on a SubscriptionId, not on a
@@ -421,12 +530,18 @@ async fn handle_text(
     let parsed: WsResponse = serde_json::from_str(text)?;
     match parsed {
         WsResponse::Subscribed(s) => {
-            debug!(subscription_id = s.subscription_id.0, "lazer_watcher: subscription ack");
+            info!(
+                subscription_id = s.subscription_id.0,
+                "lazer_watcher: subscription ack"
+            );
         }
         WsResponse::SubscribedWithInvalidFeedIdsIgnored(s) => {
             warn!(
                 subscription_id = s.subscription_id.0,
                 accepted = s.subscribed_feed_ids.len(),
+                not_entitled = s.ignored_invalid_feed_ids.not_entitled.len(),
+                unsupported_channels = s.ignored_invalid_feed_ids.unsupported_channels.len(),
+                unknown_ids = s.ignored_invalid_feed_ids.unknown_ids.len(),
                 "lazer_watcher: some feed ids were invalid (server ignored them)"
             );
         }
@@ -439,9 +554,18 @@ async fn handle_text(
         }
         WsResponse::StreamUpdated(update) => {
             if let Some(parsed) = update.payload.parsed {
+                let payload_timestamp = parsed.timestamp_us;
                 for feed in parsed.price_feeds {
-                    process_feed_update(set_rx, trigger_tx, hermes_to_meta, lazer_to_hermes, price_cache, &feed)
-                        .await;
+                    process_feed_update(
+                        set_rx,
+                        trigger_tx,
+                        hermes_to_meta,
+                        lazer_to_hermes,
+                        price_cache,
+                        &feed,
+                        payload_timestamp,
+                    )
+                    .await;
                 }
             }
         }
@@ -456,21 +580,13 @@ async fn process_feed_update(
     lazer_to_hermes: &Arc<HashMap<u32, [u8; 32]>>,
     price_cache: &PriceCache,
     feed: &ParsedFeedPayload,
+    payload_timestamp: TimestampUs,
 ) {
     let lazer_id = feed.price_feed_id.0;
     let Some(hermes_bytes) = lazer_to_hermes.get(&lazer_id) else {
         return;
     };
     let feed_pk = Pubkey::new_from_array(*hermes_bytes);
-
-    // Only PYTH-sourced triggers route through Lazer; JUPITER triggers
-    // are handled by jupiter_watcher.
-    let matches = set_rx
-        .borrow()
-        .price_matches_for_source(&feed_pk, crate::state::oracle_source::PYTH);
-    if matches.is_empty() {
-        return;
-    }
 
     let Some(price) = feed.price else { return };
     let raw: i64 = price.mantissa_i64();
@@ -505,7 +621,7 @@ async fn process_feed_update(
         }
     }
     let expo = cached_expo;
-    let publish_time: i64 = parsed_timestamp_to_unix_seconds(&feed);
+    let publish_time: i64 = feed_timestamp_to_unix_seconds(feed, payload_timestamp);
 
     // Write the price snapshot into the shared PriceCache so downstream
     // consumers (e.g. the stream orchestrator) can read it without an
@@ -524,7 +640,19 @@ async fn process_feed_update(
         raw_price: Some(raw),
         expo: Some(expo),
     };
-    price_cache.put(hex::encode(hermes_bytes), snap.clone()).await;
+    price_cache
+        .put(hex::encode(hermes_bytes), snap.clone())
+        .await;
+
+    // This feed may be quote-only for a Jupiter/Pyth or Pyth/Pyth ratio.
+    // In that case there are no direct PYTH base matches, but the cache write
+    // above still wakes price_watcher so it can evaluate the ratio.
+    let matches = set_rx
+        .borrow()
+        .price_matches_for_source(&feed_pk, crate::state::oracle_source::PYTH);
+    if matches.is_empty() {
+        return;
+    }
 
     let latest = LatestPrice {
         raw,
@@ -579,15 +707,101 @@ async fn process_feed_update(
     }
 }
 
-/// `ParsedFeedPayload` doesn't carry per-feed publish_time; the
-/// timestamp lives on the parent `ParsedPayload.timestamp_us`. We pass
-/// only the per-feed item to this helper, so we approximate by treating
-/// the dispatch time as "now". Used solely for the dedupe correlation
-/// id, not for any threshold math.
-fn parsed_timestamp_to_unix_seconds(_feed: &ParsedFeedPayload) -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+fn feed_timestamp_to_unix_seconds(feed: &ParsedFeedPayload, payload_timestamp: TimestampUs) -> i64 {
+    feed.feed_update_timestamp
+        .unwrap_or(payload_timestamp)
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::WatchedSet;
+    use crate::state::{oracle_source, ActionSpec, TriggerSpec};
+    use crate::types::AutomationCtx;
+
+    fn ctx(trigger: TriggerSpec) -> AutomationCtx {
+        AutomationCtx {
+            pubkey: Pubkey::new_unique(),
+            owner: Pubkey::new_unique(),
+            nonce: 0,
+            created_at: 0,
+            trigger,
+            action: ActionSpec::TransferSol {
+                destination: Pubkey::new_unique(),
+                amount: 1,
+            },
+            bridge_enabled: false,
+            executions: 0,
+            armed: true,
+        }
+    }
+
+    fn meta_for(feeds: &[(Pubkey, u32)]) -> HashMap<[u8; 32], FeedMeta> {
+        feeds
+            .iter()
+            .map(|(pk, id)| {
+                (
+                    pk.to_bytes(),
+                    FeedMeta {
+                        lazer_id: *id,
+                        exponent: -8,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn current_lazer_ids_includes_pyth_quote_for_jupiter_base() {
+        let jupiter_base_mint = Pubkey::new_unique();
+        let xau_feed = Pubkey::new_unique();
+        let set = WatchedSet::from_index(vec![ctx(TriggerSpec::AssetPrice {
+            feed: jupiter_base_mint,
+            quote_mint: Some(xau_feed),
+            comparator: 1,
+            threshold: 1_003_000,
+            expo: -6,
+            source: oracle_source::JUPITER,
+        })]);
+        let (_tx, rx) = watch::channel(set);
+        let ids = current_lazer_ids(&rx, &meta_for(&[(xau_feed, 42)]));
+        assert_eq!(ids, vec![42]);
+    }
+
+    #[test]
+    fn current_lazer_ids_includes_base_and_pyth_quote_for_pyth_ratio() {
+        let base_feed = Pubkey::new_unique();
+        let quote_feed = Pubkey::new_unique();
+        let set = WatchedSet::from_index(vec![ctx(TriggerSpec::AssetPrice {
+            feed: base_feed,
+            quote_mint: Some(quote_feed),
+            comparator: 0,
+            threshold: 995_500,
+            expo: -6,
+            source: oracle_source::PYTH,
+        })]);
+        let (_tx, rx) = watch::channel(set);
+        let ids = current_lazer_ids(&rx, &meta_for(&[(base_feed, 7), (quote_feed, 8)]));
+        assert_eq!(ids, vec![7, 8]);
+    }
+
+    #[test]
+    fn current_lazer_ids_excludes_spl_quote_mints() {
+        let base_feed = Pubkey::new_unique();
+        let spl_quote = Pubkey::new_unique();
+        let set = WatchedSet::from_index(vec![ctx(TriggerSpec::AssetPrice {
+            feed: base_feed,
+            quote_mint: Some(spl_quote),
+            comparator: 0,
+            threshold: 995_500,
+            expo: -6,
+            source: oracle_source::PYTH,
+        })]);
+        let (_tx, rx) = watch::channel(set);
+        let ids = current_lazer_ids(&rx, &meta_for(&[(base_feed, 7)]));
+        assert_eq!(ids, vec![7]);
+    }
 }

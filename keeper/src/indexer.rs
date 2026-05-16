@@ -305,13 +305,58 @@ impl WatchedSet {
         s.into_iter().collect()
     }
 
+    /// All Pyth feed pubkeys needed by stream-backed price evaluation.
+    ///
+    /// This is not just PYTH-sourced base feeds. Ratio triggers can also carry
+    /// a Pyth feed id in `quote_mint` (for example Jup/XAU), and quote-leg
+    /// movement must wake the evaluator just as quickly as base-leg movement.
+    pub fn pyth_stream_feeds(
+        &self,
+        pyth_catalog: &crate::pyth_catalog::PythCatalog,
+    ) -> Vec<Pubkey> {
+        let mut out: HashSet<Pubkey> = HashSet::new();
+        for ctx in self.by_pubkey.values() {
+            if let crate::state::TriggerSpec::AssetPrice {
+                feed,
+                source,
+                quote_mint,
+                ..
+            } = &ctx.trigger
+            {
+                if *source == crate::state::oracle_source::PYTH {
+                    out.insert(*feed);
+                }
+                if let Some(qm) = quote_mint {
+                    if pyth_catalog.contains_key(&qm.to_bytes()) {
+                        out.insert(*qm);
+                    }
+                }
+            }
+        }
+        let mut feeds: Vec<Pubkey> = out.into_iter().collect();
+        feeds.sort_unstable();
+        feeds
+    }
+
     /// All feed_id strings currently watched by price triggers (deduplicated,
     /// hex-encoded). For Pyth feeds the key is the feed_id hex; the Hermes SSE
-    /// endpoint expects these as `ids[]` query params. The orchestrator just
-    /// passes these through — both Lazer and Hermes paths share this set.
+    /// endpoint expects these as `ids[]` query params. Jupiter-sourced triggers
+    /// store SPL mints in the same `feed` field, so they must not be sent to
+    /// Hermes as Pyth feed ids.
+    pub fn active_feed_ids_for_catalog(
+        &self,
+        pyth_catalog: &crate::pyth_catalog::PythCatalog,
+    ) -> Vec<String> {
+        self.pyth_stream_feeds(pyth_catalog)
+            .into_iter()
+            .map(|pk| hex::encode(pk.to_bytes()))
+            .collect()
+    }
+
+    /// Backward-compatible base-feed view used by tests and non-stream callers.
     pub fn active_feed_ids(&self) -> Vec<String> {
-        self.price_triggers
-            .keys()
+        self.price_feeds_for_source(crate::state::oracle_source::PYTH)
+            .into_iter()
             .map(|pk| hex::encode(pk.to_bytes()))
             .collect()
     }

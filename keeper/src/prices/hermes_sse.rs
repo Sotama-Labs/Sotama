@@ -11,11 +11,16 @@ pub async fn run(
     cache: &PriceCache,
     max_duration: Duration,
 ) -> Result<()> {
-    let mut url = format!("{}/v2/updates/price/stream?", base_url.trim_end_matches('/'));
+    let mut url = format!(
+        "{}/v2/updates/price/stream?",
+        base_url.trim_end_matches('/')
+    );
     for (i, id) in feed_ids.iter().enumerate() {
-        if i > 0 { url.push('&') }
+        if i > 0 {
+            url.push('&')
+        }
         url.push_str("ids[]=");
-        url.push_str(id);
+        url.push_str(&with_0x_prefix(id));
     }
     url.push_str("&parsed=true&encoding=base64");
 
@@ -29,7 +34,9 @@ pub async fn run(
     let mut buf: Vec<u8> = Vec::new();
 
     while let Some(chunk) = stream.next().await {
-        if started.elapsed() >= max_duration { return Ok(()) }
+        if started.elapsed() >= max_duration {
+            return Ok(());
+        }
         let chunk = chunk?;
         buf.extend_from_slice(chunk.as_ref());
         while let Some(pos) = find_double_newline(&buf) {
@@ -45,24 +52,59 @@ pub async fn run(
     Err(anyhow!("hermes sse closed unexpectedly"))
 }
 
+fn with_0x_prefix(id: &str) -> String {
+    if id.starts_with("0x") {
+        id.to_string()
+    } else {
+        format!("0x{id}")
+    }
+}
+
 fn find_double_newline(buf: &[u8]) -> Option<usize> {
     for i in 0..buf.len().saturating_sub(1) {
-        if buf[i] == b'\n' && buf[i + 1] == b'\n' { return Some(i) }
+        if buf[i] == b'\n' && buf[i + 1] == b'\n' {
+            return Some(i);
+        }
     }
     None
 }
 
 async fn handle_payload(payload: &str, cache: &PriceCache) {
-    if payload == "[DONE]" || payload.is_empty() { return }
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else { return };
-    let Some(parsed) = v.get("parsed").and_then(|p| p.as_array()) else { return };
+    if payload == "[DONE]" || payload.is_empty() {
+        return;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return;
+    };
+    let Some(parsed) = v.get("parsed").and_then(|p| p.as_array()) else {
+        return;
+    };
     for item in parsed {
-        let Some(id) = item.get("id").and_then(|x| x.as_str()) else { continue };
-        let Some(price_obj) = item.get("price") else { continue };
-        let Some(price_raw) = price_obj.get("price").and_then(|x| x.as_str()).and_then(|s| s.parse::<i64>().ok()) else { continue };
-        let Some(expo) = price_obj.get("expo").and_then(|x| x.as_i64()) else { continue };
-        let conf_raw: i64 = price_obj.get("conf").and_then(|x| x.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let publish_time = price_obj.get("publish_time").and_then(|x| x.as_i64()).unwrap_or(0);
+        let Some(id) = item.get("id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let Some(price_obj) = item.get("price") else {
+            continue;
+        };
+        let Some(price_raw) = price_obj
+            .get("price")
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let Some(expo) = price_obj.get("expo").and_then(|x| x.as_i64()) else {
+            continue;
+        };
+        let conf_raw: i64 = price_obj
+            .get("conf")
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let publish_time = price_obj
+            .get("publish_time")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0);
         let scale = 10f64.powi(expo as i32);
         // raw_price + expo preserved so the cache-driven evaluator in
         // price_watcher can compute Pyth-quoted ratio triggers (e.g. SOL/EUR)
@@ -94,6 +136,12 @@ mod tests {
     fn no_double_newline_returns_none() {
         let buf = b"data: hello\n";
         assert_eq!(find_double_newline(buf), None);
+    }
+
+    #[test]
+    fn hermes_stream_ids_are_0x_prefixed() {
+        assert_eq!(with_0x_prefix("abc"), "0xabc");
+        assert_eq!(with_0x_prefix("0xabc"), "0xabc");
     }
 
     #[tokio::test]

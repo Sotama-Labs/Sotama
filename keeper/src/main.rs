@@ -5,10 +5,9 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 mod bridge_dispatcher;
-mod prices;
-mod events;
 mod caches;
 mod config;
+mod events;
 mod executor;
 mod fills;
 mod indexer;
@@ -17,6 +16,7 @@ mod jupiter_watcher;
 mod lazer_watcher;
 mod mints;
 mod price_watcher;
+mod prices;
 mod program;
 mod pyth_catalog;
 mod sender_helius;
@@ -46,18 +46,20 @@ async fn main() -> Result<()> {
         cluster = cfg.cluster.label(),
         program_id = %cfg.program_id,
         keeper = %cfg.keeper_pubkey,
-        rpc = %cfg.rpc_url,
-        ws = %cfg.ws_url,
-        sender = %cfg.sender_url,
+        rpc = %redacted_url(&cfg.rpc_url),
+        ws = %redacted_url(&cfg.ws_url),
+        sender = %redacted_url(&cfg.sender_url),
         jupiter = %cfg.jupiter_base_url,
         stream_mode = ?cfg.stream_mode,
         "sotama-keeper starting"
     );
 
-    let rpc = std::sync::Arc::new(solana_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
-        cfg.rpc_url.clone(),
-        solana_sdk::commitment_config::CommitmentConfig::confirmed(),
-    ));
+    let rpc = std::sync::Arc::new(
+        solana_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
+            cfg.rpc_url.clone(),
+            solana_sdk::commitment_config::CommitmentConfig::confirmed(),
+        ),
+    );
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()?;
@@ -136,19 +138,40 @@ async fn main() -> Result<()> {
         "stream mode configured"
     );
 
+    // Load the Pyth catalog once before stream subscriptions are derived.
+    // The handle is shared with a background refresher that swaps in a
+    // fresh catalog every 5 minutes so newly-listed Pyth feeds become
+    // recognizable without a keeper restart.
+    let initial_catalog = match crate::pyth_catalog::fetch().await {
+        Ok(c) => {
+            info!(feeds = c.len(), "main: loaded Pyth catalog");
+            c
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "main: Pyth catalog load failed; catalog treated as empty");
+            crate::pyth_catalog::PythCatalog::new()
+        }
+    };
+    let pyth_catalog_handle = crate::pyth_catalog::PythCatalogHandle::new(initial_catalog);
+    crate::pyth_catalog::spawn_refresher(pyth_catalog_handle.clone());
+
     // Feed-ids broadcaster: every 2s, derive the active hex feed-id set
     // from the WatchedSet and publish it on a watch channel so the stream
     // orchestrator knows when to restart the Hermes SSE subscription.
     let (feed_ids_tx, feed_ids_rx) = watch::channel::<Vec<String>>(vec![]);
     {
         let watched_set_for_feeds = set_rx.clone();
+        let catalog_for_feeds = pyth_catalog_handle.clone();
         let feed_ids_tx_clone = feed_ids_tx.clone();
         tokio::spawn(async move {
             let mut iv = tokio::time::interval(std::time::Duration::from_secs(2));
             iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 iv.tick().await;
-                let active = watched_set_for_feeds.borrow().active_feed_ids();
+                let catalog = catalog_for_feeds.snapshot().await;
+                let active = watched_set_for_feeds
+                    .borrow()
+                    .active_feed_ids_for_catalog(&catalog);
                 let _ = feed_ids_tx_clone.send(active);
             }
         });
@@ -199,27 +222,9 @@ async fn main() -> Result<()> {
     // -----------------------------------------------------------------------
     let mint_cache = mints::cache::MintPriceCache::new();
 
-    // Load the Pyth catalog for the mint probe's active-mints derivation.
-    // Best-effort: failure here means non-Pyth quote mints may also be
-    // probed (harmless — the probe just fetches more mints than needed).
-    // The handle is shared with a background refresher that swaps in a
-    // fresh catalog every 5 minutes so newly-listed Pyth feeds become
-    // recognizable without a keeper restart.
-    let initial_catalog = match crate::pyth_catalog::fetch().await {
-        Ok(c) => {
-            info!(feeds = c.len(), "main: loaded Pyth catalog for mint probe");
-            c
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "main: Pyth catalog load failed for mint probe; catalog treated as empty");
-            crate::pyth_catalog::PythCatalog::new()
-        }
-    };
-    let pyth_catalog_handle = crate::pyth_catalog::PythCatalogHandle::new(initial_catalog);
-    crate::pyth_catalog::spawn_refresher(pyth_catalog_handle.clone());
-
     // Watch channel that carries the current active Jupiter mint set to the probe.
-    let (mints_tx, mints_rx) = tokio::sync::watch::channel::<Vec<solana_sdk::pubkey::Pubkey>>(vec![]);
+    let (mints_tx, mints_rx) =
+        tokio::sync::watch::channel::<Vec<solana_sdk::pubkey::Pubkey>>(vec![]);
 
     // Spawn the probe (1s base, exponential backoff on errors).
     mints::probe::spawn(
@@ -254,16 +259,15 @@ async fn main() -> Result<()> {
     // event. Read by price_watcher's PriceRelativeToFill evaluator branch.
     // When KEEPER_FILL_CACHE_PATH is set, fills survive keeper restarts.
     let fill_cache = match &cfg.fill_cache_path {
-        Some(p) => fills::cache::FillCache::with_persistence(p.clone())
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    target: "main",
-                    error = %e,
-                    path = %p.display(),
-                    "fill cache persistence init failed; falling back to in-memory"
-                );
-                fills::cache::FillCache::new()
-            }),
+        Some(p) => fills::cache::FillCache::with_persistence(p.clone()).unwrap_or_else(|e| {
+            tracing::warn!(
+                target: "main",
+                error = %e,
+                path = %p.display(),
+                "fill cache persistence init failed; falling back to in-memory"
+            );
+            fills::cache::FillCache::new()
+        }),
         None => fills::cache::FillCache::new(),
     };
 
@@ -284,12 +288,7 @@ async fn main() -> Result<()> {
     let source: std::sync::Arc<dyn streaming::StreamSource> = std::sync::Arc::new(
         streaming::ws_source::WsStreamSource::new(cfg.ws_url.clone()),
     );
-    events::subscriber::spawn(
-        source.clone(),
-        cfg.program_id,
-        lifecycle_tx,
-        reconcile_tx,
-    );
+    events::subscriber::spawn(source.clone(), cfg.program_id, lifecycle_tx, reconcile_tx);
 
     // Lifecycle apply task: for each decoded event, fetch the account (if
     // needed) then mutate the WatchedSet in-place via send_if_modified so
@@ -414,8 +413,18 @@ async fn main() -> Result<()> {
         let fill_cache_for_watcher = fill_cache.clone();
         let pyth_catalog_for_watcher = pyth_catalog_handle.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                price_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_rx, price_cache_for_watcher, suppress_hermes_poll, mint_cache_for_watcher, fill_cache_for_watcher, pyth_catalog_for_watcher).await
+            if let Err(e) = price_watcher::run(
+                cfg,
+                set_rx,
+                trigger_tx,
+                lazer_active_feeds_rx,
+                price_cache_for_watcher,
+                suppress_hermes_poll,
+                mint_cache_for_watcher,
+                fill_cache_for_watcher,
+                pyth_catalog_for_watcher,
+            )
+            .await
             {
                 error!(error = %e, "price_watcher task exited");
             }
@@ -434,8 +443,14 @@ async fn main() -> Result<()> {
         let lazer_active_feeds_tx = lazer_active_feeds_tx.clone();
         let price_cache_for_lazer = price_cache.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                lazer_watcher::run(cfg, set_rx, trigger_tx, lazer_active_feeds_tx, price_cache_for_lazer).await
+            if let Err(e) = lazer_watcher::run(
+                cfg,
+                set_rx,
+                trigger_tx,
+                lazer_active_feeds_tx,
+                price_cache_for_lazer,
+            )
+            .await
             {
                 error!(error = %e, "lazer_watcher task exited");
             }
@@ -451,7 +466,9 @@ async fn main() -> Result<()> {
         let trigger_tx = trigger_tx.clone();
         let pyth_catalog_for_jupiter = pyth_catalog_handle.clone();
         tokio::spawn(async move {
-            if let Err(e) = jupiter_watcher::run(cfg, set_rx, trigger_tx, pyth_catalog_for_jupiter).await {
+            if let Err(e) =
+                jupiter_watcher::run(cfg, set_rx, trigger_tx, pyth_catalog_for_jupiter).await
+            {
                 error!(error = %e, "jupiter_watcher task exited");
             }
         })
@@ -471,7 +488,10 @@ async fn main() -> Result<()> {
     };
 
     let vault_cache = vaults::VaultCache::new();
-    let vault_mgr = std::sync::Arc::new(vaults::VaultManager::new(source.clone(), vault_cache.clone()));
+    let vault_mgr = std::sync::Arc::new(vaults::VaultManager::new(
+        source.clone(),
+        vault_cache.clone(),
+    ));
 
     // Bridge dispatcher. Scans VaultCache every 2s for bridge-enabled
     // automations holding orphaned non-input-mint balances and converts
@@ -645,9 +665,11 @@ async fn compute_effective_fill(
 
     // Step 2: Extract input_mint and output_mint from the Swap action.
     let (input_mint, output_mint) = match &automation.action {
-        crate::state::ActionSpec::Swap { input_mint, output_mint, .. } => {
-            (*input_mint, *output_mint)
-        }
+        crate::state::ActionSpec::Swap {
+            input_mint,
+            output_mint,
+            ..
+        } => (*input_mint, *output_mint),
         _ => {
             return Err(FillRejection::AutomationDecode);
         }
@@ -740,9 +762,51 @@ fn init_tracing() {
         .init();
 }
 
+fn redacted_url(raw: &str) -> String {
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return raw.to_string();
+    };
+    if url.query().is_none() {
+        return url.to_string();
+    }
+
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(key, value)| {
+            let redacted = matches!(
+                key.to_ascii_lowercase().as_str(),
+                "api-key" | "apikey" | "key" | "token" | "access_token"
+            );
+            (
+                key.into_owned(),
+                if redacted {
+                    "__redacted__".to_string()
+                } else {
+                    value.into_owned()
+                },
+            )
+        })
+        .collect();
+    url.query_pairs_mut().clear().extend_pairs(
+        pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    );
+    url.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_api_keys_in_logged_urls() {
+        let redacted = redacted_url("https://example.com/rpc?api-key=secret&safe=value");
+        assert_eq!(
+            redacted,
+            "https://example.com/rpc?api-key=__redacted__&safe=value"
+        );
+    }
 
     #[test]
     fn one_btc_at_80k_to_one_wbtc_gives_80k_per_wbtc() {

@@ -268,9 +268,11 @@ pub async fn run(
 
         let set = set_rx.borrow().clone();
         let lazer_active: HashSet<Pubkey> = lazer_active_feeds_rx.borrow().clone();
-        let feeds: Vec<Pubkey> = set
-            .price_feeds_for_source(crate::state::oracle_source::PYTH)
-            .into_iter()
+        let pyth_base_feeds: Vec<Pubkey> =
+            set.price_feeds_for_source(crate::state::oracle_source::PYTH);
+        let pyth_poll_feeds: Vec<Pubkey> = pyth_base_feeds
+            .iter()
+            .copied()
             .filter(|f| !lazer_active.contains(f))
             .collect();
 
@@ -293,7 +295,7 @@ pub async fn run(
         // batch poll. In StreamMode::On this map is empty (poll suppressed) so
         // this loop body does nothing — the cache-driven path below covers it.
         // -----------------------------------------------------------------------
-        for feed in &feeds {
+        for feed in &pyth_poll_feeds {
             let feed_hex_id = pubkey_to_hex(feed);
             let Some(price) = prices.get(&feed_hex_id) else {
                 continue;
@@ -376,20 +378,20 @@ pub async fn run(
         // In Off/Shadow modes both paths run; the `already` set deduplicates.
         //
         // PYTH base triggers (absolute and Pyth/Pyth ratio) — from PriceCache.
+        // Use every Pyth base feed here, including feeds currently streamed by
+        // Lazer. Polling skips Lazer-active feeds, but ratio triggers still need
+        // cache evaluation because the direct Lazer path only fires simple
+        // USD-denominated triggers.
         // -----------------------------------------------------------------------
         let cache_snaps = price_cache.snapshot_all().await;
         let mint_snaps = mint_cache.snapshot_all().await;
-        for feed in &feeds {
+        for feed in &pyth_base_feeds {
             let feed_hex_id = pubkey_to_hex(feed);
             let Some(base_snap) = cache_snaps.get(&feed_hex_id) else {
                 continue;
             };
             let ctxs = set.price_matches_for_source(feed, oracle_source::PYTH);
             for ctx in &ctxs {
-                // Skip if already handled by the poll-path above (dedup).
-                if !already.insert(ctx.pubkey) {
-                    continue;
-                }
                 let TriggerSpec::AssetPrice {
                     quote_mint,
                     comparator,
@@ -400,6 +402,17 @@ pub async fn run(
                 else {
                     continue;
                 };
+                // Simple Lazer-covered absolute triggers fire directly inside
+                // lazer_watcher. Let that path keep ownership to avoid emitting
+                // two TriggerEvents for the same tick. Ratio triggers still flow
+                // through this cache evaluator.
+                if quote_mint.is_none() && lazer_active.contains(feed) {
+                    continue;
+                }
+                // Skip if already handled by the poll-path above (dedup).
+                if !already.insert(ctx.pubkey) {
+                    continue;
+                }
 
                 let crossed = match quote_mint {
                     None => {
