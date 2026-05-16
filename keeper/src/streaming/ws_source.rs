@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use solana_sdk::pubkey::Pubkey;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::warn;
@@ -14,6 +15,8 @@ use tracing::warn;
 pub struct WsStreamSource {
     pub url: String,
 }
+
+const WS_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
 impl WsStreamSource {
     pub fn new(url: String) -> Self {
@@ -69,7 +72,8 @@ async fn run_logs_subscription(
     program: &str,
     tx: &mpsc::Sender<LogEvent>,
 ) -> Result<()> {
-    let (mut ws, _) = connect_async(url).await?;
+    let (ws, _) = connect_async(url).await?;
+    let (mut write, mut read) = ws.split();
     // Sentinel: tells consumers "fresh subscription, run reconcile" (Task 10 consumer side).
     let _ = tx
         .send(LogEvent {
@@ -88,16 +92,36 @@ async fn run_logs_subscription(
             { "commitment": "confirmed" }
         ]
     });
-    ws.send(Message::Text(req.to_string().into())).await?;
-    while let Some(msg) = ws.next().await {
-        let msg = msg?;
+    write.send(Message::Text(req.to_string().into())).await?;
+    let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        let msg = tokio::select! {
+            _ = keepalive.tick() => {
+                write.send(Message::Ping(Vec::new())).await?;
+                continue;
+            }
+            msg = read.next() => {
+                let Some(msg) = msg else {
+                    return Err(anyhow!("ws closed"));
+                };
+                msg?
+            }
+        };
         let text = match msg {
             Message::Text(t) => t,
-            Message::Ping(_) | Message::Pong(_) | Message::Binary(_) => continue,
+            Message::Ping(payload) => {
+                write.send(Message::Pong(payload)).await?;
+                continue;
+            }
+            Message::Pong(_) | Message::Binary(_) => continue,
             Message::Close(_) => return Err(anyhow!("ws closed")),
             _ => continue,
         };
         let val: Value = serde_json::from_str(&text)?;
+        if let Some(err) = val.get("error") {
+            return Err(anyhow!("logsSubscribe error: {err}"));
+        }
         if val.get("method").and_then(|m| m.as_str()) != Some("logsNotification") {
             continue;
         }
@@ -139,7 +163,6 @@ async fn run_logs_subscription(
             return Ok(());
         }
     }
-    Err(anyhow!("ws closed"))
 }
 
 async fn run_account_subscription(
@@ -148,7 +171,8 @@ async fn run_account_subscription(
     account: Pubkey,
     tx: &mpsc::Sender<AccountUpdate>,
 ) -> Result<()> {
-    let (mut ws, _) = connect_async(url).await?;
+    let (ws, _) = connect_async(url).await?;
+    let (mut write, mut read) = ws.split();
     let req = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -158,16 +182,36 @@ async fn run_account_subscription(
             { "commitment": "confirmed", "encoding": "base64" }
         ]
     });
-    ws.send(Message::Text(req.to_string().into())).await?;
-    while let Some(msg) = ws.next().await {
-        let msg = msg?;
+    write.send(Message::Text(req.to_string().into())).await?;
+    let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        let msg = tokio::select! {
+            _ = keepalive.tick() => {
+                write.send(Message::Ping(Vec::new())).await?;
+                continue;
+            }
+            msg = read.next() => {
+                let Some(msg) = msg else {
+                    return Err(anyhow!("ws closed"));
+                };
+                msg?
+            }
+        };
         let text = match msg {
             Message::Text(t) => t,
-            Message::Ping(_) | Message::Pong(_) | Message::Binary(_) => continue,
+            Message::Ping(payload) => {
+                write.send(Message::Pong(payload)).await?;
+                continue;
+            }
+            Message::Pong(_) | Message::Binary(_) => continue,
             Message::Close(_) => return Err(anyhow!("ws closed")),
             _ => continue,
         };
         let val: Value = serde_json::from_str(&text)?;
+        if let Some(err) = val.get("error") {
+            return Err(anyhow!("accountSubscribe error: {err}"));
+        }
         if val.get("method").and_then(|m| m.as_str()) != Some("accountNotification") {
             continue;
         }
@@ -196,7 +240,6 @@ async fn run_account_subscription(
             return Ok(());
         }
     }
-    Err(anyhow!("ws closed"))
 }
 
 #[cfg(test)]

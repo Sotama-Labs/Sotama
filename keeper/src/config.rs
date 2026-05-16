@@ -189,12 +189,12 @@ impl KeeperConfig {
         let (default_rpc, default_ws, default_sender) = match cluster {
             Cluster::Devnet => (
                 "https://devnet.helius-rpc.com",
-                "wss://atlas-devnet.helius-rpc.com",
+                "wss://devnet.helius-rpc.com",
                 "https://devnet.helius-rpc.com/?api-key=__APIKEY__",
             ),
             Cluster::MainnetBeta => (
                 "https://mainnet.helius-rpc.com",
-                "wss://atlas-mainnet.helius-rpc.com",
+                "wss://mainnet.helius-rpc.com",
                 // Helius Sender — canonical hostname is `sender.helius-rpc.com`,
                 // NOT `mainnet-sender.helius-rpc.com` (the latter doesn't
                 // resolve; verified via dig 2026-05-11). Sender is
@@ -212,8 +212,8 @@ impl KeeperConfig {
         let hermes_url = required_or("PYTH_HERMES_URL", "https://hermes.pyth.network")?;
         let jupiter_base_url = required_or("JUPITER_BASE_URL", "https://api.jup.ag")?;
 
-        let rpc_url = format!("{}/?api-key={}", rpc_base.trim_end_matches('/'), api_key);
-        let ws_url = format!("{}/?api-key={}", ws_base.trim_end_matches('/'), api_key);
+        let rpc_url = with_api_key(&rpc_base, &api_key);
+        let ws_url = with_api_key(&ws_base, &api_key);
         let sender_url = if sender_url.contains("__APIKEY__") {
             sender_url.replace("__APIKEY__", &api_key)
         } else {
@@ -233,17 +233,14 @@ impl KeeperConfig {
             Duration::from_secs(parse_or("FEE_TOPUP_SCAN_INTERVAL_SECS", 300)?);
         let time_watcher_interval =
             Duration::from_secs(parse_or("TIME_WATCHER_INTERVAL_SECS", 60)?);
-        let bridge_scan_interval =
-            Duration::from_secs(parse_or("BRIDGE_SCAN_INTERVAL_SECS", 30)?);
+        let bridge_scan_interval = Duration::from_secs(parse_or("BRIDGE_SCAN_INTERVAL_SECS", 30)?);
         let bridge_min_balance = parse_or::<u64>("BRIDGE_MIN_BALANCE", 100_000)?;
         let bridge_slippage_bps = parse_or::<u16>("BRIDGE_SLIPPAGE_BPS", 50)?.max(1);
         let shard_size = parse_or::<usize>("SHARD_SIZE", 40)?.max(1);
         let swap_slippage_bps = parse_or::<u16>("SWAP_SLIPPAGE_BPS", 50)?.max(1);
         let keeper_fee_lamports = parse_or::<u64>("KEEPER_FEE_LAMPORTS", 5_000)?;
-        let fee_topup_threshold_lamports =
-            parse_or::<u64>("FEE_TOPUP_THRESHOLD_LAMPORTS", 50_000)?;
-        let fee_topup_amount_lamports =
-            parse_or::<u64>("FEE_TOPUP_AMOUNT_LAMPORTS", 100_000)?;
+        let fee_topup_threshold_lamports = parse_or::<u64>("FEE_TOPUP_THRESHOLD_LAMPORTS", 50_000)?;
+        let fee_topup_amount_lamports = parse_or::<u64>("FEE_TOPUP_AMOUNT_LAMPORTS", 100_000)?;
 
         let lazer_access_token = std::env::var("LAZER_ACCESS_TOKEN")
             .ok()
@@ -378,6 +375,21 @@ fn required_or(name: &str, default: &str) -> Result<String> {
     Ok(std::env::var(name).unwrap_or_else(|_| default.to_string()))
 }
 
+fn with_api_key(base: &str, api_key: &str) -> String {
+    if base.contains("__APIKEY__") {
+        return base.replace("__APIKEY__", api_key);
+    }
+    if base.contains("api-key=") {
+        return base.to_string();
+    }
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.contains('?') {
+        format!("{trimmed}&api-key={api_key}")
+    } else {
+        format!("{trimmed}/?api-key={api_key}")
+    }
+}
+
 fn parse_or<T: FromStr>(name: &str, default: T) -> Result<T>
 where
     <T as FromStr>::Err: std::fmt::Display,
@@ -387,5 +399,34 @@ where
             .parse::<T>()
             .map_err(|e| anyhow!("invalid {name}={v}: {e}")),
         Err(_) => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_api_key;
+
+    #[test]
+    fn appends_api_key_to_clean_base_url() {
+        assert_eq!(
+            with_api_key("wss://devnet.helius-rpc.com", "k"),
+            "wss://devnet.helius-rpc.com/?api-key=k"
+        );
+    }
+
+    #[test]
+    fn preserves_existing_api_key_url() {
+        assert_eq!(
+            with_api_key("https://mainnet.helius-rpc.com/?api-key=existing", "k"),
+            "https://mainnet.helius-rpc.com/?api-key=existing"
+        );
+    }
+
+    #[test]
+    fn replaces_placeholder_api_key() {
+        assert_eq!(
+            with_api_key("https://mainnet.helius-rpc.com/?api-key=__APIKEY__", "k"),
+            "https://mainnet.helius-rpc.com/?api-key=k"
+        );
     }
 }

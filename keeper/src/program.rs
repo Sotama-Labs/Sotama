@@ -156,6 +156,7 @@ pub fn build_execute_automation_spl_ix(
     mint: &Pubkey,
     automation_ata: &Pubkey,
     destination_ata: &Pubkey,
+    token_program: &Pubkey,
 ) -> Instruction {
     let mut data = Vec::with_capacity(8);
     data.extend_from_slice(execute_automation_spl_discriminator());
@@ -168,7 +169,7 @@ pub fn build_execute_automation_spl_ix(
             AccountMeta::new_readonly(*mint, false),
             AccountMeta::new(*automation_ata, false),
             AccountMeta::new(*destination_ata, false),
-            AccountMeta::new_readonly(*spl_token_program_id(), false),
+            AccountMeta::new_readonly(*token_program, false),
         ],
         data,
     }
@@ -394,7 +395,8 @@ pub fn build_execute_bridge_ix(
     output_ata_index: u8,
     min_amount_out: u64,
 ) -> Instruction {
-    let mut data = Vec::with_capacity(8 + 4 + inner_data.len() + 4 + inner_accounts.len() * 2 + 1 + 8);
+    let mut data =
+        Vec::with_capacity(8 + 4 + inner_data.len() + 4 + inner_accounts.len() * 2 + 1 + 8);
     data.extend_from_slice(execute_bridge_discriminator());
 
     let inner_len = inner_data.len() as u32;

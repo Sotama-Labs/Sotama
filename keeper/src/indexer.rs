@@ -13,7 +13,10 @@ use tracing::{debug, info, warn};
 
 use crate::config::KeeperConfig;
 use crate::events::AutomationLifecycle;
-use crate::program::automation_discriminator;
+use crate::program::{
+    associated_token_address_for_program, automation_discriminator, spl_token_program_id,
+    token_2022_program_id,
+};
 use crate::state::Automation;
 use crate::types::AutomationCtx;
 
@@ -46,8 +49,13 @@ impl WatchedSet {
     fn insert_ctx(&mut self, ctx: AutomationCtx) {
         self.by_pubkey.insert(ctx.pubkey, ctx.clone());
         match &ctx.trigger {
-            crate::state::TriggerSpec::AccountActivity { account, .. } => {
-                self.account_triggers.entry(*account).or_default().push(ctx);
+            crate::state::TriggerSpec::AccountActivity { account, mint, .. } => {
+                for key in account_activity_watch_keys(account, mint) {
+                    self.account_triggers
+                        .entry(key)
+                        .or_default()
+                        .push(ctx.clone());
+                }
             }
             crate::state::TriggerSpec::AssetPrice { feed, .. } => {
                 self.price_triggers.entry(*feed).or_default().push(ctx);
@@ -238,30 +246,40 @@ impl WatchedSet {
     /// the trigger underneath swaps (e.g., feed swap or source flip from
     /// PYTH → JUPITER). The plain pubkey-set comparison used to miss
     /// those, leaving stale Lazer subscriptions behind (H2).
-    fn fingerprint(&self) -> Vec<(Pubkey, u8, Pubkey, u8)> {
-        let mut out: Vec<(Pubkey, u8, Pubkey, u8)> = self
+    fn fingerprint(&self) -> Vec<(Pubkey, u8, Pubkey, Pubkey, u8)> {
+        let mut out: Vec<(Pubkey, u8, Pubkey, Pubkey, u8)> = self
             .by_pubkey
             .iter()
             .map(|(pk, ctx)| {
-                let (kind, target, source) = match &ctx.trigger {
-                    crate::state::TriggerSpec::AccountActivity { account, kind, .. } => {
-                        (0u8, *account, *kind)
-                    }
-                    crate::state::TriggerSpec::AssetPrice { feed, source, .. } => {
-                        (1u8, *feed, *source)
-                    }
+                let (kind, target, aux, source) = match &ctx.trigger {
+                    crate::state::TriggerSpec::AccountActivity {
+                        account,
+                        mint,
+                        kind,
+                        ..
+                    } => (0u8, *account, mint.unwrap_or_default(), *kind),
+                    crate::state::TriggerSpec::AssetPrice {
+                        feed,
+                        quote_mint,
+                        source,
+                        ..
+                    } => (1u8, *feed, quote_mint.unwrap_or_default(), *source),
                     crate::state::TriggerSpec::TimeElapsed { .. } => {
                         // No watched account/feed; trigger spec is
                         // immutable after create, so the outer
                         // automation pubkey already disambiguates.
-                        (2u8, Pubkey::default(), 0u8)
+                        (2u8, Pubkey::default(), Pubkey::default(), 0u8)
                     }
-                    crate::state::TriggerSpec::PriceRelativeToFill { upstream, direction, .. } => {
+                    crate::state::TriggerSpec::PriceRelativeToFill {
+                        upstream,
+                        direction,
+                        ..
+                    } => {
                         // Upstream pubkey is the primary discriminating field.
-                        (3u8, *upstream, *direction)
+                        (3u8, *upstream, Pubkey::default(), *direction)
                     }
                 };
-                (*pk, kind, target, source)
+                (*pk, kind, target, aux, source)
             })
             .collect();
         out.sort_unstable();
@@ -337,6 +355,24 @@ impl WatchedSet {
     }
 }
 
+pub fn account_activity_watch_keys(account: &Pubkey, mint: &Option<Pubkey>) -> Vec<Pubkey> {
+    let Some(mint) = mint else {
+        return vec![*account];
+    };
+    let mut keys = Vec::with_capacity(3);
+    keys.push(*account);
+    let legacy_ata = associated_token_address_for_program(account, mint, spl_token_program_id());
+    if !keys.contains(&legacy_ata) {
+        keys.push(legacy_ata);
+    }
+    let token_2022_ata =
+        associated_token_address_for_program(account, mint, token_2022_program_id());
+    if !keys.contains(&token_2022_ata) {
+        keys.push(token_2022_ata);
+    }
+    keys
+}
+
 pub async fn seed_initial(cfg: &KeeperConfig) -> Result<Vec<AutomationCtx>> {
     let client = make_client(cfg);
     fetch_active(&client, &cfg.program_id).await
@@ -384,7 +420,10 @@ pub async fn reconcile_once(
         }
     });
     if !changed {
-        debug!(active = set_tx.borrow().len(), "indexer: reconcile (no change)");
+        debug!(
+            active = set_tx.borrow().len(),
+            "indexer: reconcile (no change)"
+        );
     }
     Ok(())
 }
@@ -484,7 +523,11 @@ pub fn compute_armed(items: &mut [AutomationCtx]) {
     let mut upstream_executed: std::collections::HashMap<Pubkey, bool> =
         std::collections::HashMap::new();
     for c in items.iter() {
-        if let ActionSpec::Swap { linked_downstream: Some(d), .. } = &c.action {
+        if let ActionSpec::Swap {
+            linked_downstream: Some(d),
+            ..
+        } = &c.action
+        {
             let already = upstream_executed.get(d).copied().unwrap_or(false);
             let fired = exec_by_pk.get(&c.pubkey).copied().unwrap_or(0) > 0;
             upstream_executed.insert(*d, already || fired);
@@ -492,9 +535,10 @@ pub fn compute_armed(items: &mut [AutomationCtx]) {
     }
     for c in items.iter_mut() {
         c.armed = match &c.action {
-            ActionSpec::Swap { consume_upstream_output: true, .. } => {
-                upstream_executed.get(&c.pubkey).copied().unwrap_or(false)
-            }
+            ActionSpec::Swap {
+                consume_upstream_output: true,
+                ..
+            } => upstream_executed.get(&c.pubkey).copied().unwrap_or(false),
             _ => true,
         };
     }

@@ -33,6 +33,13 @@ export const SOTAMA_PROGRAM_ID: PublicKey | null = SOTAMA_PROGRAM_ID_STR
 
 export const PROGRAM_CLUSTER: Cluster = CLUSTER;
 
+function runtimeIdl(): SotamaAutomations {
+  return {
+    ...(IDL as unknown as Record<string, unknown>),
+    address: mustProgramId().toBase58(),
+  } as unknown as SotamaAutomations;
+}
+
 /* SPL/sysvar program addresses used by the v2 ix builders. */
 export const SPL_TOKEN_PROGRAM_ID = new PublicKey(
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -136,7 +143,7 @@ export function getProgram(
     commitment: "confirmed",
     preflightCommitment: "confirmed",
   });
-  return new Program<SotamaAutomations>(IDL as unknown as SotamaAutomations, provider);
+  return new Program<SotamaAutomations>(runtimeIdl(), provider);
 }
 
 /* ── TriggerSpec / ActionSpec constructors ──────────────────────────── */

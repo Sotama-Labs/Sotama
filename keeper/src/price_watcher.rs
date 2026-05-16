@@ -273,9 +273,6 @@ pub async fn run(
             .into_iter()
             .filter(|f| !lazer_active.contains(f))
             .collect();
-        if feeds.is_empty() {
-            continue;
-        }
 
         // Snapshot the catalog once per evaluator tick. Newly-listed Pyth feeds
         // become visible here as soon as the background refresher swaps them in.
@@ -335,14 +332,13 @@ pub async fn run(
                         // it's a known Pyth feed) or Jupiter (if it's
                         // an SPL mint). Skip the trigger this tick if
                         // the chosen source didn't return a price.
-                        let (q_raw, q_expo) =
-                            if let Some(p) = hermes_quote_prices.get(qm) {
-                                (p.raw as i128, p.expo)
-                            } else if let Some(q) = mint_quotes.get(qm) {
-                                (q.out_amount as i128, -6)
-                            } else {
-                                continue;
-                            };
+                        let (q_raw, q_expo) = if let Some(p) = hermes_quote_prices.get(qm) {
+                            (p.raw as i128, p.expo)
+                        } else if let Some(q) = mint_quotes.get(qm) {
+                            (q.out_amount as i128, -6)
+                        } else {
+                            continue;
+                        };
                         ratio_compare(
                             *comparator,
                             (price.raw as i128, price.expo),
@@ -567,7 +563,11 @@ pub async fn run(
             if already.contains(&ctx.pubkey) {
                 continue;
             }
-            let TriggerSpec::PriceRelativeToFill { upstream, direction, pct_bps } = &ctx.trigger
+            let TriggerSpec::PriceRelativeToFill {
+                upstream,
+                direction,
+                pct_bps,
+            } = &ctx.trigger
             else {
                 continue;
             };
@@ -640,8 +640,7 @@ pub async fn run(
             }
             info!(
                 count = matches.len(),
-                correlation,
-                "price_watcher: threshold crossed; firing"
+                correlation, "price_watcher: threshold crossed; firing"
             );
             let evt = TriggerEvent {
                 source: "price_watcher",
@@ -690,7 +689,9 @@ pub(crate) async fn probe_mint(
             out_amount: 1_000_000, // 1 USDC at 6 decimals
         });
     }
-    let q = jupiter.quote(mint, &usdc, PROBE_AMOUNT_RAW, slippage_bps).await?;
+    let q = jupiter
+        .quote(mint, &usdc, PROBE_AMOUNT_RAW, slippage_bps)
+        .await?;
     let out: u64 = q
         .out_amount
         .parse()
@@ -769,7 +770,10 @@ pub(crate) async fn fetch_prices(
     if feed_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut url = format!("{}/v2/updates/price/latest?parsed=true", hermes.trim_end_matches('/'));
+    let mut url = format!(
+        "{}/v2/updates/price/latest?parsed=true",
+        hermes.trim_end_matches('/')
+    );
     for id in feed_ids {
         url.push_str("&ids[]=");
         url.push_str(&strip_0x(id));
@@ -970,8 +974,8 @@ pub(crate) fn decide_fill_relative_cross(
 mod tests {
     use super::*;
     use crate::state::oracle_source;
-    use crate::types::AutomationCtx;
     use crate::state::{ActionSpec, TriggerSpec};
+    use crate::types::AutomationCtx;
 
     fn px(raw: i64, expo: i32) -> LatestPrice {
         LatestPrice {
@@ -1042,7 +1046,14 @@ mod tests {
 
         let feed_hex = pubkey_to_hex(&feed);
         let mut local: HashMap<String, LatestPrice> = HashMap::new();
-        local.insert(feed_hex, LatestPrice { raw: 10_100, expo: -2, publish_time: 0 });
+        local.insert(
+            feed_hex,
+            LatestPrice {
+                raw: 10_100,
+                expo: -2,
+                publish_time: 0,
+            },
+        );
 
         let distances = compute_active_distances(&set, &local);
         assert_eq!(distances.len(), 1);
@@ -1088,9 +1099,7 @@ mod tests {
     fn pyth_ratio_below_threshold_crosses() {
         // base: SOL/USD = $80, quote: EUR/USD = $1.0 → ratio = 80.0
         // threshold: 100, crossed_below (<=)
-        let crossed = decide_ratio_cross(
-            80.0, 1.0, 100, 0, 0,
-        );
+        let crossed = decide_ratio_cross(80.0, 1.0, 100, 0, 0);
         assert!(crossed, "SOL/EUR = 80 should cross below 100");
     }
 
@@ -1112,10 +1121,11 @@ mod tests {
     fn pyth_ratio_threshold_with_negative_expo() {
         // SOL/EUR ≈ 181.8 vs threshold 180.0 expressed with expo=-4
         // threshold_f64 = 1_800_000 * 10^-4 = 180.0
-        let crossed = decide_ratio_cross(
-            200.0, 1.10, 1_800_000, -4, 1,
+        let crossed = decide_ratio_cross(200.0, 1.10, 1_800_000, -4, 1);
+        assert!(
+            crossed,
+            "SOL/EUR ≈ 181.8 should cross above 180.0 (expo=-4)"
         );
-        assert!(crossed, "SOL/EUR ≈ 181.8 should cross above 180.0 (expo=-4)");
     }
 
     /// Integration-style test: build a WatchedSet with a Pyth-quoted ratio
@@ -1136,16 +1146,15 @@ mod tests {
         let expo: i32 = 0;
         let comparator: u8 = 1; // crossed_above
 
-        let result = decide_ratio_cross(
-            base_price, quote_price, threshold, expo, comparator,
-        );
+        let result = decide_ratio_cross(base_price, quote_price, threshold, expo, comparator);
         assert!(result, "ratio 181.8 should cross above threshold 180");
 
         // Confirm the inverse does not fire.
-        let result_below = decide_ratio_cross(
-            base_price, quote_price, 182, expo, comparator,
+        let result_below = decide_ratio_cross(base_price, quote_price, 182, expo, comparator);
+        assert!(
+            !result_below,
+            "ratio 181.8 should not cross above threshold 182"
         );
-        assert!(!result_below, "ratio 181.8 should not cross above threshold 182");
     }
 
     // -----------------------------------------------------------------------
@@ -1208,7 +1217,10 @@ mod tests {
     #[test]
     fn fill_relative_drop_below_exact_boundary_fires() {
         let crossed = decide_fill_relative_cross(72_000.0, 80_000.0, 0, 1000);
-        assert!(crossed, "current == fill * 0.9 should cross drop_below at exactly the boundary");
+        assert!(
+            crossed,
+            "current == fill * 0.9 should cross drop_below at exactly the boundary"
+        );
     }
 
     /// Fill at $80k; current at $73k; threshold = 10% drop_below.
@@ -1216,7 +1228,10 @@ mod tests {
     #[test]
     fn fill_relative_drop_below_above_threshold_does_not_fire() {
         let crossed = decide_fill_relative_cross(73_000.0, 80_000.0, 0, 1000);
-        assert!(!crossed, "current above threshold should not cross drop_below");
+        assert!(
+            !crossed,
+            "current above threshold should not cross drop_below"
+        );
     }
 
     /// Fill at $80k; current at $88k; threshold = 10% (1000 bps) grow_above.
@@ -1224,7 +1239,10 @@ mod tests {
     #[test]
     fn fill_relative_grow_above_exact_boundary_fires() {
         let crossed = decide_fill_relative_cross(88_000.0, 80_000.0, 1, 1000);
-        assert!(crossed, "current == fill * 1.1 should cross grow_above at exactly the boundary");
+        assert!(
+            crossed,
+            "current == fill * 1.1 should cross grow_above at exactly the boundary"
+        );
     }
 
     /// Fill at $80k; current at $87k; threshold = 10% grow_above.
@@ -1232,7 +1250,10 @@ mod tests {
     #[test]
     fn fill_relative_grow_above_below_threshold_does_not_fire() {
         let crossed = decide_fill_relative_cross(87_000.0, 80_000.0, 1, 1000);
-        assert!(!crossed, "current below threshold should not cross grow_above");
+        assert!(
+            !crossed,
+            "current below threshold should not cross grow_above"
+        );
     }
 
     /// Zero or negative fill price must never fire (guard against bogus data).

@@ -9,7 +9,7 @@ import {
   NATIVE_MINT,
 } from "@solana/spl-token";
 import BN from "bn.js";
-import type { Action, Trigger } from "@/lib/types";
+import type { Action, Cadence, Trigger } from "@/lib/types";
 import { MAX_TIME_ELAPSED_SECS, timeElapsedToSecs } from "@/lib/types";
 import { fmt } from "@/lib/format";
 import type { BuilderResult } from "./builder/ConditionalBuilder";
@@ -361,12 +361,39 @@ function buildActionSpec(
   }
 }
 
+function unsupportedActivationReason(
+  triggers: Trigger[],
+  actions: Action[],
+  cadence: Cadence,
+): string | null {
+  if (triggers.length !== 1) {
+    return "Only one trigger can be activated on-chain right now.";
+  }
+  if (actions.length !== 1) {
+    return "Only one action can be activated on-chain right now.";
+  }
+  const trigger = triggers[0];
+  if (
+    trigger.kind === "account_swap" &&
+    (trigger.amount.mode === "specific" || trigger.amountDirection !== "at_least")
+  ) {
+    return "Account-swap amount filters need parsed token deltas and are not safe to activate yet.";
+  }
+  const action = actions[0];
+  if (action.kind === "swap" && cadence.kind === "until") {
+    return "Swap actions cannot use an unbounded While cadence because the PDA must be prefunded.";
+  }
+  return null;
+}
+
 /** Compose the first-trigger × first-action shape into an OnChainSpec. */
 async function getOnChainSpec(
   owner: PublicKey,
   triggers: Trigger[],
-  actions: Action[]
+  actions: Action[],
+  cadence: Cadence,
 ): Promise<OnChainSpec | null> {
+  if (unsupportedActivationReason(triggers, actions, cadence)) return null;
   if (triggers.length === 0 || actions.length === 0) return null;
   const trigger = await buildTriggerSpec(triggers[0]);
   if (!trigger) return null;
@@ -501,6 +528,17 @@ export function DepositSheet({
   const cleanupRef = useRef<(() => void) | null>(null);
   const { connection } = useConnection();
   const wallet = useWallet();
+  const unsupportedReason = useMemo(
+    () =>
+      automation
+        ? unsupportedActivationReason(
+            automation.triggers,
+            automation.actions,
+            automation.cadence,
+          )
+        : null,
+    [automation],
+  );
 
   const [onChainSpec, setOnChainSpec] = useState<OnChainSpec | null>(null);
   useEffect(() => {
@@ -513,6 +551,7 @@ export function DepositSheet({
       wallet.publicKey,
       automation.triggers,
       automation.actions,
+      automation.cadence,
     ).then((spec) => {
       if (alive) setOnChainSpec(spec);
     });
@@ -548,10 +587,17 @@ export function DepositSheet({
   const networkFeeSol = SOLANA_NETWORK_FEE_SOL * actionsList.length;
   // Protocol swap fee disabled — totals are just the deposit amounts.
   const totalByToken: Record<string, number> = { ...totals };
+  const confirmDisabled = confirming || Boolean(unsupportedReason);
 
   const handleConfirm = async () => {
     setConfirming(true);
     setErrorMsg(null);
+
+    if (unsupportedReason) {
+      setErrorMsg(unsupportedReason);
+      setConfirming(false);
+      return;
+    }
 
     if (!onChainSpec) {
       await new Promise<void>((resolve) => {
@@ -596,7 +642,9 @@ export function DepositSheet({
     }
   };
 
-  const summary = onChainSpec
+  const summary = unsupportedReason
+    ? unsupportedReason
+    : onChainSpec
     ? "Funds release when the trigger fires."
     : "Saved locally — keeper coverage for this rule shape lands in the next release.";
 
@@ -771,7 +819,7 @@ export function DepositSheet({
           </button>
           <button
             onClick={handleConfirm}
-            disabled={confirming}
+            disabled={confirmDisabled}
             className="hig-body"
             style={{
               flex: 1,
@@ -782,13 +830,16 @@ export function DepositSheet({
               alignItems: "center",
               justifyContent: "center",
               gap: "0.375rem",
-              cursor: confirming ? "wait" : "pointer",
+              opacity: confirmDisabled ? 0.45 : 1,
+              cursor: confirming ? "wait" : unsupportedReason ? "not-allowed" : "pointer",
             }}
           >
             {confirming ? (
               <>
                 <Spinner /> {onChainSpec ? "Signing…" : "Saving…"}
               </>
+            ) : unsupportedReason ? (
+              "Cannot Activate"
             ) : tokens.length === 0 ? (
               onChainSpec ? "Activate" : "Save locally"
             ) : onChainSpec ? (

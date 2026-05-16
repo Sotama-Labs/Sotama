@@ -46,7 +46,7 @@
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
 use reqwest::{Client, RequestBuilder, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use solana_sdk::{instruction::AccountMeta, pubkey::Pubkey};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -85,7 +85,7 @@ pub struct BuildResponse {
     /// Optional setup ixs (e.g., create wSOL ATA, wrap SOL). We ignore
     /// these for now; the deposit-side wrap is handled at create-tx
     /// time in the frontend.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub setup_instructions: Vec<ApiInstruction>,
     /// Optional cleanup ixs (e.g., unwrap residual SOL).
     #[serde(default)]
@@ -96,7 +96,7 @@ pub struct BuildResponse {
     /// includes the resulting `AddressLookupTableAccount`s in the
     /// compiled v0 outer tx. Without this, ALT-resident accounts have
     /// to be inlined and the 1232-byte cap bites.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub addresses_by_lookup_table_address: HashMap<String, Vec<String>>,
 }
 
@@ -115,6 +115,14 @@ pub struct ApiAccount {
     pub pubkey: String,
     pub is_signer: bool,
     pub is_writable: bool,
+}
+
+fn null_to_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Soft hint to Jupiter for the maximum accounts in a route. Jupiter
@@ -205,12 +213,7 @@ impl JupiterClient {
                 .map(|d| (d.subsec_nanos() % 200) as u64)
                 .unwrap_or(0);
             let sleep_ms = base + jitter;
-            warn!(
-                attempt,
-                sleep_ms,
-                url,
-                "jupiter 429; backing off"
-            );
+            warn!(attempt, sleep_ms, url, "jupiter 429; backing off");
             tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
             attempt += 1;
         }
@@ -340,7 +343,9 @@ pub fn locate_ata_indices(
         .position(|a| a.pubkey == *output_ata)
         .ok_or_else(|| anyhow!("output ATA {output_ata} missing from Jupiter accounts"))?;
     if i > u8::MAX as usize || o > u8::MAX as usize {
-        return Err(anyhow!("Jupiter returned > 255 accounts; impossible under CPI"));
+        return Err(anyhow!(
+            "Jupiter returned > 255 accounts; impossible under CPI"
+        ));
     }
     Ok((i as u8, o as u8))
 }
@@ -359,7 +364,9 @@ pub fn locate_mint_index(accounts: &[AccountMeta], mint: &Pubkey) -> Result<u8> 
         .position(|a| a.pubkey == *mint)
         .ok_or_else(|| anyhow!("mint {mint} missing from Jupiter accounts"))?;
     if i > u8::MAX as usize {
-        return Err(anyhow!("Jupiter returned > 255 accounts; impossible under CPI"));
+        return Err(anyhow!(
+            "Jupiter returned > 255 accounts; impossible under CPI"
+        ));
     }
     Ok(i as u8)
 }
@@ -382,4 +389,34 @@ pub fn lookup_table_pubkeys(
         .keys()
         .map(|s| Pubkey::from_str(s).map_err(|e| anyhow!("bad ALT pubkey `{s}`: {e}")))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn build_response_accepts_null_optional_collections() {
+        let parsed: BuildResponse = serde_json::from_value(json!({
+            "inputMint": "So11111111111111111111111111111111111111112",
+            "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "inAmount": "1000",
+            "outAmount": "990",
+            "otherAmountThreshold": "980",
+            "swapInstruction": {
+                "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+                "accounts": [],
+                "data": ""
+            },
+            "setupInstructions": null,
+            "cleanupInstruction": null,
+            "addressesByLookupTableAddress": null
+        }))
+        .unwrap();
+
+        assert!(parsed.setup_instructions.is_empty());
+        assert!(parsed.cleanup_instruction.is_none());
+        assert!(parsed.addresses_by_lookup_table_address.is_empty());
+    }
 }

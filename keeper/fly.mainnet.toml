@@ -41,7 +41,7 @@ primary_region = 'iad'
   # Helius mainnet endpoints. Sender uses `__APIKEY__` placeholder which
   # the keeper substitutes at runtime with `HELIUS_API_KEY` (secret).
   HELIUS_MAINNET_RPC = 'https://mainnet.helius-rpc.com'
-  HELIUS_MAINNET_WS = 'wss://atlas-mainnet.helius-rpc.com'
+  HELIUS_MAINNET_WS = 'wss://mainnet.helius-rpc.com'
   # NOTE: sender.helius-rpc.com/fast requires a Jito-style tip transfer
   # (≥200k lamports) in every tx — we don't build one, so use the
   # standard mainnet RPC for submission. Tradeoff: no priority routing.

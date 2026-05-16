@@ -25,9 +25,8 @@ use crate::caches::treasury::TreasuryHandle;
 use crate::config::KeeperConfig;
 use crate::jupiter::{self, JupiterClient};
 use crate::program::{
-    associated_token_address, associated_token_address_for_program,
-    build_execute_automation_ix, build_execute_automation_spl_ix, build_execute_swap_ix,
-    config_pda, jupiter_program_id,
+    associated_token_address_for_program, build_execute_automation_ix,
+    build_execute_automation_spl_ix, build_execute_swap_ix, config_pda, jupiter_program_id,
 };
 use crate::signer::KeeperSigner;
 use crate::state::ActionSpec;
@@ -486,16 +485,9 @@ async fn execute_one(
         "executor: sending tx via helius sender"
     );
 
-    let sig = send_with_one_shot_escalation(
-        cfg,
-        http,
-        rpc,
-        &ixs,
-        &alts,
-        &bh,
-        fee_microlamports_per_cu,
-    )
-    .await?;
+    let sig =
+        send_with_one_shot_escalation(cfg, http, rpc, &ixs, &alts, &bh, fee_microlamports_per_cu)
+            .await?;
     Ok(sig)
 }
 
@@ -615,11 +607,7 @@ async fn send_with_one_shot_escalation(
     }
 }
 
-async fn fetch_p95_once(
-    http: &reqwest::Client,
-    rpc_url: &str,
-    program_id: &Pubkey,
-) -> Option<u64> {
+async fn fetch_p95_once(http: &reqwest::Client, rpc_url: &str, program_id: &Pubkey) -> Option<u64> {
     let body = json!({
         "jsonrpc": "2.0",
         "id": "p95-escalation",
@@ -666,8 +654,11 @@ async fn build_action_ix(
         ActionSpec::TransferSpl {
             destination, mint, ..
         } => {
-            let automation_ata = associated_token_address(&ctx.pubkey, mint);
-            let destination_ata = associated_token_address(destination, mint);
+            let token_program = mint_program_cache.resolve(rpc, mint).await?;
+            let automation_ata =
+                associated_token_address_for_program(&ctx.pubkey, mint, &token_program);
+            let destination_ata =
+                associated_token_address_for_program(destination, mint, &token_program);
             Ok((
                 build_execute_automation_spl_ix(
                     program_id,
@@ -677,6 +668,7 @@ async fn build_action_ix(
                     mint,
                     &automation_ata,
                     &destination_ata,
+                    &token_program,
                 ),
                 Vec::new(),
             ))
@@ -708,11 +700,8 @@ async fn build_action_ix(
             // same mint.
             let input_token_program = mint_program_cache.resolve(rpc, input_mint).await?;
             let output_token_program = mint_program_cache.resolve(rpc, output_mint).await?;
-            let automation_input_ata = associated_token_address_for_program(
-                &ctx.pubkey,
-                input_mint,
-                &input_token_program,
-            );
+            let automation_input_ata =
+                associated_token_address_for_program(&ctx.pubkey, input_mint, &input_token_program);
             let destination_output_ata = associated_token_address_for_program(
                 destination,
                 output_mint,
@@ -874,7 +863,13 @@ async fn send_via_helius(
             { "encoding": "base64", "skipPreflight": false, "maxRetries": 3, "preflightCommitment": "processed" }
         ]
     });
-    let resp: Value = http.post(sender_url).json(&body).send().await?.json().await?;
+    let resp: Value = http
+        .post(sender_url)
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
     if let Some(err) = resp.get("error") {
         return Err(anyhow!("helius sendTransaction error: {err}"));
     }
@@ -1006,8 +1001,8 @@ mod tests {
 
         let (ixs, alts, payer) = build_realistic_swap_scenario(/*alt_resident=*/ 21);
         let blockhash = Hash::new_unique();
-        let message_v0 = MessageV0::try_compile(&payer, &ixs, &alts, blockhash)
-            .expect("MessageV0::try_compile");
+        let message_v0 =
+            MessageV0::try_compile(&payer, &ixs, &alts, blockhash).expect("MessageV0::try_compile");
         let tx = VersionedTransaction {
             signatures: vec![Signature::default()],
             message: VersionedMessage::V0(message_v0),
@@ -1038,8 +1033,8 @@ mod tests {
 
         let (ixs, _alts, payer) = build_realistic_swap_scenario(/*alt_resident=*/ 21);
         let blockhash = Hash::new_unique();
-        let message_v0 = MessageV0::try_compile(&payer, &ixs, &[], blockhash)
-            .expect("MessageV0::try_compile");
+        let message_v0 =
+            MessageV0::try_compile(&payer, &ixs, &[], blockhash).expect("MessageV0::try_compile");
         let tx = VersionedTransaction {
             signatures: vec![Signature::default()],
             message: VersionedMessage::V0(message_v0),
@@ -1070,11 +1065,10 @@ mod tests {
         use solana_sdk::message::v0::Message as MessageV0;
         use solana_sdk::message::VersionedMessage;
         use solana_sdk::signature::Signature;
-        use solana_sdk::transaction::VersionedTransaction;
         use solana_sdk::system_instruction;
+        use solana_sdk::transaction::VersionedTransaction;
 
-        let (mut ixs, alts, payer) =
-            build_realistic_swap_scenario(/*alt_resident=*/ 21);
+        let (mut ixs, alts, payer) = build_realistic_swap_scenario(/*alt_resident=*/ 21);
         // Append the Jito tip ix exactly like the executor's hot path
         // when `cfg.use_sender == true`.
         ixs.push(system_instruction::transfer(
@@ -1083,8 +1077,8 @@ mod tests {
             200_000, // 0.0002 SOL minimum per Helius docs
         ));
         let blockhash = Hash::new_unique();
-        let message_v0 = MessageV0::try_compile(&payer, &ixs, &alts, blockhash)
-            .expect("MessageV0::try_compile");
+        let message_v0 =
+            MessageV0::try_compile(&payer, &ixs, &alts, blockhash).expect("MessageV0::try_compile");
         let tx = VersionedTransaction {
             signatures: vec![Signature::default()],
             message: VersionedMessage::V0(message_v0),
@@ -1178,9 +1172,9 @@ mod tests {
             0, // input_ata_index
             1, // output_ata_index
             2, // output_mint_index — points into inner_accounts (any
-               // index is fine for the byte-count test; on-chain
-               // validates the pubkey matches action.output_mint, but
-               // production won't reach the wire-size compile).
+            // index is fine for the byte-count test; on-chain
+            // validates the pubkey matches action.output_mint, but
+            // production won't reach the wire-size compile).
             &Pubkey::new_unique(), // treasury_output_ata
             &crate::program::spl_token_program_id().clone(), // token_program (legacy SPL for the wire-size test)
             None,
