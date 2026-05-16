@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { Automation, Action, Trigger } from "@/lib/types";
 import { isClosed, isCompleted, isTerminal } from "@/lib/types";
 import {
@@ -82,6 +82,7 @@ function AutomationRow({
   // input ATA is empty, so calling it "Running · pulse" is dishonest.
   // Only meaningful when the rule isn't terminal and isn't paused.
   const waiting = waitingOnUpstream && a.running && !terminal && !fundingError;
+  const now = useRelativeNow(Boolean(a.running || a.executedAt || a.closedAt));
 
   // Status copy + colors
   const dotColor = fundingError
@@ -99,13 +100,13 @@ function AutomationRow({
   const statusLine = fundingError
     ? `Auto-fund error · ${fundingError}`
     : completed
-    ? `Completed${a.executedAt ? ` · fired ${formatTimeAgo(a.executedAt)}` : ""}`
+    ? `Completed${a.executedAt ? ` · fired ${formatTimeAgo(a.executedAt, now)}` : ""}`
     : closed
-    ? `Closed${a.closedAt ? ` · refunded ${formatTimeAgo(a.closedAt)}` : ""}`
+    ? `Closed${a.closedAt ? ` · refunded ${formatTimeAgo(a.closedAt, now)}` : ""}`
     : waiting
     ? "Waiting on upstream"
     : a.running
-    ? `Running · last checked ${a.lastCheck}`
+    ? `Running · last checked ${formatTimeAgo(a.lastCheck, now, a.createdAt)}`
     : "Paused";
 
   return (
@@ -299,11 +300,31 @@ function AutomationRow({
   );
 }
 
+function useRelativeNow(enabled: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const refresh = () => setNow(Date.now());
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
+    window.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("visibilitychange", refresh);
+    };
+  }, [enabled]);
+
+  return now;
+}
+
 /** Compact relative time, e.g. "12s ago", "4m ago", "3h ago". */
-function formatTimeAgo(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "just now";
-  const diff = Math.max(0, Date.now() - t);
+function formatTimeAgo(iso: string, now = Date.now(), fallbackIso?: string): string {
+  const parsed = Date.parse(iso);
+  const fallback = fallbackIso ? Date.parse(fallbackIso) : NaN;
+  const t = Number.isFinite(parsed) ? parsed : fallback;
+  if (!Number.isFinite(t)) return "0s ago";
+  const diff = Math.max(0, now - t);
   const sec = Math.floor(diff / 1000);
   if (sec < 60) return `${sec}s ago`;
   const min = Math.floor(sec / 60);

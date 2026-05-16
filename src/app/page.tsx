@@ -175,7 +175,6 @@ export default function Page() {
         {
           running: true,
           runs: 0,
-          lastCheck: "just now",
           pubkey: result.nodes[i]?.pubkey,
           signature: result.signature,
           nonce: result.nodes[i]?.nonce,
@@ -244,7 +243,6 @@ export default function Page() {
         id,
         running: true,
         runs: editingId ? undefined : 0,
-        lastCheck: "just now",
         pubkey: result?.pubkey,
         signature: result?.signature,
         nonce: result?.nonce,

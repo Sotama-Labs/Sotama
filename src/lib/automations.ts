@@ -72,6 +72,12 @@ function fillOperators<T extends string>(
   return safe;
 }
 
+function normalizeTimestamp(value: string | undefined, fallback: string): string {
+  if (value && Number.isFinite(Date.parse(value))) return value;
+  if (Number.isFinite(Date.parse(fallback))) return fallback;
+  return new Date().toISOString();
+}
+
 /** Storage key for a given wallet's automations. Namespacing by wallet
  *  pubkey isolates one user's saved strategies from another's on the
  *  same browser — without this, connecting wallet B would surface
@@ -117,6 +123,7 @@ export function loadAutomations(owner: string | null): Automation[] {
         // them to `once` so they keep their original single-shot behavior.
         cadence: a.cadence ?? DEFAULT_CADENCE,
         minIntervalSecs: a.minIntervalSecs ?? DEFAULT_MIN_INTERVAL_SECS,
+        lastCheck: normalizeTimestamp(a.lastCheck, a.createdAt),
       }));
   } catch {
     return [];
@@ -196,7 +203,7 @@ export function makeAutomation(
     minIntervalSecs,
     running: overrides.running ?? true,
     runs: overrides.runs ?? 0,
-    lastCheck: overrides.lastCheck ?? "just now",
+    lastCheck: normalizeTimestamp(overrides.lastCheck, now),
     createdAt: overrides.createdAt ?? now,
     pubkey: overrides.pubkey,
     signature: overrides.signature,
