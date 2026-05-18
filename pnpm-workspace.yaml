@@ -1,0 +1,4 @@
+packages:
+  - "apps/backtest-web"
+  - "services/stat-arb-bot"
+  - "packages/*"
