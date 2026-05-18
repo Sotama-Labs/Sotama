@@ -7,6 +7,7 @@ import { Heartbeat } from "./heartbeat";
 import { SignalEngine } from "./signal-engine";
 import { recordQuote, type CostBps } from "./basis-recorder";
 import { createApiServer } from "./api-server";
+import { isMarketOpen } from "./market-hours";
 import { closePool } from "@sotama/db";
 import { uiToAtomic } from "@sotama/market-core";
 import type { PairConfig } from "@sotama/market-core";
@@ -150,7 +151,13 @@ async function main() {
     if (!pairs) return;
     const lagMs = Math.max(0, Date.now() - Math.floor(t.publishTimeUs / 1000));
     heartbeat.observeStreamLag(lagMs);
+    const nowMs = Date.now();
     for (const pairId of pairs) {
+      const pair = pairConfigs.get(pairId);
+      // Skip after-hours equity ticks so we don't burn Jupiter RPS on
+      // markets that aren't trading. Other asset classes (Crypto, Metal,
+      // FX, Commodity) are always considered open.
+      if (pair && !isMarketOpen(pair.base.assetClass, nowMs)) continue;
       scheduler.onPriceTick(pairId, t.priceUsd);
     }
   });
