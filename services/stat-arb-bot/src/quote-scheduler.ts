@@ -1,5 +1,5 @@
 import { TokenBucket } from "@sotama/market-core";
-import type { PairDirection } from "@sotama/market-core";
+import type { PairDirection, TimeRegime } from "@sotama/market-core";
 
 export type SchedulerPair = {
   pairId: string;
@@ -16,6 +16,8 @@ export type PriceTickMetadata = {
   streamTimestampUs: number;
   feedUpdateTimestampUs: number;
   pythFreshnessLagMs: number;
+  timeRegime?: TimeRegime | null;
+  allowSignals?: boolean;
 };
 
 export type WorkContext = PriceTickMetadata & {

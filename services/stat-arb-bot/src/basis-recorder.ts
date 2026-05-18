@@ -5,7 +5,7 @@ import {
   sellEdgeBps,
   netEdgeBps,
 } from "@sotama/market-core";
-import type { PairConfig, PairDirection } from "@sotama/market-core";
+import type { PairConfig, PairDirection, TimeRegime } from "@sotama/market-core";
 import { insertJupiterQuote, insertBasisObservation } from "@sotama/db";
 import type { OrderResult } from "./jupiter-client";
 
@@ -27,6 +27,7 @@ export type QuoteTiming = {
   quoteRequestMs: number;
   basisAgeMs: number;
   quality: ObservationQuality;
+  timeRegime?: TimeRegime | null;
 };
 
 export type RecordedQuote =
@@ -139,6 +140,7 @@ export async function recordQuote(args: {
     quoteRequestMs: args.timing.quoteRequestMs,
     basisAgeMs: args.timing.basisAgeMs,
     quality: args.timing.quality,
+    timeRegime: args.timing.timeRegime ?? null,
   });
 
   return { status: "ok", tokenPriceUsd, grossBps, netBps, quoteId, basisId };

@@ -44,6 +44,9 @@ export const BotConfigSchema = z.object({
   PAIR_REFRESH_INTERVAL_MS: z.coerce.number().int().min(1000).default(30_000),
   HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(1000).default(5_000),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  /** Classify crypto observations as CRYPTO_HIGH_VOL when the current Pyth
+   *  tick has moved this many bps from the previous tick seen for the pair. */
+  CRYPTO_HIGH_VOL_MOVE_BPS: z.coerce.number().min(0).default(50),
 
   // ── Cost-model assumptions, all in bps. Tunable per environment. ──
   SLIPPAGE_BUFFER_BPS: z.coerce.number().default(30),

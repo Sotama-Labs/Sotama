@@ -3,6 +3,7 @@
  *  produces these shapes; the Vercel dashboard consumes them via fetch. */
 
 import type { PairConfig } from "./pair-config";
+import type { TimeRegime } from "./time-regime";
 
 export type BestSideDto = {
   /** tokenPrice / basePrice. For buy: <1 favorable. For sell: >1 favorable. */
@@ -12,6 +13,7 @@ export type BestSideDto = {
   basePriceUsd: number;
   tokenPriceUsd: number;
   observedAt: string;
+  timeRegime?: TimeRegime | null;
   quality?: "live" | "warm" | "stale" | "invalid";
   pythFreshnessLagMs?: number | null;
   basisAgeMs?: number | null;
@@ -66,6 +68,7 @@ export type QuoteSurfaceRowDto = {
   grossBps: number;
   netBps: number;
   observedAt: string;
+  timeRegime: TimeRegime | null;
   quality: "live" | "warm" | "stale" | "invalid";
   pythFreshnessLagMs: number | null;
   quoteRequestMs: number | null;
@@ -78,7 +81,24 @@ export type BasisSeriesPointDto = {
   netBps: number;
   tokenPriceUsd: number;
   quality: "live" | "warm" | "stale" | "invalid";
+  timeRegime: TimeRegime | null;
   observedAt: string;
+};
+
+export type TimeRegimeSummaryDto = {
+  timeRegime: TimeRegime;
+  observationCount: number;
+  liveCount: number;
+  livePct: number;
+  avgGrossBps: number | null;
+  avgNetBps: number | null;
+  maxNetBps: number | null;
+  minNetBps: number | null;
+  buyCount: number;
+  sellCount: number;
+  avgQuoteRequestMs: number | null;
+  avgPythFreshnessLagMs: number | null;
+  avgBasisAgeMs: number | null;
 };
 
 export type SignalHistoryDto = {
@@ -102,6 +122,7 @@ export type PairDetailDto = {
   observationCount24h: number;
   quoteSurface: QuoteSurfaceRowDto[];
   basisSeries: BasisSeriesPointDto[];
+  timeRegimeSummary: TimeRegimeSummaryDto[];
   signalHistory: SignalHistoryDto[];
   profitability: import("./profitability").ProfitabilitySummary;
 };

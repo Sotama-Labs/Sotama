@@ -14,6 +14,7 @@ export type PythTickEvent = {
   confidenceUsd: number | null;
   streamTimestampUs: number;
   feedUpdateTimestampUs: number;
+  marketSession: string | null;
   freshnessLagMs: number;
   isFresh: boolean;
 };
@@ -298,6 +299,7 @@ export class PythStream {
           : confidenceUsd,
       streamTimestampUs: resolvedStreamTimestampUs,
       feedUpdateTimestampUs,
+      marketSession: typeof f.marketSession === "string" ? f.marketSession : null,
       freshnessLagMs,
       isFresh: freshnessLagMs <= maxFreshnessLagMs,
     };
@@ -305,7 +307,7 @@ export class PythStream {
 
   private wasSeen(event: PythTickEvent): boolean {
     const nowMs = Date.now();
-    const key = `${event.pythLazerId}|${event.feedUpdateTimestampUs}|${event.priceUsd}`;
+    const key = `${event.pythLazerId}|${event.streamTimestampUs}|${event.feedUpdateTimestampUs}|${event.priceUsd}|${event.marketSession ?? ""}`;
     if (this.seen.has(key)) return true;
     this.seen.set(key, nowMs);
     if (this.seen.size > 10_000) {
@@ -326,7 +328,7 @@ export class PythStream {
       type: "subscribe",
       subscriptionId: 1,
       priceFeedIds: this.feedIds,
-      properties: ["price", "exponent", "feedUpdateTimestamp"],
+      properties: ["price", "exponent", "feedUpdateTimestamp", "marketSession"],
       formats: ["solana"],
       deliveryFormat: "json",
       jsonBinaryEncoding: "base64",

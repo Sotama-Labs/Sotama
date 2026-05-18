@@ -24,6 +24,9 @@ function fmtUsd(v: number | null | undefined): string {
 function fmtMs(v: number | null | undefined): string {
   return v == null ? "—" : `${Math.round(v).toLocaleString()} ms`;
 }
+function fmtPct(v: number | null | undefined): string {
+  return v == null ? "—" : `${(v * 100).toFixed(1)}%`;
+}
 function favorableColor(kind: "buy" | "sell", ratio: number | null | undefined): string {
   if (ratio == null) return "var(--label-tertiary)";
   const favorable = kind === "buy" ? ratio < 1 : ratio > 1;
@@ -82,6 +85,7 @@ export default async function PairDetailPage({
     observationCount24h,
     quoteSurface,
     basisSeries,
+    timeRegimeSummary,
     signalHistory,
     profitability,
   } = detail;
@@ -218,10 +222,11 @@ export default async function PairDetailPage({
               </span>
             </div>
             <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
                 <thead>
                   <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Side</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Regime</th>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Size</th>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Token price</th>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Net edge</th>
@@ -238,6 +243,9 @@ export default async function PairDetailPage({
                     >
                       <td className="hig-footnote" style={{ padding: "0.65rem 0.35rem" }}>
                         {row.side === "buy_tokenized" ? "Buy tokenized" : "Sell tokenized"}
+                      </td>
+                      <td className="hig-caption-1" style={{ padding: "0.65rem 0.35rem", color: "var(--label-secondary)", whiteSpace: "nowrap" }}>
+                        {row.timeRegime ?? "—"}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
                         ${row.sizeUsd.toLocaleString()}
@@ -265,6 +273,84 @@ export default async function PairDetailPage({
                         style={{ padding: "0.65rem 0.35rem", color: qualityColor(row.quality) }}
                       >
                         {row.quality}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+              <div>
+                <p className="hig-headline" style={{ margin: 0 }}>Time regime comparison</p>
+                <p className="hig-caption-1" style={{ color: "var(--label-tertiary)", margin: "0.25rem 0 0" }}>
+                  24h basis observations grouped by session/state.
+                </p>
+              </div>
+              <span className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
+                {timeRegimeSummary.reduce((sum, row) => sum + row.observationCount, 0).toLocaleString()} rows
+              </span>
+            </div>
+            <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1040 }}>
+                <thead>
+                  <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Regime</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Obs</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Live</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Buy / sell</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Avg gross</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Avg net</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Max net</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Min net</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Quote</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Pyth lag</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Basis age</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {timeRegimeSummary.map((row) => (
+                    <tr key={row.timeRegime} style={{ borderTop: "1px solid var(--separator)" }}>
+                      <td className="hig-caption-1" style={{ padding: "0.65rem 0.35rem", color: "var(--label-secondary)", whiteSpace: "nowrap" }}>
+                        {row.timeRegime}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.observationCount.toLocaleString()}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtPct(row.livePct)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.buyCount.toLocaleString()} / {row.sellCount.toLocaleString()}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtBps(row.avgGrossBps)}
+                      </td>
+                      <td
+                        className="hig-footnote bt-num"
+                        style={{
+                          padding: "0.65rem 0.35rem",
+                          color: (row.avgNetBps ?? 0) > 0 ? "var(--green)" : (row.avgNetBps ?? 0) < 0 ? "var(--red)" : "var(--label-primary)",
+                        }}
+                      >
+                        {fmtBps(row.avgNetBps)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtBps(row.maxNetBps)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtBps(row.minNetBps)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtMs(row.avgQuoteRequestMs)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtMs(row.avgPythFreshnessLagMs)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtMs(row.avgBasisAgeMs)}
                       </td>
                     </tr>
                   ))}

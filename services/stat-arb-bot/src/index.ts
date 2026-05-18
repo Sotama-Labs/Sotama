@@ -7,7 +7,7 @@ import { Heartbeat } from "./heartbeat";
 import { SignalEngine } from "./signal-engine";
 import { recordQuote, type CostBps } from "./basis-recorder";
 import { createApiServer } from "./api-server";
-import { isMarketOpen } from "./market-hours";
+import { isExecutableTimeRegime, timeRegimeFor } from "./market-hours";
 import { closePool } from "@sotama/db";
 import {
   assertQuoteRpsBudget,
@@ -107,6 +107,8 @@ async function main() {
   const lazerIdToPairs = new Map<number, Set<string>>();
   /** pair_id -> PairConfig. Needed because the scheduler holds only its lighter view. */
   const pairConfigs = new Map<string, PairConfig>();
+  /** pair_id -> prior accepted Pyth price. Used only to classify crypto high-vol regimes. */
+  const lastRegimePriceByPair = new Map<string, number>();
 
   const scheduler = new QuoteScheduler({
     maxRps: cfg.JUPITER_MAX_RPS,
@@ -150,10 +152,11 @@ async function main() {
           quoteRequestMs: result.requestMs,
           basisAgeMs,
           quality: "live",
+          timeRegime: work.timeRegime ?? null,
         },
         successRawSampleRate: cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE,
       });
-      if (recorded.status === "ok") {
+      if (recorded.status === "ok" && work.allowSignals !== false) {
         await signals.onObservation({
           pair,
           side,
@@ -218,6 +221,7 @@ async function main() {
       }
     }
     pairConfigs.delete(id);
+    lastRegimePriceByPair.delete(id);
     scheduler.removePair(id);
   };
   // Debounce: the pair loader fires onAdded/onRemoved/onUpdated in a
@@ -257,19 +261,28 @@ async function main() {
     const nowMs = Date.now();
     for (const pairId of pairs) {
       const pair = pairConfigs.get(pairId);
-      // Skip after-hours equity ticks so we don't burn Jupiter RPS on
-      // markets that aren't trading. Other asset classes (Crypto, Metal,
-      // FX, Commodity) are always considered open.
-      if (pair && !isMarketOpen(pair.base.assetClass, nowMs)) continue;
       if (!pair) continue;
       if (t.freshnessLagMs > maxFreshnessLagMsForPair(pair)) {
         heartbeat.countInvalidFeed();
         continue;
       }
+      const previousPrice = lastRegimePriceByPair.get(pairId);
+      const cryptoMoveBps =
+        previousPrice != null && previousPrice > 0
+          ? Math.abs((t.priceUsd / previousPrice - 1) * 10000)
+          : 0;
+      lastRegimePriceByPair.set(pairId, t.priceUsd);
+      const timeRegime = timeRegimeFor(pair.base.assetClass, nowMs, {
+        cryptoMoveBps,
+        cryptoHighVolMoveBps: cfg.CRYPTO_HIGH_VOL_MOVE_BPS,
+        pythMarketSession: t.marketSession,
+      });
       scheduler.onPriceTick(pairId, t.priceUsd, {
         streamTimestampUs: t.streamTimestampUs,
         feedUpdateTimestampUs: t.feedUpdateTimestampUs,
         pythFreshnessLagMs: t.freshnessLagMs,
+        timeRegime,
+        allowSignals: isExecutableTimeRegime(timeRegime),
       });
     }
   });

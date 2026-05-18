@@ -38,6 +38,7 @@ describe("loadConfig", () => {
     const cfg = loadConfig(base as any);
     expect(cfg.PYTH_MAX_FRESHNESS_LAG_MS).to.equal(5000);
     expect(cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE).to.equal(0.02);
+    expect(cfg.CRYPTO_HIGH_VOL_MOVE_BPS).to.equal(50);
   });
 
   it("rejects invalid raw quote sample rates", () => {

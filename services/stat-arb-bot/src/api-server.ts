@@ -13,10 +13,13 @@ import {
   latestBasisPerKey,
   latestHeartbeat,
   basisHistory,
+  basisRegimeSummary,
   closedSignals,
   type BasisObservationRow,
+  type TimeRegimeSummaryRow,
 } from "@sotama/db";
 import type {
+  AssetClass,
   BasisSeriesPointDto,
   BestSideDto,
   BestSpreadDto,
@@ -27,6 +30,8 @@ import type {
   PairPanelDto,
   QuoteSurfaceRowDto,
   SignalHistoryDto,
+  TimeRegime,
+  TimeRegimeSummaryDto,
 } from "@sotama/market-core";
 import { summarize } from "@sotama/market-core";
 
@@ -139,9 +144,10 @@ async function handlePairDetail(
   const nowMs = Date.now();
   const sinceMs = nowMs - HISTORY_WINDOW_MS;
   const signalSinceMs = nowMs - SIGNAL_WINDOW_MS;
-  const [latest, signals, ...historyArrays] = await Promise.all([
+  const [latest, signals, regimeRows, ...historyArrays] = await Promise.all([
     latestBasisPerKey({ withinMs: LATEST_WITHIN_MS }),
     closedSignals({ pairId: id, sinceMs: signalSinceMs }),
+    basisRegimeSummary({ pairId: id, sinceMs }),
     ...pair.sizesUsd.flatMap((size) =>
       pair.directions.map((side) =>
         basisHistory({ pairId: id, side, sizeUsd: size, sinceMs }),
@@ -166,6 +172,7 @@ async function handlePairDetail(
     observationCount24h,
     quoteSurface: toQuoteSurface(forPair),
     basisSeries: downsample(historyRows, BASIS_SERIES_LIMIT).map(toBasisSeriesPoint),
+    timeRegimeSummary: toTimeRegimeSummary(pair.base.assetClass, regimeRows),
     signalHistory: signals.slice(-50).map(toSignalHistory),
     profitability: summarize(
       signals.map((s) => ({
@@ -259,6 +266,7 @@ function toBestSide(b: BasisObservationRow, ratio: number): BestSideDto {
     basePriceUsd: b.basePriceUsd,
     tokenPriceUsd: b.tokenPriceUsd,
     observedAt: b.observedAt.toISOString(),
+    timeRegime: b.timeRegime ?? null,
     quality: b.quality,
     pythFreshnessLagMs: b.pythFreshnessLagMs,
     basisAgeMs: b.basisAgeMs,
@@ -328,6 +336,7 @@ function toQuoteSurface(rows: BasisObservationRow[]): QuoteSurfaceRowDto[] {
       grossBps: b.grossBps,
       netBps: b.netBps,
       observedAt: b.observedAt.toISOString(),
+      timeRegime: b.timeRegime ?? null,
       quality: b.quality ?? "live",
       pythFreshnessLagMs: b.pythFreshnessLagMs ?? null,
       quoteRequestMs: b.quoteRequestMs ?? null,
@@ -342,8 +351,58 @@ function toBasisSeriesPoint(b: BasisObservationRow): BasisSeriesPointDto {
     netBps: b.netBps,
     tokenPriceUsd: b.tokenPriceUsd,
     quality: b.quality ?? "live",
+    timeRegime: b.timeRegime ?? null,
     observedAt: b.observedAt.toISOString(),
   };
+}
+
+function toTimeRegimeSummary(
+  assetClass: AssetClass,
+  rows: TimeRegimeSummaryRow[],
+): TimeRegimeSummaryDto[] {
+  const byRegime = new Map<TimeRegime, TimeRegimeSummaryRow>(
+    rows.map((row) => [row.timeRegime, row]),
+  );
+  return regimesForAssetClass(assetClass).map((timeRegime) => {
+    const row = byRegime.get(timeRegime);
+    if (!row) {
+      return {
+        timeRegime,
+        observationCount: 0,
+        liveCount: 0,
+        livePct: 0,
+        avgGrossBps: null,
+        avgNetBps: null,
+        maxNetBps: null,
+        minNetBps: null,
+        buyCount: 0,
+        sellCount: 0,
+        avgQuoteRequestMs: null,
+        avgPythFreshnessLagMs: null,
+        avgBasisAgeMs: null,
+      };
+    }
+    return row;
+  });
+}
+
+function regimesForAssetClass(assetClass: AssetClass): readonly TimeRegime[] {
+  switch (assetClass) {
+    case "Equity":
+      return [
+        "US_EQUITY_REGULAR",
+        "US_EQUITY_PREMARKET",
+        "US_EQUITY_POSTMARKET",
+        "US_EQUITY_OVERNIGHT",
+        "US_EQUITY_WEEKEND",
+      ];
+    case "Metal":
+      return ["METAL_ACTIVE", "METAL_MAINTENANCE", "METAL_WEEKEND"];
+    case "Crypto":
+      return ["CRYPTO_NORMAL", "CRYPTO_HIGH_VOL"];
+    default:
+      return [];
+  }
 }
 
 function toSignalHistory(s: Awaited<ReturnType<typeof closedSignals>>[number]): SignalHistoryDto {
