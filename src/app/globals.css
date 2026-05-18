@@ -353,7 +353,7 @@ input[type="search"] {
   appearance: none;
 }
 
-button:focus-visible, input:focus-visible {
+button:focus-visible, input:focus-visible, a:focus-visible {
   outline: 3px solid var(--accent-fill);
   outline-offset: 1px;
   border-radius: var(--radius-control-m);
