@@ -28,6 +28,7 @@ describe("hold horizon replay", () => {
         row({ side: "buy_tokenized", observedAtMs: 1_000, tokenPriceUsd: 95 }),
         row({ side: "sell_tokenized", observedAtMs: 10_000, tokenPriceUsd: 95.1 }),
         row({ side: "sell_tokenized", observedAtMs: 90_000, tokenPriceUsd: 101 }),
+        row({ side: "sell_tokenized", observedAtMs: 130_000, tokenPriceUsd: 101 }),
       ],
       options: {
         minNetEdgeBps: 20,
@@ -42,6 +43,8 @@ describe("hold horizon replay", () => {
     expect(result!.returnPct).to.be.greaterThan(0);
     expect(result!.annualizedReturnPct).to.be.greaterThan(0);
     expect(result!.avgRatioMoveBps).to.be.greaterThan(0);
+    expect(result!.sampleWindowMs).to.equal(130_000);
+    expect(result!.horizonCovered).to.equal(true);
     expect(result!.pnlUsd).to.be.greaterThan(0);
   });
 
@@ -122,5 +125,24 @@ describe("hold horizon replay", () => {
     expect(Math.abs(shortHorizon!.annualizedReturnPct!)).to.be.greaterThan(
       Math.abs(longHorizon!.annualizedReturnPct!),
     );
+  });
+
+  it("marks horizons as uncovered until enough live data has elapsed", () => {
+    const [covered, pending] = runHoldHorizonReplay({
+      observations: [
+        row({ side: "sell_tokenized", observedAtMs: 0, tokenPriceUsd: 95 }),
+        row({ side: "buy_tokenized", observedAtMs: 1_000, tokenPriceUsd: 95 }),
+        row({ side: "sell_tokenized", observedAtMs: 10_000, tokenPriceUsd: 101 }),
+      ],
+      options: {
+        minNetEdgeBps: 20,
+        transactionCostBps: 10,
+        horizonsMs: [5_000, 60_000],
+      },
+    });
+    expect(covered!.sampleWindowMs).to.equal(10_000);
+    expect(covered!.horizonCovered).to.equal(true);
+    expect(pending!.sampleWindowMs).to.equal(10_000);
+    expect(pending!.horizonCovered).to.equal(false);
   });
 });

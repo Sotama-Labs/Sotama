@@ -28,6 +28,8 @@ export type HoldHorizonSizeResult = {
 
 export type HoldHorizonReplayRow = {
   horizonMs: number;
+  sampleWindowMs: number;
+  horizonCovered: boolean;
   pnlUsd: number;
   closedTrades: number;
   winningTrades: number;
@@ -71,14 +73,17 @@ export function runHoldHorizonReplay(args: {
   const rows = args.observations
     .filter((row) => row.qualityStatus === "LIVE_ELIGIBLE")
     .sort((a, b) => a.observedAtMs - b.observedAtMs);
+  const sampleWindowMs =
+    rows.length < 2 ? 0 : rows[rows.length - 1]!.observedAtMs - rows[0]!.observedAtMs;
   return args.options.horizonsMs.map((horizonMs) =>
-    runOneHorizon(rows, horizonMs, args.options),
+    runOneHorizon(rows, horizonMs, sampleWindowMs, args.options),
   );
 }
 
 function runOneHorizon(
   rows: readonly HoldHorizonObservation[],
   horizonMs: number,
+  sampleWindowMs: number,
   options: HoldHorizonReplayOptions,
 ): HoldHorizonReplayRow {
   const positions = new Map<number, Position>();
@@ -134,6 +139,8 @@ function runOneHorizon(
   const sizeResults = resultRows.map(finalizeSizeResult);
   return {
     horizonMs,
+    sampleWindowMs,
+    horizonCovered: sampleWindowMs >= horizonMs,
     pnlUsd: totals.pnlUsd,
     closedTrades: totals.closedTrades,
     winningTrades: totals.winningTrades,

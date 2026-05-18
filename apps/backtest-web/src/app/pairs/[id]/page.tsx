@@ -24,7 +24,8 @@ function fmtUsd(v: number | null | undefined): string {
 function fmtMs(v: number | null | undefined): string {
   return v == null ? "—" : `${Math.round(v).toLocaleString()} ms`;
 }
-function fmtDuration(ms: number): string {
+function fmtDuration(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "—";
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 60 * 60_000) return `${Math.round(ms / 60_000)}m`;
   return `${Math.round(ms / (60 * 60_000))}h`;
@@ -76,6 +77,8 @@ const APR_MIN_CLOSED_TRADES = 30;
 
 type HoldHorizonChartRow = {
   horizonMs: number;
+  sampleWindowMs: number;
+  horizonCovered: boolean;
   pnlUsd: number;
   returnPct: number;
   annualizedReturnPct: number | null;
@@ -84,7 +87,14 @@ type HoldHorizonChartRow = {
   avgHoldSeconds: number;
 };
 
+function horizonPendingReason(row: HoldHorizonChartRow): string | null {
+  if (row.horizonCovered === true) return null;
+  return `pending ${fmtDuration(row.sampleWindowMs)} / ${fmtDuration(row.horizonMs)}`;
+}
+
 function aprSuppressionReason(row: HoldHorizonChartRow): string | null {
+  const pendingReason = horizonPendingReason(row);
+  if (pendingReason) return pendingReason;
   if (row.annualizedReturnPct == null || row.closedTrades === 0) return "no exits";
   if (row.avgHoldSeconds < APR_MIN_AVG_HOLD_SECONDS) return "hold <60s";
   if (row.closedTrades < APR_MIN_CLOSED_TRADES) return `n<${APR_MIN_CLOSED_TRADES}`;
@@ -106,7 +116,7 @@ function aprEstimateColor(row: HoldHorizonChartRow): string {
 
 function HoldHorizonLineChart({ rows }: { rows: HoldHorizonChartRow[] }) {
   const points = rows
-    .filter((row) => row.annualizedReturnPct != null && !aprSuppressionReason(row))
+    .filter((row) => row.horizonCovered === true && row.annualizedReturnPct != null && !aprSuppressionReason(row))
     .map((row) => ({ ...row, annualizedReturnPct: row.annualizedReturnPct! }));
   if (points.length === 0) {
     return (
@@ -122,7 +132,7 @@ function HoldHorizonLineChart({ rows }: { rows: HoldHorizonChartRow[] }) {
           marginTop: "0.75rem",
         }}
       >
-        APR hidden until average hold is at least 60s with 30+ exits.
+        Horizon rows stay pending until the observation window covers them; APR also needs 60s avg hold and 30+ exits.
       </div>
     );
   }
@@ -485,7 +495,7 @@ export default async function PairDetailPage({
               <div>
                 <p className="hig-headline" style={{ margin: 0 }}>Hold horizon replay</p>
                 <p className="hig-caption-1" style={{ color: "var(--label-tertiary)", margin: "0.25rem 0 0" }}>
-                  Profitability and annualized return from actual hold duration.
+                  Max-hold policy replay; rows stay pending until enough fresh observation time has elapsed.
                 </p>
               </div>
               <span className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
@@ -520,19 +530,23 @@ export default async function PairDetailPage({
                         className="hig-footnote bt-num"
                         style={{
                           padding: "0.65rem 0.35rem",
-                          color: row.pnlUsd > 0 ? "var(--green)" : row.pnlUsd < 0 ? "var(--red)" : "var(--label-primary)",
+                          color: horizonPendingReason(row)
+                            ? "var(--label-tertiary)"
+                            : row.pnlUsd > 0 ? "var(--green)" : row.pnlUsd < 0 ? "var(--red)" : "var(--label-primary)",
                         }}
                       >
-                        {fmtUsd(row.pnlUsd)}
+                        {horizonPendingReason(row) ?? fmtUsd(row.pnlUsd)}
                       </td>
                       <td
                         className="hig-footnote bt-num"
                         style={{
                           padding: "0.65rem 0.35rem",
-                          color: row.returnPct > 0 ? "var(--green)" : row.returnPct < 0 ? "var(--red)" : "var(--label-primary)",
+                          color: horizonPendingReason(row)
+                            ? "var(--label-tertiary)"
+                            : row.returnPct > 0 ? "var(--green)" : row.returnPct < 0 ? "var(--red)" : "var(--label-primary)",
                         }}
                       >
-                        {fmtReturnPct(row.returnPct)}
+                        {horizonPendingReason(row) ? "pending" : fmtReturnPct(row.returnPct)}
                       </td>
                       <td
                         className="hig-footnote bt-num"
@@ -544,25 +558,25 @@ export default async function PairDetailPage({
                         {fmtAprEstimate(row)}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
-                        {fmtBps(row.avgRatioMoveBps)}
+                        {horizonPendingReason(row) ? "pending" : fmtBps(row.avgRatioMoveBps)}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
-                        {fmtUsd(row.deployedUsd)}
+                        {horizonPendingReason(row) ? "pending" : fmtUsd(row.deployedUsd)}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
-                        {row.closedTrades.toLocaleString()}
+                        {horizonPendingReason(row) ? "pending" : row.closedTrades.toLocaleString()}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
-                        {fmtPct(row.winRate)}
+                        {horizonPendingReason(row) ? "pending" : fmtPct(row.winRate)}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
-                        {row.timedOutTrades.toLocaleString()}
+                        {horizonPendingReason(row) ? "pending" : row.timedOutTrades.toLocaleString()}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
-                        {row.openPositions.toLocaleString()}
+                        {horizonPendingReason(row) ? "pending" : row.openPositions.toLocaleString()}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
-                        {row.avgHoldSeconds.toFixed(0)}s
+                        {horizonPendingReason(row) ? "pending" : `${row.avgHoldSeconds.toFixed(0)}s`}
                       </td>
                     </tr>
                   ))}
