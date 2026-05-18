@@ -131,6 +131,7 @@ async function main() {
   const pairConfigs = new Map<string, PairConfig>();
   /** pair_id -> prior accepted Pyth price. Used only to classify crypto high-vol regimes. */
   const lastRegimePriceByPair = new Map<string, number>();
+  const lastStalePythWarnByPair = new Map<string, number>();
 
   const scheduler = new QuoteScheduler({
     maxRps: cfg.JUPITER_MAX_RPS,
@@ -321,8 +322,18 @@ async function main() {
     for (const pairId of pairs) {
       const pair = pairConfigs.get(pairId);
       if (!pair) continue;
-      if (t.freshnessLagMs > maxFreshnessLagMsForPair(pair)) {
+      const maxFreshnessLagMs = maxFreshnessLagMsForPair(pair);
+      if (t.freshnessLagMs > maxFreshnessLagMs) {
         heartbeat.countInvalidFeed();
+        const lastWarnAt = lastStalePythWarnByPair.get(pairId) ?? 0;
+        if (nowMs - lastWarnAt >= 30_000) {
+          lastStalePythWarnByPair.set(pairId, nowMs);
+          console.warn(
+            `[pyth] stale tick skipped pair=${pairId} feed=${t.pythLazerId} ` +
+            `freshness=${t.freshnessLagMs}ms max=${maxFreshnessLagMs}ms`,
+          );
+        }
+        continue;
       }
       const previousPrice = lastRegimePriceByPair.get(pairId);
       const cryptoMoveBps =

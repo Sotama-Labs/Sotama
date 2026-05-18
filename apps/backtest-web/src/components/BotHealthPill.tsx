@@ -21,7 +21,7 @@ export function BotHealthPill({ heartbeat }: { heartbeat: HeartbeatDto | null })
   if ((heartbeat.invalidFeedCount1m ?? 0) > 0) {
     return (
       <StatusPill kind="warn">
-        stale Pyth · {heartbeat.invalidFeedCount1m} rejected
+        stale Pyth · {heartbeat.invalidFeedCount1m} skipped
       </StatusPill>
     );
   }
