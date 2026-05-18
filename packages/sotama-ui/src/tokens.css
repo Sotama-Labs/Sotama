@@ -390,3 +390,9 @@ button:focus-visible, input:focus-visible {
 .popover-scroll::-webkit-scrollbar-thumb:hover {
   background-color: var(--label-tertiary);
 }
+
+/* Card hover elevation — pure CSS so the component stays
+   server-component-safe. */
+.sotama-card--interactive:hover {
+  box-shadow: var(--shadow-2);
+}
