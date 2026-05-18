@@ -3,8 +3,10 @@
  *  produces these shapes; the Vercel dashboard consumes them via fetch. */
 
 import type { PairConfig } from "./pair-config";
+import type { PairReadinessMatrix } from "./pair-readiness";
 import type { QuoteQualityStatus } from "./quote-quality";
 import type { TimeRegime } from "./time-regime";
+import type { TwoSizeBacktestV2Result } from "./two-size-backtest";
 
 export type BestSideDto = {
   /** tokenPrice / basePrice. For buy: <1 favorable. For sell: >1 favorable. */
@@ -140,6 +142,8 @@ export type PairDetailDto = {
   basisSeries: BasisSeriesPointDto[];
   qualityDistribution: QuoteQualityDistributionDto[];
   timeRegimeSummary: TimeRegimeSummaryDto[];
+  pairReadiness: PairReadinessMatrix;
+  twoSizeBacktest: TwoSizeBacktestV2Result;
   signalHistory: SignalHistoryDto[];
   profitability: import("./profitability").ProfitabilitySummary;
 };

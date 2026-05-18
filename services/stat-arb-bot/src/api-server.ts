@@ -15,6 +15,7 @@ import {
   basisHistory,
   basisRegimeSummary,
   basisQualityDistribution,
+  quoteStatsByPair,
   closedSignals,
   type BasisObservationRow,
   type TimeRegimeSummaryRow,
@@ -35,7 +36,11 @@ import type {
   TimeRegime,
   TimeRegimeSummaryDto,
 } from "@sotama/market-core";
-import { summarize } from "@sotama/market-core";
+import {
+  buildPairReadinessMatrix,
+  runTwoSizeBacktestV2,
+  summarize,
+} from "@sotama/market-core";
 
 const LATEST_WITHIN_MS = 5 * 60_000;
 const HISTORY_WINDOW_MS = 24 * 3600 * 1000;
@@ -45,6 +50,7 @@ const HEARTBEAT_STALE_MS = 30_000;
 
 export type ApiServerOptions = {
   port: number;
+  transactionCostBps?: number;
   /** Origin allow-list for CORS. `*` is permissive (V1 default). Set to
    *  the dashboard's origin in prod if we ever serve sensitive data. */
   corsOrigin?: string;
@@ -52,9 +58,10 @@ export type ApiServerOptions = {
 
 export function createApiServer(opts: ApiServerOptions): http.Server {
   const corsOrigin = opts.corsOrigin ?? "*";
+  const transactionCostBps = opts.transactionCostBps ?? 0;
 
   const server = http.createServer((req, res) => {
-    void handleRequest(req, res, corsOrigin).catch((e) => {
+    void handleRequest(req, res, corsOrigin, transactionCostBps).catch((e) => {
       try {
         sendJson(res, 500, { error: String(e?.message ?? e) });
       } catch {
@@ -70,6 +77,7 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   corsOrigin: string,
+  transactionCostBps: number,
 ): Promise<void> {
   res.setHeader("Access-Control-Allow-Origin", corsOrigin);
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -97,7 +105,7 @@ async function handleRequest(
   }
   const pairMatch = path.match(/^\/api\/pairs\/([^/]+)$/);
   if (pairMatch) {
-    return handlePairDetail(res, decodeURIComponent(pairMatch[1]!));
+    return handlePairDetail(res, decodeURIComponent(pairMatch[1]!), transactionCostBps);
   }
 
   sendJson(res, 404, { error: "not found", path });
@@ -136,6 +144,7 @@ async function handleDashboard(res: http.ServerResponse): Promise<void> {
 async function handlePairDetail(
   res: http.ServerResponse,
   id: string,
+  transactionCostBps: number,
 ): Promise<void> {
   const pair = await getPair(id);
   if (!pair) {
@@ -146,11 +155,12 @@ async function handlePairDetail(
   const nowMs = Date.now();
   const sinceMs = nowMs - HISTORY_WINDOW_MS;
   const signalSinceMs = nowMs - SIGNAL_WINDOW_MS;
-  const [latest, signals, regimeRows, qualityRows, ...historyArrays] = await Promise.all([
+  const [latest, signals, regimeRows, qualityRows, quoteStats, ...historyArrays] = await Promise.all([
     latestBasisPerKey({ withinMs: LATEST_WITHIN_MS }),
     closedSignals({ pairId: id, sinceMs: signalSinceMs }),
     basisRegimeSummary({ pairId: id, sinceMs }),
     basisQualityDistribution({ pairId: id, sinceMs }),
+    quoteStatsByPair({ pairId: id, sinceMs }),
     ...pair.sizesUsd.flatMap((size) =>
       pair.directions.map((side) =>
         basisHistory({ pairId: id, side, sizeUsd: size, sinceMs }),
@@ -170,6 +180,20 @@ async function handlePairDetail(
       s.entryQualityStatus === "LIVE_ELIGIBLE" &&
       (s.exitQualityStatus ?? "LIVE_ELIGIBLE") === "LIVE_ELIGIBLE",
   );
+  const pairReadiness = buildPairReadinessMatrix({
+    pair,
+    observations: historyRows.map(toReadinessObservation),
+    quoteStats,
+  });
+  const twoSizeBacktest = runTwoSizeBacktestV2({
+    observations: historyRows.map(toBacktestObservation),
+    options: {
+      minNetEdgeBps: pair.minNetEdgeBps,
+      transactionCostBps,
+      minLiveSamples: 20,
+      researchOnly: pairReadiness.status !== "READY",
+    },
+  });
 
   const body: PairDetailDto = {
     pair,
@@ -182,6 +206,8 @@ async function handlePairDetail(
     basisSeries: downsample(historyRows, BASIS_SERIES_LIMIT).map(toBasisSeriesPoint),
     qualityDistribution: toQualityDistribution(qualityRows),
     timeRegimeSummary: toTimeRegimeSummary(pair.base.assetClass, regimeRows),
+    pairReadiness,
+    twoSizeBacktest,
     signalHistory: signals.slice(-50).map(toSignalHistory),
     profitability: summarize(
       liveEligibleSignals.map((s) => ({
@@ -369,6 +395,31 @@ function toBasisSeriesPoint(b: BasisObservationRow): BasisSeriesPointDto {
     qualityStatus: b.qualityStatus ?? "LIVE_ELIGIBLE",
     timeRegime: b.timeRegime ?? null,
     observedAt: b.observedAt.toISOString(),
+  };
+}
+
+function toReadinessObservation(b: BasisObservationRow) {
+  return {
+    side: b.side,
+    sizeUsd: b.sizeUsd,
+    observedAtMs: b.observedAt.getTime(),
+    pythFeedUpdateTimestampUs: b.pythFeedUpdateTimestampUs,
+    quoteRequestMs: b.quoteRequestMs,
+    basisAgeMs: b.basisAgeMs,
+    timeRegime: b.timeRegime,
+    qualityStatus: b.qualityStatus,
+  };
+}
+
+function toBacktestObservation(b: BasisObservationRow) {
+  return {
+    side: b.side,
+    sizeUsd: b.sizeUsd,
+    observedAtMs: b.observedAt.getTime(),
+    basePriceUsd: b.basePriceUsd,
+    tokenPriceUsd: b.tokenPriceUsd,
+    netBps: b.netBps,
+    qualityStatus: b.qualityStatus,
   };
 }
 

@@ -1,5 +1,5 @@
 import { getPool } from "./index";
-import type { PairDirection } from "@sotama/market-core";
+import type { PairDirection, PairReadinessQuoteStats } from "@sotama/market-core";
 
 export type JupiterQuoteInsert = {
   pairId: string;
@@ -70,6 +70,62 @@ export async function recentQuotes(args: {
     [args.pairId, args.side, args.sizeUsd, args.limit],
   );
   return rows.map(rowToQuote);
+}
+
+export async function quoteStatsByPair(args: {
+  pairId: string;
+  sinceMs: number;
+}): Promise<PairReadinessQuoteStats[]> {
+  const { rows } = await getPool().query(
+    `WITH quote_counts AS (
+       SELECT side, size_usd,
+              COUNT(*)::int AS total_count,
+              COUNT(*) FILTER (WHERE status = 'ok')::int AS ok_count
+       FROM jupiter_quotes
+       WHERE pair_id = $1
+         AND received_at >= to_timestamp($2 / 1000.0)
+       GROUP BY side, size_usd
+     ),
+     router_counts AS (
+       SELECT side, size_usd, COALESCE(router, 'UNKNOWN') AS router, COUNT(*)::int AS count
+       FROM jupiter_quotes
+       WHERE pair_id = $1
+         AND received_at >= to_timestamp($2 / 1000.0)
+         AND status = 'ok'
+       GROUP BY side, size_usd, COALESCE(router, 'UNKNOWN')
+     )
+     SELECT q.side, q.size_usd, q.total_count, q.ok_count,
+            COALESCE(
+              jsonb_agg(
+                jsonb_build_object('router', r.router, 'count', r.count)
+                ORDER BY r.count DESC, r.router ASC
+              ) FILTER (WHERE r.router IS NOT NULL),
+              '[]'::jsonb
+            ) AS router_distribution
+     FROM quote_counts q
+     LEFT JOIN router_counts r
+       ON r.side = q.side AND r.size_usd = q.size_usd
+     GROUP BY q.side, q.size_usd, q.total_count, q.ok_count
+     ORDER BY q.side ASC, q.size_usd ASC`,
+    [args.pairId, args.sinceMs],
+  );
+  return rows.map((r: any) => {
+    const totalCount = Number(r.total_count);
+    const distribution = Array.isArray(r.router_distribution)
+      ? r.router_distribution
+      : JSON.parse(r.router_distribution ?? "[]");
+    return {
+      side: r.side,
+      sizeUsd: Number(r.size_usd),
+      totalCount,
+      okCount: Number(r.ok_count),
+      routerDistribution: distribution.map((row: any) => ({
+        router: String(row.router ?? "UNKNOWN"),
+        count: Number(row.count),
+        pct: totalCount === 0 ? 0 : Number(row.count) / totalCount,
+      })),
+    };
+  });
 }
 
 function rowToQuote(r: any): JupiterQuoteRow {

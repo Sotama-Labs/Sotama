@@ -43,6 +43,12 @@ function qualityColor(quality: string): string {
   ) return "var(--red)";
   return "var(--label-tertiary)";
 }
+function readinessColor(status: string): string {
+  if (status === "READY" || status === "TRADE_250" || status === "TRADE_1000") return "var(--green)";
+  if (status === "RESEARCH_ONLY") return "var(--orange)";
+  if (status === "NOT_READY") return "var(--red)";
+  return "var(--label-tertiary)";
+}
 
 export default async function PairDetailPage({
   params,
@@ -92,6 +98,8 @@ export default async function PairDetailPage({
     basisSeries,
     qualityDistribution,
     timeRegimeSummary,
+    pairReadiness,
+    twoSizeBacktest,
     signalHistory,
     profitability,
   } = detail;
@@ -293,6 +301,137 @@ export default async function PairDetailPage({
                 </tbody>
               </table>
             </div>
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+              <div>
+                <p className="hig-headline" style={{ margin: 0 }}>Pair readiness</p>
+                <p className="hig-caption-1" style={{ color: "var(--label-tertiary)", margin: "0.25rem 0 0" }}>
+                  Side and size tradability checks over the 24h observation set.
+                </p>
+              </div>
+              <span className="hig-caption-1" style={{ color: readinessColor(pairReadiness.status), whiteSpace: "nowrap" }}>
+                {pairReadiness.status}
+              </span>
+            </div>
+            <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 940 }}>
+                <thead>
+                  <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Side</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Size</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Status</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Success</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Live samples</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Quote p95</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Basis p95</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Routers</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Reasons</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pairReadiness.rows.map((row) => (
+                    <tr key={`${row.side}-${row.sizeUsd}`} style={{ borderTop: "1px solid var(--separator)" }}>
+                      <td className="hig-footnote" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.side === "buy_tokenized" ? "Buy tokenized" : "Sell tokenized"}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        ${row.sizeUsd.toLocaleString()}
+                      </td>
+                      <td className="hig-caption-1" style={{ padding: "0.65rem 0.35rem", color: readinessColor(row.status), whiteSpace: "nowrap" }}>
+                        {row.status}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtPct(row.quoteSuccessRate)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.liveEligibleCount.toLocaleString()} / {row.sampleCount.toLocaleString()}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtMs(row.quoteLatencyMs.p95)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtMs(row.basisAgeMs.p95)}
+                      </td>
+                      <td className="hig-footnote" style={{ padding: "0.65rem 0.35rem", color: "var(--label-secondary)" }}>
+                        {row.routerDistribution.slice(0, 2).map((r) => `${r.router} ${fmtPct(r.pct)}`).join(" · ") || "—"}
+                      </td>
+                      <td className="hig-caption-1" style={{ padding: "0.65rem 0.35rem", color: "var(--label-tertiary)" }}>
+                        {row.reasonCodes.slice(0, 3).join(", ") || "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+              <div>
+                <p className="hig-headline" style={{ margin: 0 }}>$250 vs $1000 replay</p>
+                <p className="hig-caption-1" style={{ color: "var(--label-tertiary)", margin: "0.25rem 0 0" }}>
+                  Quality-gated spot-only replay; non-live rows stay diagnostic.
+                </p>
+              </div>
+              <span className="hig-caption-1" style={{ color: readinessColor(twoSizeBacktest.recommendedAction), whiteSpace: "nowrap" }}>
+                {twoSizeBacktest.recommendedAction}
+              </span>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: "0.75rem",
+                marginTop: "0.75rem",
+              }}
+            >
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Edge 250</div>
+                <div className="hig-headline bt-num">{fmtBps(twoSizeBacktest.edge250Bps)}</div>
+              </div>
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Edge 1000</div>
+                <div className="hig-headline bt-num">{fmtBps(twoSizeBacktest.edge1000Bps)}</div>
+              </div>
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Next 750</div>
+                <div className="hig-headline bt-num">{fmtBps(twoSizeBacktest.edgeNext750Bps)}</div>
+              </div>
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>PnL 250</div>
+                <div className="hig-headline bt-num">{fmtUsd(twoSizeBacktest.pnl250)}</div>
+              </div>
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>PnL 1000</div>
+                <div className="hig-headline bt-num">{fmtUsd(twoSizeBacktest.pnl1000)}</div>
+              </div>
+            </div>
+            {twoSizeBacktest.skippedSignalReasons.length === 0 ? null : (
+              <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 420 }}>
+                  <thead>
+                    <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>Skipped reason</th>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {twoSizeBacktest.skippedSignalReasons.map((row) => (
+                      <tr key={row.reason} style={{ borderTop: "1px solid var(--separator)" }}>
+                        <td className="hig-caption-1" style={{ padding: "0.65rem 0.35rem", color: "var(--label-secondary)" }}>
+                          {row.reason}
+                        </td>
+                        <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                          {row.count.toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
 
           <Card>

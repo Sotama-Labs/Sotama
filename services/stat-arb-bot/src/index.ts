@@ -357,6 +357,7 @@ async function main() {
   const apiServer = createApiServer({
     port: cfg.API_PORT,
     corsOrigin: cfg.API_CORS_ORIGIN,
+    transactionCostBps,
   });
   console.log(`api server listening on :${cfg.API_PORT}`);
   const hbHandle = setInterval(() => {
