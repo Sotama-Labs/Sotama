@@ -14,6 +14,7 @@ import {
   latestHeartbeat,
   basisHistory,
   basisRegimeSummary,
+  basisQualityDistribution,
   closedSignals,
   type BasisObservationRow,
   type TimeRegimeSummaryRow,
@@ -28,6 +29,7 @@ import type {
   HeartbeatDto,
   PairDetailDto,
   PairPanelDto,
+  QuoteQualityDistributionDto,
   QuoteSurfaceRowDto,
   SignalHistoryDto,
   TimeRegime,
@@ -144,10 +146,11 @@ async function handlePairDetail(
   const nowMs = Date.now();
   const sinceMs = nowMs - HISTORY_WINDOW_MS;
   const signalSinceMs = nowMs - SIGNAL_WINDOW_MS;
-  const [latest, signals, regimeRows, ...historyArrays] = await Promise.all([
+  const [latest, signals, regimeRows, qualityRows, ...historyArrays] = await Promise.all([
     latestBasisPerKey({ withinMs: LATEST_WITHIN_MS }),
     closedSignals({ pairId: id, sinceMs: signalSinceMs }),
     basisRegimeSummary({ pairId: id, sinceMs }),
+    basisQualityDistribution({ pairId: id, sinceMs }),
     ...pair.sizesUsd.flatMap((size) =>
       pair.directions.map((side) =>
         basisHistory({ pairId: id, side, sizeUsd: size, sinceMs }),
@@ -162,6 +165,11 @@ async function handlePairDetail(
     .flat()
     .sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
   const observationCount24h = historyRows.length;
+  const liveEligibleSignals = signals.filter(
+    (s) =>
+      s.entryQualityStatus === "LIVE_ELIGIBLE" &&
+      (s.exitQualityStatus ?? "LIVE_ELIGIBLE") === "LIVE_ELIGIBLE",
+  );
 
   const body: PairDetailDto = {
     pair,
@@ -172,10 +180,11 @@ async function handlePairDetail(
     observationCount24h,
     quoteSurface: toQuoteSurface(forPair),
     basisSeries: downsample(historyRows, BASIS_SERIES_LIMIT).map(toBasisSeriesPoint),
+    qualityDistribution: toQualityDistribution(qualityRows),
     timeRegimeSummary: toTimeRegimeSummary(pair.base.assetClass, regimeRows),
     signalHistory: signals.slice(-50).map(toSignalHistory),
     profitability: summarize(
-      signals.map((s) => ({
+      liveEligibleSignals.map((s) => ({
         entryAt: s.entryAt.getTime(),
         exitAt: s.exitAt.getTime(),
         pnlUsd: s.pnlUsd,
@@ -268,7 +277,10 @@ function toBestSide(b: BasisObservationRow, ratio: number): BestSideDto {
     observedAt: b.observedAt.toISOString(),
     timeRegime: b.timeRegime ?? null,
     quality: b.quality,
+    qualityStatus: b.qualityStatus,
+    qualityReason: b.qualityReason,
     pythFreshnessLagMs: b.pythFreshnessLagMs,
+    pythConfidenceBps: b.pythConfidenceBps,
     basisAgeMs: b.basisAgeMs,
   };
 }
@@ -338,7 +350,10 @@ function toQuoteSurface(rows: BasisObservationRow[]): QuoteSurfaceRowDto[] {
       observedAt: b.observedAt.toISOString(),
       timeRegime: b.timeRegime ?? null,
       quality: b.quality ?? "live",
+      qualityStatus: b.qualityStatus ?? "LIVE_ELIGIBLE",
+      qualityReason: b.qualityReason ?? "legacy row before quality gate",
       pythFreshnessLagMs: b.pythFreshnessLagMs ?? null,
+      pythConfidenceBps: b.pythConfidenceBps ?? null,
       quoteRequestMs: b.quoteRequestMs ?? null,
       basisAgeMs: b.basisAgeMs ?? null,
     }));
@@ -351,9 +366,20 @@ function toBasisSeriesPoint(b: BasisObservationRow): BasisSeriesPointDto {
     netBps: b.netBps,
     tokenPriceUsd: b.tokenPriceUsd,
     quality: b.quality ?? "live",
+    qualityStatus: b.qualityStatus ?? "LIVE_ELIGIBLE",
     timeRegime: b.timeRegime ?? null,
     observedAt: b.observedAt.toISOString(),
   };
+}
+
+function toQualityDistribution(
+  rows: Awaited<ReturnType<typeof basisQualityDistribution>>,
+): QuoteQualityDistributionDto[] {
+  return rows.map((row) => ({
+    qualityStatus: row.qualityStatus,
+    observationCount: row.observationCount,
+    observationPct: row.observationPct,
+  }));
 }
 
 function toTimeRegimeSummary(
@@ -416,6 +442,8 @@ function toSignalHistory(s: Awaited<ReturnType<typeof closedSignals>>[number]): 
     pnlUsd: s.pnlUsd,
     outcome: s.outcome,
     exitReason: s.exitReason,
+    entryQualityStatus: s.entryQualityStatus,
+    exitQualityStatus: s.exitQualityStatus,
   };
 }
 

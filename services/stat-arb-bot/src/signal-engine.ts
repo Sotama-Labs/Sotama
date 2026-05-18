@@ -1,4 +1,4 @@
-import type { PairConfig, PairDirection } from "@sotama/market-core";
+import type { PairConfig, PairDirection, QuoteQualityStatus } from "@sotama/market-core";
 import { openSignal, closeSignal, openSignalsByKey } from "@sotama/db";
 
 /** Spot-only paper-trade lifecycle.
@@ -26,6 +26,8 @@ export class SignalEngine {
     netEdgeBps: number;
     quoteId: bigint;
     basisId: bigint;
+    qualityStatus: QuoteQualityStatus;
+    qualityReason: string;
     observedAtMs: number;
     nowMs: number;
   }): Promise<void> {
@@ -44,6 +46,8 @@ export class SignalEngine {
     netEdgeBps: number;
     quoteId: bigint;
     basisId: bigint;
+    qualityStatus: QuoteQualityStatus;
+    qualityReason: string;
     observedAtMs: number;
     nowMs: number;
   }): Promise<void> {
@@ -70,6 +74,8 @@ export class SignalEngine {
       entryBasisId: args.basisId,
       tokenUnits: sizeUsd / tokenPriceUsd,
       entryObservedAt: new Date(args.observedAtMs),
+      entryQualityStatus: args.qualityStatus,
+      entryQualityReason: args.qualityReason,
       entryAt: new Date(args.nowMs),
     });
   }
@@ -82,6 +88,8 @@ export class SignalEngine {
     netEdgeBps: number;
     quoteId: bigint;
     basisId: bigint;
+    qualityStatus: QuoteQualityStatus;
+    qualityReason: string;
     observedAtMs: number;
     nowMs: number;
   }): Promise<void> {
@@ -126,6 +134,8 @@ export class SignalEngine {
         exitQuoteId: args.quoteId,
         exitBasisId: args.basisId,
         exitObservedAt: new Date(args.observedAtMs),
+        exitQualityStatus: args.qualityStatus,
+        exitQualityReason: args.qualityReason,
         exitReason: converged ? "converged" : "stale",
         pnlUsd,
         outcome,

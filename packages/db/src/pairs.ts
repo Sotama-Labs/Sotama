@@ -14,11 +14,13 @@ type Row = {
   min_price_move_bps: number;
   slippage_bps: number;
   min_net_edge_bps: number;
+  quality_gate: any;
 };
 
 const SELECT_COLS = `
   id, enabled, label, base, tokenized, quote, sizes_usd, directions,
-  quote_interval_ms, min_price_move_bps, slippage_bps, min_net_edge_bps
+  quote_interval_ms, min_price_move_bps, slippage_bps, min_net_edge_bps,
+  quality_gate
 `;
 
 export async function listEnabledPairs(): Promise<PairConfig[]> {
@@ -53,8 +55,9 @@ export async function upsertPair(cfg: PairConfig): Promise<void> {
   await getPool().query(
     `INSERT INTO market_pairs
        (id, enabled, label, base, tokenized, quote, sizes_usd, directions,
-        quote_interval_ms, min_price_move_bps, slippage_bps, min_net_edge_bps, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+        quote_interval_ms, min_price_move_bps, slippage_bps, min_net_edge_bps,
+        quality_gate, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
      ON CONFLICT (id) DO UPDATE SET
        enabled            = EXCLUDED.enabled,
        label              = EXCLUDED.label,
@@ -67,6 +70,7 @@ export async function upsertPair(cfg: PairConfig): Promise<void> {
        min_price_move_bps = EXCLUDED.min_price_move_bps,
        slippage_bps       = EXCLUDED.slippage_bps,
        min_net_edge_bps   = EXCLUDED.min_net_edge_bps,
+       quality_gate       = EXCLUDED.quality_gate,
        updated_at         = now()`,
     [
       cfg.id,
@@ -81,6 +85,7 @@ export async function upsertPair(cfg: PairConfig): Promise<void> {
       cfg.minPriceMoveBps,
       cfg.slippageBps,
       cfg.minNetEdgeBps,
+      cfg.qualityGate == null ? null : JSON.stringify(cfg.qualityGate),
     ],
   );
 }
@@ -111,5 +116,6 @@ function rowToConfig(row: Row): PairConfig {
     minPriceMoveBps: Number(row.min_price_move_bps),
     slippageBps: Number(row.slippage_bps),
     minNetEdgeBps: Number(row.min_net_edge_bps),
+    qualityGate: row.quality_gate ?? undefined,
   });
 }

@@ -47,6 +47,17 @@ export const BotConfigSchema = z.object({
   /** Classify crypto observations as CRYPTO_HIGH_VOL when the current Pyth
    *  tick has moved this many bps from the previous tick seen for the pair. */
   CRYPTO_HIGH_VOL_MOVE_BPS: z.coerce.number().min(0).default(50),
+  QUALITY_MAX_QUOTE_LATENCY_MS: z.coerce.number().int().min(0).default(1_500),
+  QUALITY_MAX_BASIS_AGE_MS: z.coerce.number().int().min(0).default(5_000),
+  QUALITY_MAX_PRICE_IMPACT_BPS: z.coerce.number().min(0).default(50),
+  QUALITY_MAX_PYTH_CONFIDENCE_BPS: z.coerce.number().min(0).default(25),
+  QUALITY_ALLOWED_ROUTERS: z.preprocess(
+    (value) =>
+      typeof value === "string"
+        ? value.split(",").map((s) => s.trim()).filter(Boolean)
+        : value,
+    z.array(z.string().min(1)).default([]),
+  ),
 
   // ── Cost-model assumptions, all in bps. Tunable per environment. ──
   SLIPPAGE_BUFFER_BPS: z.coerce.number().default(30),

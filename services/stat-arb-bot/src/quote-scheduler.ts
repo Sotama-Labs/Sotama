@@ -16,6 +16,8 @@ export type PriceTickMetadata = {
   streamTimestampUs: number;
   feedUpdateTimestampUs: number;
   pythFreshnessLagMs: number;
+  pythConfidenceBps?: number | null;
+  pythMarketSession?: string | null;
   timeRegime?: TimeRegime | null;
   allowSignals?: boolean;
 };
@@ -90,6 +92,8 @@ export class QuoteScheduler {
       streamTimestampUs: 0,
       feedUpdateTimestampUs: 0,
       pythFreshnessLagMs: 0,
+      pythConfidenceBps: null,
+      pythMarketSession: null,
     },
   ): void {
     const p = this.pairs.get(pairId);

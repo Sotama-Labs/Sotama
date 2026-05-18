@@ -5,7 +5,12 @@ import {
   sellEdgeBps,
   netEdgeBps,
 } from "@sotama/market-core";
-import type { PairConfig, PairDirection, TimeRegime } from "@sotama/market-core";
+import type {
+  PairConfig,
+  PairDirection,
+  QuoteQualityStatus,
+  TimeRegime,
+} from "@sotama/market-core";
 import { insertJupiterQuote, insertBasisObservation } from "@sotama/db";
 import type { OrderResult } from "./jupiter-client";
 
@@ -22,11 +27,15 @@ export type QuoteTiming = {
   pythStreamTimestampUs: number;
   pythFeedUpdateTimestampUs: number;
   pythFreshnessLagMs: number;
+  pythConfidenceBps: number | null;
+  pythMarketSession: string | null;
   quoteRequestStartedAt: Date;
   quoteResponseAt: Date;
   quoteRequestMs: number;
   basisAgeMs: number;
   quality: ObservationQuality;
+  qualityStatus: QuoteQualityStatus;
+  qualityReason: string;
   timeRegime?: TimeRegime | null;
 };
 
@@ -36,6 +45,8 @@ export type RecordedQuote =
       tokenPriceUsd: number;
       grossBps: number;
       netBps: number;
+      qualityStatus: QuoteQualityStatus;
+      qualityReason: string;
       quoteId: bigint;
       basisId: bigint;
     }
@@ -135,13 +146,26 @@ export async function recordQuote(args: {
     pythStreamTimestampUs: args.timing.pythStreamTimestampUs,
     pythFeedUpdateTimestampUs: args.timing.pythFeedUpdateTimestampUs,
     pythFreshnessLagMs: args.timing.pythFreshnessLagMs,
+    pythConfidenceBps: args.timing.pythConfidenceBps,
+    pythMarketSession: args.timing.pythMarketSession,
     quoteRequestStartedAt: args.timing.quoteRequestStartedAt,
     quoteResponseAt: args.timing.quoteResponseAt,
     quoteRequestMs: args.timing.quoteRequestMs,
     basisAgeMs: args.timing.basisAgeMs,
     quality: args.timing.quality,
+    qualityStatus: args.timing.qualityStatus,
+    qualityReason: args.timing.qualityReason,
     timeRegime: args.timing.timeRegime ?? null,
   });
 
-  return { status: "ok", tokenPriceUsd, grossBps, netBps, quoteId, basisId };
+  return {
+    status: "ok",
+    tokenPriceUsd,
+    grossBps,
+    netBps,
+    qualityStatus: args.timing.qualityStatus,
+    qualityReason: args.timing.qualityReason,
+    quoteId,
+    basisId,
+  };
 }

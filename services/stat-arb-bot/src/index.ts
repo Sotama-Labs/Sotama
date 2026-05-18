@@ -11,10 +11,13 @@ import { isExecutableTimeRegime, timeRegimeFor } from "./market-hours";
 import { closePool } from "@sotama/db";
 import {
   assertQuoteRpsBudget,
+  buildQuoteQualityThresholds,
+  classifyQuoteQuality,
+  observationQualityFromStatus,
   normalizeActiveQuoteSizes,
   uiToAtomic,
 } from "@sotama/market-core";
-import type { PairConfig } from "@sotama/market-core";
+import type { PairConfig, QuoteQualityThresholds } from "@sotama/market-core";
 
 const STALE_SIGNAL_MS = 30 * 60_000;
 
@@ -43,6 +46,13 @@ function maxFreshnessLagMsForPair(pair: PairConfig): number {
     default:
       return 5_000;
   }
+}
+
+function decimalsVerified(pair: PairConfig): boolean {
+  return Number.isInteger(pair.tokenized.decimals) &&
+    pair.tokenized.decimals >= 0 &&
+    pair.tokenized.decimals <= 18 &&
+    pair.quote.decimals === 6;
 }
 
 function runtimePair(p: PairConfig): PairConfig | null {
@@ -81,6 +91,20 @@ async function main() {
     landingCostBps: cfg.LANDING_COST_BPS,
     failureBufferBps: cfg.FAILURE_BUFFER_BPS,
     minProfitBps: cfg.MIN_PROFIT_BPS,
+  };
+  const defaultQualityThresholds: QuoteQualityThresholds = {
+    maxPythFreshnessLagMs: cfg.PYTH_MAX_FRESHNESS_LAG_MS,
+    maxQuoteLatencyMs: cfg.QUALITY_MAX_QUOTE_LATENCY_MS,
+    maxBasisAgeMs: cfg.QUALITY_MAX_BASIS_AGE_MS,
+    maxPriceImpactBps: cfg.QUALITY_MAX_PRICE_IMPACT_BPS,
+    maxPythConfidenceBps: cfg.QUALITY_MAX_PYTH_CONFIDENCE_BPS,
+    allowedRouters: cfg.QUALITY_ALLOWED_ROUTERS,
+    allowedMarketSessions: [
+      "US_EQUITY_REGULAR",
+      "METAL_ACTIVE",
+      "CRYPTO_NORMAL",
+      "CRYPTO_HIGH_VOL",
+    ],
   };
 
   const jup = new JupiterClient({
@@ -136,6 +160,33 @@ async function main() {
         work.streamTimestampUs > 0
           ? Math.max(0, quoteResponseAtMs - Math.floor(work.streamTimestampUs / 1000))
           : Math.max(0, quoteResponseAtMs - work.queuedAtMs);
+      const thresholds = buildQuoteQualityThresholds(
+        {
+          ...pair.qualityGate,
+          maxPythFreshnessLagMs:
+            pair.qualityGate?.maxPythFreshnessLagMs ?? maxFreshnessLagMsForPair(pair),
+        },
+        defaultQualityThresholds,
+      );
+      const quoteQuality =
+        result.status === "ok"
+          ? classifyQuoteQuality(
+              {
+                pythFreshnessLagMs: work.pythFreshnessLagMs,
+                quoteRequestMs: result.requestMs,
+                basisAgeMs,
+                priceImpactPct: result.priceImpactPct,
+                pythConfidenceBps: work.pythConfidenceBps,
+                router: result.router,
+                timeRegime: work.timeRegime ?? null,
+                decimalsVerified: decimalsVerified(pair),
+              },
+              thresholds,
+            )
+          : {
+              qualityStatus: "STALE_BASIS" as const,
+              qualityReason: "Jupiter quote did not return executable amounts",
+            };
       const recorded = await recordQuote({
         pair,
         side,
@@ -147,16 +198,24 @@ async function main() {
           pythStreamTimestampUs: work.streamTimestampUs,
           pythFeedUpdateTimestampUs: work.feedUpdateTimestampUs,
           pythFreshnessLagMs: work.pythFreshnessLagMs,
+          pythConfidenceBps: work.pythConfidenceBps ?? null,
+          pythMarketSession: work.pythMarketSession ?? null,
           quoteRequestStartedAt: new Date(quoteRequestStartedAtMs),
           quoteResponseAt: new Date(quoteResponseAtMs),
           quoteRequestMs: result.requestMs,
           basisAgeMs,
-          quality: "live",
+          quality: observationQualityFromStatus(quoteQuality.qualityStatus),
+          qualityStatus: quoteQuality.qualityStatus,
+          qualityReason: quoteQuality.qualityReason,
           timeRegime: work.timeRegime ?? null,
         },
         successRawSampleRate: cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE,
       });
-      if (recorded.status === "ok" && work.allowSignals !== false) {
+      if (
+        recorded.status === "ok" &&
+        work.allowSignals !== false &&
+        recorded.qualityStatus === "LIVE_ELIGIBLE"
+      ) {
         await signals.onObservation({
           pair,
           side,
@@ -166,6 +225,8 @@ async function main() {
           netEdgeBps: recorded.netBps,
           quoteId: recorded.quoteId,
           basisId: recorded.basisId,
+          qualityStatus: recorded.qualityStatus,
+          qualityReason: recorded.qualityReason,
           observedAtMs: quoteResponseAtMs,
           nowMs: Date.now(),
         });
@@ -264,7 +325,6 @@ async function main() {
       if (!pair) continue;
       if (t.freshnessLagMs > maxFreshnessLagMsForPair(pair)) {
         heartbeat.countInvalidFeed();
-        continue;
       }
       const previousPrice = lastRegimePriceByPair.get(pairId);
       const cryptoMoveBps =
@@ -281,6 +341,11 @@ async function main() {
         streamTimestampUs: t.streamTimestampUs,
         feedUpdateTimestampUs: t.feedUpdateTimestampUs,
         pythFreshnessLagMs: t.freshnessLagMs,
+        pythConfidenceBps:
+          t.confidenceUsd == null || t.priceUsd <= 0
+            ? null
+            : (t.confidenceUsd / t.priceUsd) * 10000,
+        pythMarketSession: t.marketSession,
         timeRegime,
         allowSignals: isExecutableTimeRegime(timeRegime),
       });

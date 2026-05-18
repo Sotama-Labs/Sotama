@@ -39,6 +39,16 @@ describe("loadConfig", () => {
     expect(cfg.PYTH_MAX_FRESHNESS_LAG_MS).to.equal(5000);
     expect(cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE).to.equal(0.02);
     expect(cfg.CRYPTO_HIGH_VOL_MOVE_BPS).to.equal(50);
+    expect(cfg.QUALITY_MAX_QUOTE_LATENCY_MS).to.equal(1500);
+    expect(cfg.QUALITY_ALLOWED_ROUTERS).to.deep.equal([]);
+  });
+
+  it("parses quality router allowlists", () => {
+    const cfg = loadConfig({
+      ...base,
+      QUALITY_ALLOWED_ROUTERS: "jupiterz, dflow ",
+    } as any);
+    expect(cfg.QUALITY_ALLOWED_ROUTERS).to.deep.equal(["jupiterz", "dflow"]);
   });
 
   it("rejects invalid raw quote sample rates", () => {

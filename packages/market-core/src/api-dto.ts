@@ -3,6 +3,7 @@
  *  produces these shapes; the Vercel dashboard consumes them via fetch. */
 
 import type { PairConfig } from "./pair-config";
+import type { QuoteQualityStatus } from "./quote-quality";
 import type { TimeRegime } from "./time-regime";
 
 export type BestSideDto = {
@@ -15,7 +16,10 @@ export type BestSideDto = {
   observedAt: string;
   timeRegime?: TimeRegime | null;
   quality?: "live" | "warm" | "stale" | "invalid";
+  qualityStatus?: QuoteQualityStatus;
+  qualityReason?: string;
   pythFreshnessLagMs?: number | null;
+  pythConfidenceBps?: number | null;
   basisAgeMs?: number | null;
 };
 
@@ -70,7 +74,10 @@ export type QuoteSurfaceRowDto = {
   observedAt: string;
   timeRegime: TimeRegime | null;
   quality: "live" | "warm" | "stale" | "invalid";
+  qualityStatus: QuoteQualityStatus;
+  qualityReason: string;
   pythFreshnessLagMs: number | null;
+  pythConfidenceBps: number | null;
   quoteRequestMs: number | null;
   basisAgeMs: number | null;
 };
@@ -81,8 +88,15 @@ export type BasisSeriesPointDto = {
   netBps: number;
   tokenPriceUsd: number;
   quality: "live" | "warm" | "stale" | "invalid";
+  qualityStatus: QuoteQualityStatus;
   timeRegime: TimeRegime | null;
   observedAt: string;
+};
+
+export type QuoteQualityDistributionDto = {
+  qualityStatus: QuoteQualityStatus;
+  observationCount: number;
+  observationPct: number;
 };
 
 export type TimeRegimeSummaryDto = {
@@ -111,6 +125,8 @@ export type SignalHistoryDto = {
   pnlUsd: number;
   outcome: string;
   exitReason: string | null;
+  entryQualityStatus: QuoteQualityStatus;
+  exitQualityStatus: QuoteQualityStatus | null;
 };
 
 export type PairDetailDto = {
@@ -122,6 +138,7 @@ export type PairDetailDto = {
   observationCount24h: number;
   quoteSurface: QuoteSurfaceRowDto[];
   basisSeries: BasisSeriesPointDto[];
+  qualityDistribution: QuoteQualityDistributionDto[];
   timeRegimeSummary: TimeRegimeSummaryDto[];
   signalHistory: SignalHistoryDto[];
   profitability: import("./profitability").ProfitabilitySummary;

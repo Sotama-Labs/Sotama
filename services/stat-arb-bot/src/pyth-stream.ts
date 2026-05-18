@@ -328,7 +328,7 @@ export class PythStream {
       type: "subscribe",
       subscriptionId: 1,
       priceFeedIds: this.feedIds,
-      properties: ["price", "exponent", "feedUpdateTimestamp", "marketSession"],
+      properties: ["price", "exponent", "confidence", "feedUpdateTimestamp", "marketSession"],
       formats: ["solana"],
       deliveryFormat: "json",
       jsonBinaryEncoding: "base64",

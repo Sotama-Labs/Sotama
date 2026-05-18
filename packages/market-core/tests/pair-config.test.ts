@@ -23,6 +23,16 @@ describe("PairConfigSchema", () => {
   it("accepts a valid config", () => {
     expect(() => PairConfigSchema.parse(valid)).to.not.throw();
   });
+  it("accepts per-pair quote quality overrides", () => {
+    expect(() => PairConfigSchema.parse({
+      ...valid,
+      qualityGate: {
+        maxQuoteLatencyMs: 750,
+        allowedRouters: ["jupiterz"],
+        allowedMarketSessions: ["METAL_ACTIVE"],
+      },
+    })).to.not.throw();
+  });
   it("rejects empty sizesUsd", () => {
     expect(() => PairConfigSchema.parse({ ...valid, sizesUsd: [] })).to.throw();
   });

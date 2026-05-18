@@ -5,6 +5,27 @@ export const ACTIVE_QUOTE_SIZES_USD = [250, 1000] as const;
 const AssetClassEnum = z.enum(["Crypto", "Equity", "Commodity", "FX", "Metal"]);
 const DirectionEnum = z.enum(["buy_tokenized", "sell_tokenized"]);
 const ActiveQuoteSizeEnum = z.union([z.literal(250), z.literal(1000)]);
+const TimeRegimeEnum = z.enum([
+  "US_EQUITY_REGULAR",
+  "US_EQUITY_PREMARKET",
+  "US_EQUITY_POSTMARKET",
+  "US_EQUITY_OVERNIGHT",
+  "US_EQUITY_WEEKEND",
+  "METAL_ACTIVE",
+  "METAL_MAINTENANCE",
+  "METAL_WEEKEND",
+  "CRYPTO_NORMAL",
+  "CRYPTO_HIGH_VOL",
+]);
+const QualityGateSchema = z.object({
+  maxPythFreshnessLagMs: z.number().int().nonnegative().optional(),
+  maxQuoteLatencyMs: z.number().int().nonnegative().optional(),
+  maxBasisAgeMs: z.number().int().nonnegative().optional(),
+  maxPriceImpactBps: z.number().nonnegative().optional(),
+  maxPythConfidenceBps: z.number().nonnegative().optional(),
+  allowedRouters: z.array(z.string().min(1)).optional(),
+  allowedMarketSessions: z.array(TimeRegimeEnum).optional(),
+}).optional();
 
 export const PairConfigSchema = z.object({
   id: z.string().min(1),
@@ -34,6 +55,7 @@ export const PairConfigSchema = z.object({
   minPriceMoveBps: z.number().nonnegative(),
   slippageBps: z.number().nonnegative(),
   minNetEdgeBps: z.number().nonnegative(),
+  qualityGate: QualityGateSchema,
 });
 
 export type PairConfig = z.infer<typeof PairConfigSchema>;

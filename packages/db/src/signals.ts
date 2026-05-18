@@ -1,5 +1,5 @@
 import { getPool } from "./index";
-import type { PairDirection } from "@sotama/market-core";
+import type { PairDirection, QuoteQualityStatus } from "@sotama/market-core";
 
 export type OpenSignalInsert = {
   pairId: string;
@@ -13,6 +13,8 @@ export type OpenSignalInsert = {
   entryBasisId: bigint | null;
   tokenUnits: number;
   entryObservedAt: Date;
+  entryQualityStatus: QuoteQualityStatus;
+  entryQualityReason: string;
   entryAt: Date;
 };
 
@@ -21,8 +23,9 @@ export async function openSignal(row: OpenSignalInsert): Promise<bigint> {
     `INSERT INTO paper_signals
        (pair_id, side, entry_side, size_usd, threshold_bps, entry_edge_bps,
         entry_token_price_usd, entry_base_price_usd, entry_quote_id, entry_basis_id,
-        token_units, entry_observed_at, entry_at, outcome)
-     VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'open')
+        token_units, entry_observed_at, entry_quality_status, entry_quality_reason,
+        entry_at, outcome)
+     VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open')
      RETURNING id`,
     [
       row.pairId,
@@ -36,6 +39,8 @@ export async function openSignal(row: OpenSignalInsert): Promise<bigint> {
       row.entryBasisId === null ? null : row.entryBasisId.toString(),
       row.tokenUnits,
       row.entryObservedAt,
+      row.entryQualityStatus,
+      row.entryQualityReason,
       row.entryAt,
     ],
   );
@@ -51,6 +56,8 @@ export type CloseSignalArgs = {
   exitQuoteId: bigint | null;
   exitBasisId: bigint | null;
   exitObservedAt: Date;
+  exitQualityStatus: QuoteQualityStatus;
+  exitQualityReason: string;
   exitReason: "converged" | "stale";
   pnlUsd: number;
   outcome: "closed_win" | "closed_loss" | "closed_flat" | "closed_stale";
@@ -63,7 +70,7 @@ export async function closeSignal(args: CloseSignalArgs): Promise<void> {
      SET exit_at = $2, exit_edge_bps = $3, pnl_usd = $4, outcome = $5,
          exit_side = $6, exit_token_price_usd = $7, exit_base_price_usd = $8,
          exit_quote_id = $9, exit_basis_id = $10, exit_observed_at = $11,
-         exit_reason = $12
+         exit_quality_status = $12, exit_quality_reason = $13, exit_reason = $14
      WHERE id = $1`,
     [
       args.id.toString(),
@@ -77,6 +84,8 @@ export async function closeSignal(args: CloseSignalArgs): Promise<void> {
       args.exitQuoteId === null ? null : args.exitQuoteId.toString(),
       args.exitBasisId === null ? null : args.exitBasisId.toString(),
       args.exitObservedAt,
+      args.exitQualityStatus,
+      args.exitQualityReason,
       args.exitReason,
     ],
   );
@@ -95,6 +104,8 @@ export type OpenSignalRow = {
   entryBasisId: bigint | null;
   tokenUnits: number | null;
   entryObservedAt: Date | null;
+  entryQualityStatus: QuoteQualityStatus;
+  entryQualityReason: string;
   entryAt: Date;
 };
 
@@ -106,7 +117,8 @@ export async function openSignalsByKey(args: {
   const { rows } = await getPool().query(
     `SELECT id, pair_id, side, size_usd, threshold_bps, entry_edge_bps,
             entry_token_price_usd, entry_base_price_usd, entry_quote_id, entry_basis_id,
-            token_units, entry_observed_at, entry_at
+            token_units, entry_observed_at, entry_quality_status, entry_quality_reason,
+            entry_at
      FROM paper_signals
      WHERE pair_id = $1 AND side = $2 AND size_usd = $3 AND exit_at IS NULL
      ORDER BY entry_at ASC`,
@@ -127,6 +139,8 @@ export async function openSignalsByKey(args: {
     entryBasisId: r.entry_basis_id == null ? null : BigInt(r.entry_basis_id),
     tokenUnits: r.token_units == null ? null : Number(r.token_units),
     entryObservedAt: r.entry_observed_at,
+    entryQualityStatus: r.entry_quality_status ?? "LIVE_ELIGIBLE",
+    entryQualityReason: r.entry_quality_reason ?? "legacy signal before quality gate",
     entryAt: r.entry_at,
   }));
 }
@@ -140,6 +154,8 @@ export type ClosedSignalRow = OpenSignalRow & {
   exitQuoteId: bigint | null;
   exitBasisId: bigint | null;
   exitObservedAt: Date | null;
+  exitQualityStatus: QuoteQualityStatus | null;
+  exitQualityReason: string | null;
   exitReason: string | null;
   pnlUsd: number;
   outcome: string;
@@ -152,10 +168,10 @@ export async function closedSignals(args: {
   const { rows } = await getPool().query(
     `SELECT id, pair_id, side, size_usd, threshold_bps, entry_edge_bps, entry_at,
             entry_token_price_usd, entry_base_price_usd, entry_quote_id, entry_basis_id,
-            token_units, entry_observed_at,
+            token_units, entry_observed_at, entry_quality_status, entry_quality_reason,
             exit_at, exit_edge_bps, exit_side, exit_token_price_usd,
             exit_base_price_usd, exit_quote_id, exit_basis_id, exit_observed_at,
-            exit_reason, pnl_usd, outcome
+            exit_quality_status, exit_quality_reason, exit_reason, pnl_usd, outcome
      FROM paper_signals
      WHERE pair_id = $1
        AND exit_at IS NOT NULL
@@ -178,6 +194,8 @@ export async function closedSignals(args: {
     entryBasisId: r.entry_basis_id == null ? null : BigInt(r.entry_basis_id),
     tokenUnits: r.token_units == null ? null : Number(r.token_units),
     entryObservedAt: r.entry_observed_at,
+    entryQualityStatus: r.entry_quality_status ?? "LIVE_ELIGIBLE",
+    entryQualityReason: r.entry_quality_reason ?? "legacy signal before quality gate",
     entryAt: r.entry_at,
     exitAt: r.exit_at,
     exitEdgeBps: Number(r.exit_edge_bps),
@@ -189,6 +207,8 @@ export async function closedSignals(args: {
     exitQuoteId: r.exit_quote_id == null ? null : BigInt(r.exit_quote_id),
     exitBasisId: r.exit_basis_id == null ? null : BigInt(r.exit_basis_id),
     exitObservedAt: r.exit_observed_at,
+    exitQualityStatus: r.exit_quality_status,
+    exitQualityReason: r.exit_quality_reason,
     exitReason: r.exit_reason,
     pnlUsd: Number(r.pnl_usd),
     outcome: r.outcome,
