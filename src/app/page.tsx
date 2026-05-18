@@ -24,6 +24,10 @@ import {
   newAutomationId,
   saveAutomations,
 } from "@/lib/automations";
+import {
+  fetchOwnedOnChainAutomations,
+  mergeOnChainAutomations,
+} from "@/lib/on-chain-automations";
 import { deleteAutomation, submitAutomation } from "@/lib/keeper";
 import { useOnChainAutomationSync } from "@/hooks/useOnChainAutomationSync";
 import { isTerminal } from "@/lib/types";
@@ -42,6 +46,8 @@ export default function Page() {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
+  const [automationsOwner, setAutomationsOwner] = useState<string | null>(null);
+  const [hydratingOnChain, setHydratingOnChain] = useState(false);
   /** Bumped after each successful save so the ConditionalBuilder remounts
    *  with a fresh blank draft instead of keeping the just-saved state. */
   const [composeKey, setComposeKey] = useState(0);
@@ -62,14 +68,42 @@ export default function Page() {
   const isMobile = useIsMobile();
   const { connection } = useConnection();
   const wallet = useWallet();
+  const walletPublicKey = wallet.publicKey;
 
   /** Local strategies are scoped per connected wallet so wallet B
    *  doesn't see wallet A's saved automations. Reload whenever the
    *  connected pubkey changes (connect / disconnect / switch). */
   const walletOwner = wallet.publicKey?.toBase58() ?? null;
   useEffect(() => {
-    setAutomations(loadAutomations(walletOwner));
-  }, [walletOwner]);
+    let cancelled = false;
+    const local = loadAutomations(walletOwner);
+    setAutomationsOwner(walletOwner);
+    setAutomations(local);
+
+    if (!walletPublicKey) {
+      setHydratingOnChain(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setHydratingOnChain(true);
+    fetchOwnedOnChainAutomations(connection, walletPublicKey)
+      .then((remote) => {
+        if (cancelled) return;
+        setAutomations((prev) => mergeOnChainAutomations(prev, remote));
+      })
+      .catch((e) => {
+        if (!cancelled) console.warn("on-chain automation hydration failed:", e);
+      })
+      .finally(() => {
+        if (!cancelled) setHydratingOnChain(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connection, walletOwner, walletPublicKey]);
 
   useEffect(() => {
     setView(initialView());
@@ -79,8 +113,9 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
+    if (automationsOwner !== walletOwner) return;
     saveAutomations(walletOwner, automations);
-  }, [walletOwner, automations]);
+  }, [walletOwner, automationsOwner, automations]);
 
   useEffect(() => {
     const wanted = view === "active" ? "#active" : "#compose";
@@ -578,6 +613,7 @@ export default function Page() {
             automations={automations}
             onToggle={handleToggle}
             onDelete={handleDelete}
+            loading={hydratingOnChain}
           />
         )}
       </main>

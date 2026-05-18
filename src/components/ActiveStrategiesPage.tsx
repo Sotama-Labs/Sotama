@@ -264,10 +264,12 @@ export function ActiveStrategiesPage({
   automations,
   onToggle,
   onDelete,
+  loading = false,
 }: {
   automations: Automation[];
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
+  loading?: boolean;
 }) {
   const items = automations;
   // Placeholder for the "Recent executions" panel — populating this from
@@ -479,14 +481,15 @@ export function ActiveStrategiesPage({
           className="hig-headline"
           style={{ color: "var(--label-primary)", fontWeight: 600 }}
         >
-          No automations yet
+          {loading ? "Loading automations" : "No automations yet"}
         </div>
         <div
           className="hig-subheadline"
           style={{ color: "var(--label-secondary)", maxWidth: "28rem" }}
         >
-          Compose an automation first — saved strategies will appear here once
-          they&rsquo;re funded on-chain.
+          {loading
+            ? "Reading this wallet's Automation PDAs from Solana."
+            : "Compose an automation first — saved strategies will appear here once they are funded on-chain."}
         </div>
       </div>
     );

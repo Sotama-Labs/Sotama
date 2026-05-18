@@ -43,6 +43,15 @@ type FeedEntry = {
   attributes?: FeedAttributes;
 };
 
+export type PythFeedMetadata = {
+  feedId: string;
+  symbol: string;
+  base: string | null;
+  quote: string | null;
+  description: string;
+  assetClass: AssetClass;
+};
+
 export type PriceUpdate = {
   price: number;
   confidence: number;
@@ -51,6 +60,55 @@ export type PriceUpdate = {
 
 export function normalizeFeedId(id: string): string {
   return id.startsWith("0x") ? id.slice(2) : id;
+}
+
+function assetClassFromFeed(f: FeedEntry): AssetClass {
+  switch ((f.attributes?.asset_type ?? "").toLowerCase()) {
+    case "equity":
+      return "Equity";
+    case "commodity":
+      return "Commodity";
+    case "fx":
+      return "FX";
+    case "metal":
+      return "Metal";
+    case "crypto":
+    default:
+      return "Crypto";
+  }
+}
+
+export async function lookupPythFeedMetadata(
+  feedId: string,
+): Promise<PythFeedMetadata | null> {
+  const id = normalizeFeedId(feedId);
+  const url = `${HERMES}/v2/price_feeds?ids[]=${encodeURIComponent(id)}`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return null;
+    const feeds = (await res.json()) as FeedEntry[];
+    if (!Array.isArray(feeds)) return null;
+    const match = feeds.find((f) => normalizeFeedId(f.id) === id) ?? feeds[0];
+    if (!match) return null;
+    const symbol = match.attributes?.symbol ?? "";
+    const parsed = symbol ? parsePythSymbol(symbol) : null;
+    const base = feedBase(match) ?? parsed?.base ?? null;
+    const quote = feedQuote(match) ?? parsed?.quote ?? null;
+    return {
+      feedId: id,
+      symbol: symbol || `${base ?? id.slice(0, 6)}/${quote ?? "USD"}`,
+      base,
+      quote,
+      description:
+        match.attributes?.description ||
+        match.attributes?.generic_symbol ||
+        base ||
+        id,
+      assetClass: assetClassFromFeed(match),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Maps AssetClass to the provider's internal query parameter. Update here when switching providers. */
