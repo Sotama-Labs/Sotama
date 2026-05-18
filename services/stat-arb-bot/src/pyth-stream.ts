@@ -74,11 +74,15 @@ export class PythStream {
       next.length !== this.feedIds.length ||
       next.some((id, i) => id !== this.feedIds[i]);
     this.feedIds = next;
-    if (changed) {
-      console.log(`[lazer] feed ids updated: [${next.join(",")}]`);
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.subscribe();
-      }
+    if (!changed) return;
+    console.log(`[lazer] feed ids updated: [${next.join(",")}]`);
+    // Lazer rejects re-subscribes with the same subscriptionId
+    // ("duplicate subscription id"), and its UnsubscribeRequest only
+    // works on a whole subscription. So to change the active feed set
+    // we close the WS and let the reconnect loop re-subscribe with the
+    // new list (keeper does the same; see keeper/src/lazer_watcher.rs).
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try { this.ws.close(); } catch { /* ignore */ }
     }
   }
 

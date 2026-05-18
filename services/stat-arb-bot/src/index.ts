@@ -127,8 +127,18 @@ async function main() {
     pairConfigs.delete(id);
     scheduler.removePair(id);
   };
+  // Debounce: the pair loader fires onAdded/onRemoved/onUpdated in a
+  // tight loop when the DB changes. Each call to setFeedIds drops the WS
+  // and reconnects (the only way to change Lazer's feed set), so N rapid
+  // events would cause N reconnects. Collapse them to one per tick.
+  let refreshScheduled = false;
   const refreshSubscriptions = () => {
-    stream.setFeedIds([...lazerIdToPairs.keys()]);
+    if (refreshScheduled) return;
+    refreshScheduled = true;
+    setImmediate(() => {
+      refreshScheduled = false;
+      stream.setFeedIds([...lazerIdToPairs.keys()]);
+    });
   };
 
   const loader = new PairLoader({
