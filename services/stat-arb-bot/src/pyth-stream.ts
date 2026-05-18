@@ -177,7 +177,8 @@ export class PythStream {
         const fallbackTimestamp = Number(parsed?.timestampUs ?? 0);
         if (!this.firstStreamUpdateLogged) {
           this.firstStreamUpdateLogged = true;
-          console.log(`[lazer] first streamUpdate: feeds=${feeds.length} sample=${JSON.stringify(feeds[0] ?? {})}`);
+          const raw = JSON.stringify(msg).slice(0, 800);
+          console.log(`[lazer] first streamUpdate raw: ${raw}`);
         }
         for (const f of feeds) {
           const event = this.toEvent(f, fallbackTimestamp);
