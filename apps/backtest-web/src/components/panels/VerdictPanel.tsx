@@ -19,12 +19,7 @@ export function VerdictPanel({ verdict }: { verdict: PairResearchVerdict }) {
         {verdict.summary}
       </p>
       <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: "0.75rem",
-          marginBottom: "0.75rem",
-        }}
+        className="bt-reason-grid"
       >
         <ReasonList
           tone="blockers"
@@ -38,14 +33,7 @@ export function VerdictPanel({ verdict }: { verdict: PairResearchVerdict }) {
         />
       </div>
       <div
-        style={{
-          padding: "0.625rem 0.75rem",
-          background: "var(--fill-4)",
-          borderRadius: "var(--radius-control-m)",
-          display: "flex",
-          alignItems: "baseline",
-          gap: 8,
-        }}
+        className="bt-next-action"
       >
         <span
           className="hig-caption-1"

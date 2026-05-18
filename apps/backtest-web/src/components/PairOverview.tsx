@@ -16,21 +16,11 @@ export function PairOverview({ panels }: { panels: readonly PairPanelDto[] }) {
         return (
           <section key={status} className="bt-group">
             <header
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                gap: "0.625rem",
-                marginBottom: "0.625rem",
-              }}
+              className="bt-group-header"
             >
               <h2
-                className="hig-footnote"
+                className="hig-footnote bt-group-title"
                 style={{
-                  margin: 0,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  fontWeight: 600,
                   color: verdictColor(status),
                 }}
               >

@@ -31,12 +31,7 @@ function WaterfallBars({ waterfall }: { waterfall: CostWaterfall }) {
       {waterfall.steps.map((step) => (
         <div
           key={step.code}
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(140px, 1fr) minmax(72px, 0.5fr) minmax(160px, 2fr)",
-            gap: "0.625rem",
-            alignItems: "center",
-          }}
+          className="bt-waterfall-row"
         >
           <span
             className={`hig-footnote ${

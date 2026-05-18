@@ -6,10 +6,12 @@ import type { CSSProperties, ReactNode } from "react";
 export function Card({
   children,
   style,
+  className,
   interactive = false,
 }: {
   children: ReactNode;
   style?: CSSProperties;
+  className?: string;
   interactive?: boolean;
 }) {
   const base: CSSProperties = {
@@ -21,9 +23,9 @@ export function Card({
     cursor: interactive ? "pointer" : "default",
     transition: "transform 160ms ease, box-shadow 160ms ease",
   };
-  const className = interactive ? "sotama-card sotama-card--interactive" : "sotama-card";
+  const baseClassName = interactive ? "sotama-card sotama-card--interactive" : "sotama-card";
   return (
-    <div className={className} style={{ ...base, ...style }}>
+    <div className={className ? `${baseClassName} ${className}` : baseClassName} style={{ ...base, ...style }}>
       {children}
     </div>
   );

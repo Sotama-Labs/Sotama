@@ -19,31 +19,24 @@ export function Section({
   density?: "default" | "compact";
 }) {
   return (
-    <Card style={{ padding: density === "compact" ? "0.875rem 1rem" : "1.125rem 1.125rem" }}>
-      <header
-        style={{
-          display: "flex",
-          gap: "0.75rem",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          marginBottom: density === "compact" ? "0.5rem" : "0.875rem",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <p className="hig-headline" style={{ margin: 0 }}>
+    <Card
+      className={`bt-panel ${density === "compact" ? "bt-panel--compact" : ""}`}
+      style={{ padding: density === "compact" ? "0.875rem 1rem" : "1.125rem 1.125rem" }}
+    >
+      <header className={`bt-section-header ${density === "compact" ? "bt-section-header--compact" : ""}`}>
+        <div className="bt-section-copy">
+          <h2 className="hig-headline bt-section-title">
             {title}
-          </p>
+          </h2>
           {subtitle ? (
             <p
-              className="hig-caption-1"
-              style={{ color: "var(--label-tertiary)", margin: "0.1875rem 0 0" }}
+              className="hig-caption-1 bt-section-subtitle"
             >
               {subtitle}
             </p>
           ) : null}
         </div>
-        {action ? <div style={{ flexShrink: 0 }}>{action}</div> : null}
+        {action ? <div className="bt-section-action">{action}</div> : null}
       </header>
       <div>{children}</div>
     </Card>

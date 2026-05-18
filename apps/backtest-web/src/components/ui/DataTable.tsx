@@ -36,32 +36,22 @@ export function DataTable<T>({
     );
   }
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div className="bt-table-wrap">
       <table
+        className="bt-table"
         style={{
-          width: "100%",
-          borderCollapse: "collapse",
           minWidth: minWidth ?? Math.max(640, columns.length * 96),
         }}
       >
         <thead>
-          <tr
-            className="hig-caption-1"
-            style={{
-              color: "var(--label-tertiary)",
-              textTransform: "uppercase",
-              letterSpacing: "0.04em",
-              fontSize: "0.6875rem",
-            }}
-          >
+          <tr className="hig-caption-1 bt-table-head-row">
             {columns.map((col) => (
               <th
                 key={col.key}
+                className="bt-table-heading"
                 style={{
-                  padding: "0.5rem 0.35rem",
                   textAlign: col.align ?? (col.numeric ? "right" : "left"),
-                  whiteSpace: "nowrap",
-                  fontWeight: 500,
+                  minWidth: col.minWidth,
                 }}
               >
                 {col.header}
@@ -71,15 +61,15 @@ export function DataTable<T>({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={rowKey(row, i)} style={{ borderTop: "1px solid var(--separator)" }}>
+            <tr key={rowKey(row, i)} className="bt-table-row">
               {columns.map((col) => (
                 <td
                   key={col.key}
-                  className={`hig-footnote ${col.numeric ? "bt-num" : ""}`}
+                  className={`hig-footnote bt-table-cell ${col.numeric ? "bt-num" : ""}`}
                   style={{
-                    padding: "0.625rem 0.35rem",
                     textAlign: col.align ?? (col.numeric ? "right" : "left"),
                     color: col.color?.(row) ?? "var(--label-primary)",
+                    minWidth: col.minWidth,
                   }}
                 >
                   {col.render(row)}

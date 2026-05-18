@@ -70,13 +70,7 @@ export function StatSummaryPanel({ summaries }: { summaries: readonly PairStatSu
         ]}
       />
       <div
-        style={{
-          marginTop: "0.875rem",
-          display: "grid",
-          gridTemplateColumns: "minmax(180px, 1fr) minmax(0, 2fr)",
-          gap: "0.875rem",
-          alignItems: "stretch",
-        }}
+        className="bt-stat-evidence-grid"
       >
         <Quantiles primary={primary} />
         <TailDistribution primary={primary} />
