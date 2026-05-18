@@ -1,5 +1,9 @@
 import { BrandMark } from "@sotama/ui";
-import { loadDashboardSnapshot } from "@/lib/dashboard";
+import {
+  loadDashboardSnapshot,
+  type DashboardSnapshot,
+  type PairPanel,
+} from "@/lib/dashboard";
 import { PairCard } from "@/components/PairCard";
 import { BotHealthPill } from "@/components/BotHealthPill";
 
@@ -7,7 +11,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function HomePage() {
-  let snapshot: Awaited<ReturnType<typeof loadDashboardSnapshot>> | null = null;
+  let snapshot: DashboardSnapshot | null = null;
   let loadError: string | null = null;
   try {
     snapshot = await loadDashboardSnapshot();
@@ -45,7 +49,7 @@ export default async function HomePage() {
         </div>
       ) : (
         <div className="bt-pair-grid">
-          {snapshot.panels.map((p) => (
+          {snapshot.panels.map((p: PairPanel) => (
             <PairCard key={p.pair.id} panel={p} />
           ))}
         </div>
