@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="240 140 320 320">
+  <style>
+    .fg { fill: #1d1d1f; }
+    @media (prefers-color-scheme: dark) {
+      .fg { fill: #f5f5f7; }
+    }
+  </style>
+  <path class="fg" d="M 300 150 L 380 150 L 380 300 L 300 380 Z" />
+  <path class="fg" d="M 300 420 L 380 340 L 380 450 L 300 450 Z" />
+  <path class="fg" d="M 420 150 L 500 150 L 500 180 L 420 260 Z" />
+  <path class="fg" d="M 420 300 L 500 220 L 500 450 L 420 450 Z" />
+  <path fill="#D85C30" d="M 260 446 L 260 434 L 540 154 L 540 166 Z" />
+</svg>
