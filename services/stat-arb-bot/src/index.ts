@@ -7,7 +7,7 @@ import { Heartbeat } from "./heartbeat";
 import { SignalEngine } from "./signal-engine";
 import { recordQuote, type CostBps } from "./basis-recorder";
 import { createApiServer } from "./api-server";
-import { insertPythTick, closePool } from "@sotama/db";
+import { closePool } from "@sotama/db";
 import { uiToAtomic } from "@sotama/market-core";
 import type { PairConfig } from "@sotama/market-core";
 
@@ -64,8 +64,6 @@ async function main() {
 
   /** lazer_id -> [pair_ids consuming it]. A single Lazer feed may back several pairs. */
   const lazerIdToPairs = new Map<number, Set<string>>();
-  /** pair_id -> most recent Pyth tick id, for FK on basis_observations. */
-  const lastPythTickId = new Map<string, bigint>();
   /** pair_id -> PairConfig. Needed because the scheduler holds only its lighter view. */
   const pairConfigs = new Map<string, PairConfig>();
 
@@ -94,7 +92,6 @@ async function main() {
         side,
         sizeUsd,
         basePriceUsd: priceUsd,
-        pythTickId: lastPythTickId.get(pair.id) ?? null,
         result,
         costsBps: costs,
       });
@@ -128,7 +125,6 @@ async function main() {
     }
     pairConfigs.delete(id);
     scheduler.removePair(id);
-    lastPythTickId.delete(id);
   };
   const refreshSubscriptions = () => {
     stream.setFeedIds([...lazerIdToPairs.keys()]);
@@ -145,26 +141,16 @@ async function main() {
     onRemoved: (id) => { unindexPair(id); refreshSubscriptions(); },
   });
 
-  stream.on(async (t: PythTickEvent) => {
+  // Layer-1 compacted storage: every Pyth tick used to be persisted to
+  // `pyth_ticks` (~432k rows/day/pair on a 200 ms channel) but the price
+  // is already snapshotted onto every basis_observations row at quote
+  // time. Skip the raw insert and just hand the tick to the scheduler.
+  stream.on((t: PythTickEvent) => {
     const pairs = lazerIdToPairs.get(t.pythLazerId);
     if (!pairs) return;
     const lagMs = Math.max(0, Date.now() - Math.floor(t.publishTimeUs / 1000));
     heartbeat.observeStreamLag(lagMs);
     for (const pairId of pairs) {
-      try {
-        const tickId = await insertPythTick({
-          pairId,
-          pythLazerId: t.pythLazerId,
-          priceUsd: t.priceUsd,
-          confidenceUsd: t.confidenceUsd,
-          publishTimeUs: t.publishTimeUs,
-        });
-        lastPythTickId.set(pairId, tickId);
-      } catch (e) {
-        console.error("insertPythTick failed", e);
-        heartbeat.countError();
-        continue;
-      }
       scheduler.onPriceTick(pairId, t.priceUsd);
     }
   });

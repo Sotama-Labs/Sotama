@@ -22,20 +22,29 @@ export type RecordedQuote =
       tokenPriceUsd: number;
       grossBps: number;
       netBps: number;
-      quoteId: bigint;
       basisId: bigint;
     }
   | { status: "rate_limited" | "error" | "stale" };
 
 /** Persists a Jupiter order outcome and the derived basis observation.
- *  Returns the computed edge so the signal engine can act on it without
- *  re-deriving. */
+ *
+ *  Layer-1 compacted storage policy:
+ *  - **Success path**: write ONLY `basis_observations` (the time-series of
+ *    derived ratios + edges). `jupiter_quotes` is skipped — its `out_amount`
+ *    and price are already captured in basis_observations.token_price_usd,
+ *    and the raw JSON adds ~1 KB/row of replay data the analytics never read.
+ *  - **Error / rate-limited path**: write `jupiter_quotes` with `raw=null`
+ *    so http_429s and outages stay diagnosable, without bloating storage.
+ *
+ *  Total writes per quote: 1 row (basis) on success, 1 row (jupiter_quotes
+ *  diagnostic) on failure — down from 3-row (tick + quote + basis) per quote
+ *  pre-compaction.
+ */
 export async function recordQuote(args: {
   pair: PairConfig;
   side: PairDirection;
   sizeUsd: number;
   basePriceUsd: number;
-  pythTickId: bigint | null;
   result: OrderResult;
   costsBps: CostBps;
 }): Promise<RecordedQuote> {
@@ -84,21 +93,6 @@ export async function recordQuote(args: {
 
   const netBps = netEdgeBps({ grossBps, ...args.costsBps });
 
-  const quoteId = await insertJupiterQuote({
-    pairId: pair.id,
-    side,
-    sizeUsd,
-    router: result.router,
-    inMint,
-    outMint,
-    inAmount: result.inAmount,
-    outAmount: result.outAmount,
-    priceImpactPct: result.priceImpactPct,
-    requestMs: result.requestMs,
-    status: "ok",
-    raw: result.raw,
-  });
-
   const basisId = await insertBasisObservation({
     pairId: pair.id,
     side,
@@ -107,9 +101,9 @@ export async function recordQuote(args: {
     tokenPriceUsd,
     grossBps,
     netBps,
-    tickId: args.pythTickId,
-    quoteId,
+    tickId: null,
+    quoteId: null,
   });
 
-  return { status: "ok", tokenPriceUsd, grossBps, netBps, quoteId, basisId };
+  return { status: "ok", tokenPriceUsd, grossBps, netBps, basisId };
 }
