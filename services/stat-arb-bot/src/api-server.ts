@@ -38,6 +38,7 @@ import type {
 } from "@sotama/market-core";
 import {
   buildPairReadinessMatrix,
+  runHoldHorizonReplay,
   runTwoSizeBacktestV2,
   summarize,
 } from "@sotama/market-core";
@@ -47,6 +48,12 @@ const HISTORY_WINDOW_MS = 24 * 3600 * 1000;
 const SIGNAL_WINDOW_MS = 7 * 24 * 3600 * 1000;
 const BASIS_SERIES_LIMIT = 720;
 const HEARTBEAT_STALE_MS = 30_000;
+const HOLD_HORIZONS_MS = [
+  30 * 60_000,
+  2 * 60 * 60_000,
+  6 * 60 * 60_000,
+  24 * 60 * 60_000,
+] as const;
 
 export type ApiServerOptions = {
   port: number;
@@ -194,6 +201,14 @@ async function handlePairDetail(
       researchOnly: pairReadiness.status !== "READY",
     },
   });
+  const holdHorizonReplay = runHoldHorizonReplay({
+    observations: historyRows.map(toHoldHorizonObservation),
+    options: {
+      minNetEdgeBps: pair.minNetEdgeBps,
+      transactionCostBps,
+      horizonsMs: HOLD_HORIZONS_MS,
+    },
+  });
 
   const body: PairDetailDto = {
     pair,
@@ -208,6 +223,7 @@ async function handlePairDetail(
     timeRegimeSummary: toTimeRegimeSummary(pair.base.assetClass, regimeRows),
     pairReadiness,
     twoSizeBacktest,
+    holdHorizonReplay,
     signalHistory: signals.slice(-50).map(toSignalHistory),
     profitability: summarize(
       liveEligibleSignals.map((s) => ({
@@ -417,6 +433,17 @@ function toBacktestObservation(b: BasisObservationRow) {
     sizeUsd: b.sizeUsd,
     observedAtMs: b.observedAt.getTime(),
     basePriceUsd: b.basePriceUsd,
+    tokenPriceUsd: b.tokenPriceUsd,
+    netBps: b.netBps,
+    qualityStatus: b.qualityStatus,
+  };
+}
+
+function toHoldHorizonObservation(b: BasisObservationRow) {
+  return {
+    side: b.side,
+    sizeUsd: b.sizeUsd,
+    observedAtMs: b.observedAt.getTime(),
     tokenPriceUsd: b.tokenPriceUsd,
     netBps: b.netBps,
     qualityStatus: b.qualityStatus,

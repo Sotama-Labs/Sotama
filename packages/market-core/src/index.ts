@@ -8,6 +8,7 @@ export * from "./edge";
 export * from "./cost-model";
 export * from "./thresholds";
 export * from "./profitability";
+export * from "./hold-horizon";
 export * from "./quote-quality";
 export * from "./rps-budget";
 export * from "./pair-readiness";

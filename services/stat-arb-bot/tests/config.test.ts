@@ -39,6 +39,7 @@ describe("loadConfig", () => {
     expect(cfg.PYTH_MAX_FRESHNESS_LAG_MS).to.equal(5000);
     expect(cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE).to.equal(0.02);
     expect(cfg.CRYPTO_HIGH_VOL_MOVE_BPS).to.equal(50);
+    expect(cfg.SIGNAL_MAX_HOLD_MS).to.equal(30 * 60_000);
     expect(cfg.QUALITY_MAX_QUOTE_LATENCY_MS).to.equal(1500);
     expect(cfg.QUALITY_ALLOWED_ROUTERS).to.deep.equal([]);
   });

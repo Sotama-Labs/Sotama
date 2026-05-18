@@ -3,6 +3,7 @@
  *  produces these shapes; the Vercel dashboard consumes them via fetch. */
 
 import type { PairConfig } from "./pair-config";
+import type { HoldHorizonReplayRow } from "./hold-horizon";
 import type { PairReadinessMatrix } from "./pair-readiness";
 import type { QuoteQualityStatus } from "./quote-quality";
 import type { TimeRegime } from "./time-regime";
@@ -144,6 +145,7 @@ export type PairDetailDto = {
   timeRegimeSummary: TimeRegimeSummaryDto[];
   pairReadiness: PairReadinessMatrix;
   twoSizeBacktest: TwoSizeBacktestV2Result;
+  holdHorizonReplay: HoldHorizonReplayRow[];
   signalHistory: SignalHistoryDto[];
   profitability: import("./profitability").ProfitabilitySummary;
 };

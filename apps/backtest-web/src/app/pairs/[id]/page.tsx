@@ -24,6 +24,11 @@ function fmtUsd(v: number | null | undefined): string {
 function fmtMs(v: number | null | undefined): string {
   return v == null ? "—" : `${Math.round(v).toLocaleString()} ms`;
 }
+function fmtDuration(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 60 * 60_000) return `${Math.round(ms / 60_000)}m`;
+  return `${Math.round(ms / (60 * 60_000))}h`;
+}
 function fmtPct(v: number | null | undefined): string {
   return v == null ? "—" : `${(v * 100).toFixed(1)}%`;
 }
@@ -100,6 +105,7 @@ export default async function PairDetailPage({
     timeRegimeSummary,
     pairReadiness,
     twoSizeBacktest,
+    holdHorizonReplay,
     signalHistory,
     profitability,
   } = detail;
@@ -295,6 +301,68 @@ export default async function PairDetailPage({
                         style={{ padding: "0.65rem 0.35rem", color: qualityColor(row.quality) }}
                       >
                         {row.quality}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+              <div>
+                <p className="hig-headline" style={{ margin: 0 }}>Hold horizon replay</p>
+                <p className="hig-caption-1" style={{ color: "var(--label-tertiary)", margin: "0.25rem 0 0" }}>
+                  Waits for profitable exits, then compares forced timeout horizons.
+                </p>
+              </div>
+              <span className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
+                live rows only
+              </span>
+            </div>
+            <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                <thead>
+                  <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Horizon</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>PnL</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Trades</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Win rate</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Timeouts</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Open</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Avg hold</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holdHorizonReplay.map((row) => (
+                    <tr key={row.horizonMs} style={{ borderTop: "1px solid var(--separator)" }}>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtDuration(row.horizonMs)}
+                      </td>
+                      <td
+                        className="hig-footnote bt-num"
+                        style={{
+                          padding: "0.65rem 0.35rem",
+                          color: row.pnlUsd > 0 ? "var(--green)" : row.pnlUsd < 0 ? "var(--red)" : "var(--label-primary)",
+                        }}
+                      >
+                        {fmtUsd(row.pnlUsd)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.closedTrades.toLocaleString()}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtPct(row.winRate)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.timedOutTrades.toLocaleString()}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.openPositions.toLocaleString()}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.avgHoldSeconds.toFixed(0)}s
                       </td>
                     </tr>
                   ))}

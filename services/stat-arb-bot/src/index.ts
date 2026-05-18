@@ -19,8 +19,6 @@ import {
 } from "@sotama/market-core";
 import type { PairConfig, QuoteQualityThresholds } from "@sotama/market-core";
 
-const STALE_SIGNAL_MS = 30 * 60_000;
-
 function toSchedulerPair(p: PairConfig, lastPriceUsd: number = 0): SchedulerPair {
   return {
     pairId: p.id,
@@ -123,7 +121,7 @@ async function main() {
   const transactionCostBps =
     cfg.SLIPPAGE_BUFFER_BPS + cfg.LANDING_COST_BPS + cfg.FAILURE_BUFFER_BPS;
   const signals = new SignalEngine({
-    staleAfterMs: STALE_SIGNAL_MS,
+    staleAfterMs: cfg.SIGNAL_MAX_HOLD_MS,
     transactionCostBps,
   });
 
