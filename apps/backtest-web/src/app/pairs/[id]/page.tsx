@@ -1,25 +1,19 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import {
-  getPair,
-  basisHistory,
-  latestBasisPerKey,
-  latestHeartbeat,
-} from "@sotama/db";
 import { BrandMark, Card, FreshnessDot, levelForAgeMs } from "@sotama/ui";
-import type { BasisObservationRow } from "@sotama/db";
+import { fetchPairDetail, fetchHealth } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
 
-function fmtRatio(v: number | null): string {
+function fmtRatio(v: number | null | undefined): string {
   return v == null ? "—" : `${v.toFixed(4)}×`;
 }
-function fmtBps(v: number | null, signed: boolean = true): string {
+function fmtBps(v: number | null | undefined, signed: boolean = true): string {
   if (v == null) return "—";
   const sign = signed && v > 0 ? "+" : "";
   return `${sign}${v.toFixed(1)} bps`;
 }
-function favorableColor(kind: "buy" | "sell", ratio: number | null): string {
+function favorableColor(kind: "buy" | "sell", ratio: number | null | undefined): string {
   if (ratio == null) return "var(--label-tertiary)";
   const favorable = kind === "buy" ? ratio < 1 : ratio > 1;
   return favorable ? "var(--green)" : "var(--red)";
@@ -31,68 +25,39 @@ export default async function PairDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const pair = await getPair(id);
-  if (!pair) notFound();
 
-  const sinceMs = Date.now() - 24 * 3600 * 1000;
-  const [latest, hb, buyHistorySamples, sellHistorySamples] = await Promise.all([
-    latestBasisPerKey({ withinMs: 5 * 60_000 }),
-    latestHeartbeat(),
-    pair.directions.includes("buy_tokenized") && pair.sizesUsd[0] != null
-      ? basisHistory({ pairId: id, side: "buy_tokenized", sizeUsd: pair.sizesUsd[0], sinceMs })
-      : Promise.resolve([]),
-    pair.directions.includes("sell_tokenized") && pair.sizesUsd[0] != null
-      ? basisHistory({ pairId: id, side: "sell_tokenized", sizeUsd: pair.sizesUsd[0], sinceMs })
-      : Promise.resolve([]),
-  ]);
-
-  const forPair = latest.filter((b) => b.pairId === id);
-  const buyBySize = new Map<number, BasisObservationRow>();
-  const sellBySize = new Map<number, BasisObservationRow>();
-  for (const b of forPair) {
-    (b.side === "buy_tokenized" ? buyBySize : sellBySize).set(b.sizeUsd, b);
+  let detail: Awaited<ReturnType<typeof fetchPairDetail>> = null;
+  let health: Awaited<ReturnType<typeof fetchHealth>> | null = null;
+  let loadError: string | null = null;
+  try {
+    [detail, health] = await Promise.all([
+      fetchPairDetail(id),
+      fetchHealth().catch(() => null),
+    ]);
+  } catch (e: any) {
+    loadError = String(e?.message ?? e);
   }
+  if (loadError) {
+    return (
+      <main className="bt-shell">
+        <header className="bt-header">
+          <Link href="/" style={{ textDecoration: "none" }}>
+            <BrandMark subtitle="Backtest" />
+          </Link>
+        </header>
+        <div className="bt-empty">
+          <p className="hig-headline" style={{ margin: 0 }}>Bot unreachable</p>
+          <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
+            {loadError}
+          </p>
+        </div>
+      </main>
+    );
+  }
+  if (!detail) notFound();
 
-  const { bestBuy, bestSell, bestSpread } = (() => {
-    let bestBuy: { ratio: number; sizeUsd: number; netBps: number; observedAt: Date } | null = null;
-    for (const b of buyBySize.values()) {
-      if (b.basePriceUsd <= 0) continue;
-      const ratio = b.tokenPriceUsd / b.basePriceUsd;
-      if (!bestBuy || ratio < bestBuy.ratio) {
-        bestBuy = { ratio, sizeUsd: b.sizeUsd, netBps: b.netBps, observedAt: b.observedAt };
-      }
-    }
-    let bestSell: { ratio: number; sizeUsd: number; netBps: number; observedAt: Date } | null = null;
-    for (const b of sellBySize.values()) {
-      if (b.basePriceUsd <= 0) continue;
-      const ratio = b.tokenPriceUsd / b.basePriceUsd;
-      if (!bestSell || ratio > bestSell.ratio) {
-        bestSell = { ratio, sizeUsd: b.sizeUsd, netBps: b.netBps, observedAt: b.observedAt };
-      }
-    }
-    let bestSpread: { spreadBps: number; sizeUsd: number } | null = null;
-    for (const [size, buyRow] of buyBySize) {
-      const sellRow = sellBySize.get(size);
-      if (!sellRow) continue;
-      const mid = (buyRow.tokenPriceUsd + sellRow.tokenPriceUsd) / 2;
-      if (mid <= 0) continue;
-      const spreadBps = ((buyRow.tokenPriceUsd - sellRow.tokenPriceUsd) / mid) * 10000;
-      if (!bestSpread || Math.abs(spreadBps) < Math.abs(bestSpread.spreadBps)) {
-        bestSpread = { spreadBps, sizeUsd: size };
-      }
-    }
-    return { bestBuy, bestSell, bestSpread };
-  })();
-
-  const ageMs = (() => {
-    const ages: number[] = [];
-    if (bestBuy) ages.push(Date.now() - bestBuy.observedAt.getTime());
-    if (bestSell) ages.push(Date.now() - bestSell.observedAt.getTime());
-    return ages.length === 0 ? null : Math.min(...ages);
-  })();
-  const level = levelForAgeMs(ageMs);
-
-  const obsCount = buyHistorySamples.length + sellHistorySamples.length;
+  const { pair, bestBuy, bestSell, bestSpread, quoteAgeMs, observationCount24h } = detail;
+  const level = levelForAgeMs(quoteAgeMs);
   const showBuy = pair.directions.includes("buy_tokenized");
   const showSell = pair.directions.includes("sell_tokenized");
   const showSpread = showBuy && showSell && bestSpread !== null;
@@ -115,7 +80,7 @@ export default async function PairDetailPage({
       <section style={{ marginBottom: "1.5rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <h1 className="hig-title-1" style={{ margin: 0 }}>{pair.label}</h1>
-          <FreshnessDot ageMs={ageMs} />
+          <FreshnessDot ageMs={quoteAgeMs} />
           <span className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
             {level === "live" ? "live" : level === "warm" ? "lagging" : level === "stale" ? "stale" : "no data"}
           </span>
@@ -195,11 +160,11 @@ export default async function PairDetailPage({
         </Card>
         <Card>
           <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Observations (24h)</div>
-          <div className="hig-headline bt-num" style={{ marginTop: 4 }}>{obsCount.toLocaleString()}</div>
+          <div className="hig-headline bt-num" style={{ marginTop: 4 }}>{observationCount24h.toLocaleString()}</div>
         </Card>
       </div>
 
-      {obsCount === 0 ? (
+      {observationCount24h === 0 ? (
         <div className="bt-empty">
           <p className="hig-headline" style={{ margin: 0 }}>Newly added — collecting data</p>
           <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
@@ -210,7 +175,7 @@ export default async function PairDetailPage({
         <div className="bt-empty">
           <p className="hig-headline" style={{ margin: 0 }}>Quote surface and charts coming next</p>
           <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
-            {obsCount.toLocaleString()} basis observations stored. Per-size quote surface, basis chart with
+            {observationCount24h.toLocaleString()} basis observations stored. Per-size quote surface, basis chart with
             threshold overlay, cumulative PnL, drawdown, and edge histogram land in the next iteration.
           </p>
         </div>
@@ -218,7 +183,7 @@ export default async function PairDetailPage({
 
       <footer style={{ marginTop: "2rem" }}>
         <p className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
-          Bot last heartbeat: {hb ? new Date(hb.observedAt).toISOString() : "—"}
+          Bot last heartbeat: {health?.heartbeat?.observedAt ?? "—"}
         </p>
       </footer>
     </main>

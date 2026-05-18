@@ -6,6 +6,7 @@ import { PairLoader } from "./pair-loader";
 import { Heartbeat } from "./heartbeat";
 import { SignalEngine } from "./signal-engine";
 import { recordQuote, type CostBps } from "./basis-recorder";
+import { createApiServer } from "./api-server";
 import { insertPythTick, closePool } from "@sotama/db";
 import { uiToAtomic } from "@sotama/market-core";
 import type { PairConfig } from "@sotama/market-core";
@@ -170,6 +171,11 @@ async function main() {
 
   stream.start();
   const stopLoader = loader.start();
+  const apiServer = createApiServer({
+    port: cfg.API_PORT,
+    corsOrigin: cfg.API_CORS_ORIGIN,
+  });
+  console.log(`api server listening on :${cfg.API_PORT}`);
   const hbHandle = setInterval(() => {
     heartbeat
       .tick({
@@ -184,6 +190,7 @@ async function main() {
     stopLoader();
     clearInterval(hbHandle);
     stream.stop();
+    apiServer.close();
     await closePool();
     process.exit(0);
   };

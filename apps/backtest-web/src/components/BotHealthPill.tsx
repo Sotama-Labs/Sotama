@@ -1,21 +1,15 @@
 import { StatusPill } from "@sotama/ui";
+import type { HeartbeatDto } from "@sotama/market-core";
 
-export function BotHealthPill({
-  heartbeat,
-}: {
-  heartbeat: {
-    observedAt: string | null;
-    activePairs: number;
-    currentRps: number;
-    http429Count1m: number;
-  } | null;
-}) {
-  if (!heartbeat || !heartbeat.observedAt) {
+export function BotHealthPill({ heartbeat }: { heartbeat: HeartbeatDto | null }) {
+  if (!heartbeat) {
     return <StatusPill kind="bad">bot offline</StatusPill>;
   }
   const ageMs = Date.now() - new Date(heartbeat.observedAt).getTime();
   if (ageMs > 30_000) {
-    return <StatusPill kind="bad">bot stale ({Math.round(ageMs / 1000)}s)</StatusPill>;
+    return (
+      <StatusPill kind="bad">bot stale ({Math.round(ageMs / 1000)}s)</StatusPill>
+    );
   }
   if (heartbeat.http429Count1m > 0) {
     return (

@@ -4,14 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3001",
-    "prebuild": "pnpm --filter @sotama/db run build",
     "build": "next build",
     "start": "next start -p 3001",
     "typecheck": "tsc --noEmit",
     "lint": "next lint"
   },
   "dependencies": {
-    "@sotama/db": "workspace:*",
     "@sotama/market-core": "workspace:*",
     "@sotama/ui": "workspace:*",
     "next": "15.5.18",

@@ -30,6 +30,14 @@ export const BotConfigSchema = z.object({
    *  Same future-use disclaimer as HELIUS_RPC_URL. */
   HELIUS_WS_URL: z.string().url().optional(),
 
+  // ── HTTP read API ─────────────────────────────────────────────────
+  /** Port the bot's public read API listens on. Fly's [http_service] in
+   *  fly.toml maps the public 443 to this internal port. */
+  API_PORT: z.coerce.number().int().min(1).max(65535).default(8080),
+  /** CORS allow-origin for the read API. Default `*` matches V1's
+   *  unauthenticated read-only data. */
+  API_CORS_ORIGIN: z.string().default("*"),
+
   // ── Cadence ────────────────────────────────────────────────────────
   PAIR_REFRESH_INTERVAL_MS: z.coerce.number().int().min(1000).default(30_000),
   HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(1000).default(5_000),
