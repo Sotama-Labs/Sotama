@@ -68,8 +68,10 @@ export type PairDetailHandlerOptions = {
 /** Pair-detail recomputes hold-horizon replay, stat summary, and route
  *  stability — heavy enough to take ~10s per pair on a 512MB Fly machine.
  *  Cache aggressively so a researcher refreshing the page (or two browser
- *  tabs polling) doesn't trigger redundant compute. */
-const DEFAULT_PAIR_DETAIL_TTL_MS = 10_000;
+ *  tabs polling) doesn't trigger redundant compute. 60s TTL is generous
+ *  because hold-horizon + stat-summary inputs change on the minute scale,
+ *  not the second scale. */
+const DEFAULT_PAIR_DETAIL_TTL_MS = 60_000;
 const pairDetailCache = new TtlCache<PairDetailDto>(DEFAULT_PAIR_DETAIL_TTL_MS);
 
 export async function handlePairDetail(
