@@ -206,20 +206,20 @@ export class PythStream {
       console.log("[lazer] no feeds to subscribe to (waiting for pair loader)");
       return;
     }
+    // Lazer's WsRequest serializes with serde(tag = "type") and the
+    // SubscribeRequest's `params` is flatten'd, so all subscription
+    // fields live at the top level next to `type` and `subscriptionId`.
     const payload = {
       type: "subscribe",
       subscriptionId: 1,
-      params: {
-        priceFeedIds: this.feedIds,
-        symbols: null,
-        properties: ["price", "exponent", "feedUpdateTimestamp"],
-        formats: ["solana"],
-        deliveryFormat: "json",
-        jsonBinaryEncoding: "base64",
-        parsed: true,
-        channel: this.cfg.channel,
-        ignoreInvalidFeeds: true,
-      },
+      priceFeedIds: this.feedIds,
+      properties: ["price", "exponent", "feedUpdateTimestamp"],
+      formats: ["solana"],
+      deliveryFormat: "json",
+      jsonBinaryEncoding: "base64",
+      parsed: true,
+      channel: this.cfg.channel,
+      ignoreInvalidFeeds: true,
     };
     console.log(
       `[lazer] -> subscribe channel=${this.cfg.channel} feeds=[${this.feedIds.join(",")}]`,
