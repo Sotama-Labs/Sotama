@@ -12,13 +12,25 @@ export type SchedulerPair = {
 
 export type WorkId = string; // "pairId|side|sizeUsd"
 
+export type PriceTickMetadata = {
+  streamTimestampUs: number;
+  feedUpdateTimestampUs: number;
+  pythFreshnessLagMs: number;
+};
+
+export type WorkContext = PriceTickMetadata & {
+  workId: WorkId;
+  queuedAtMs: number;
+};
+
 export type SchedulerOnWork = (
   workId: WorkId,
   pair: SchedulerPair,
   side: PairDirection,
   sizeUsd: number,
   priceUsd: number,
-) => void;
+  context: WorkContext,
+) => void | Promise<void>;
 
 /** Owns the global Jupiter RPS budget. On every Pyth tick for a tracked pair,
  *  evaluates each (side, size) combination: would issuing a quote (a) provide
@@ -37,6 +49,7 @@ export class QuoteScheduler {
       bucketCapacity: number;
       nowMs: () => number;
       onWork: SchedulerOnWork;
+      onError?: (error: unknown, context: WorkContext) => void;
     },
   ) {
     this.bucket = new TokenBucket({
@@ -68,7 +81,15 @@ export class QuoteScheduler {
     return this.bucket.available;
   }
 
-  onPriceTick(pairId: string, priceUsd: number): void {
+  onPriceTick(
+    pairId: string,
+    priceUsd: number,
+    meta: PriceTickMetadata = {
+      streamTimestampUs: 0,
+      feedUpdateTimestampUs: 0,
+      pythFreshnessLagMs: 0,
+    },
+  ): void {
     const p = this.pairs.get(pairId);
     if (!p) return;
     p.lastPriceUsd = priceUsd;
@@ -77,9 +98,15 @@ export class QuoteScheduler {
         const id: WorkId = `${pairId}|${side}|${size}`;
         if (!this.shouldQuote(id, p, priceUsd)) continue;
         if (!this.bucket.tryTake()) continue;
-        this.lastQuoteAt.set(id, this.cfg.nowMs());
+        const queuedAtMs = this.cfg.nowMs();
+        this.lastQuoteAt.set(id, queuedAtMs);
         this.lastQuotedPrice.set(id, priceUsd);
-        this.cfg.onWork(id, p, side, size, priceUsd);
+        const context: WorkContext = { workId: id, queuedAtMs, ...meta };
+        void Promise.resolve(
+          this.cfg.onWork(id, p, side, size, priceUsd, context),
+        ).catch((error) => {
+          this.cfg.onError?.(error, context);
+        });
       }
     }
   }

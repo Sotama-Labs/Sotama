@@ -34,3 +34,34 @@ export class TokenBucket {
     this.lastRefillMs = now;
   }
 }
+
+export type QuoteRpsPair = {
+  directions: readonly unknown[];
+  sizesUsd: readonly unknown[];
+  quoteIntervalMs: number;
+};
+
+export function estimateQuoteRps(pairs: readonly QuoteRpsPair[]): number {
+  return pairs.reduce((acc, pair) => {
+    if (pair.quoteIntervalMs <= 0) return acc;
+    const requestsPerCycle = pair.directions.length * pair.sizesUsd.length;
+    return acc + requestsPerCycle / (pair.quoteIntervalMs / 1000);
+  }, 0);
+}
+
+export function assertQuoteRpsBudget(args: {
+  pairs: readonly QuoteRpsPair[];
+  maxRps: number;
+  headroom?: number;
+}): number {
+  const headroom = args.headroom ?? 0.85;
+  const estimatedRps = estimateQuoteRps(args.pairs);
+  const allowedRps = args.maxRps * headroom;
+  if (estimatedRps > allowedRps + 1e-9) {
+    throw new Error(
+      `enabled pair quote workload is ${estimatedRps.toFixed(2)} RPS, above ` +
+        `${Math.round(headroom * 100)}% of Jupiter budget (${allowedRps.toFixed(2)} RPS)`,
+    );
+  }
+  return estimatedRps;
+}

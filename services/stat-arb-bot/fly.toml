@@ -18,6 +18,7 @@ primary_region = "ams"
 
 [deploy]
   strategy = "immediate"
+  release_command = "node /app/packages/db/dist/migrate.js"
 
 # Public HTTPS for the read API. Free shared IPv4/IPv6; no dedicated
 # IP cost. Fly auto-issues a cert for <app>.fly.dev.

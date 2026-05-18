@@ -1,5 +1,5 @@
 import { getPool } from "./index";
-import type { PairConfig } from "@sotama/market-core";
+import { PairConfigSchema, normalizeActiveQuoteSizes, type PairConfig } from "@sotama/market-core";
 
 type Row = {
   id: string;
@@ -95,18 +95,21 @@ export async function disablePair(id: string): Promise<void> {
 }
 
 function rowToConfig(row: Row): PairConfig {
-  return {
+  const sizesUsd = normalizeActiveQuoteSizes(
+    typeof row.sizes_usd === "string" ? JSON.parse(row.sizes_usd) : row.sizes_usd,
+  );
+  return PairConfigSchema.parse({
     id: row.id,
     enabled: row.enabled,
     label: row.label,
     base: row.base,
     tokenized: row.tokenized,
     quote: row.quote,
-    sizesUsd: typeof row.sizes_usd === "string" ? JSON.parse(row.sizes_usd) : row.sizes_usd,
+    sizesUsd,
     directions: typeof row.directions === "string" ? JSON.parse(row.directions) : row.directions,
     quoteIntervalMs: row.quote_interval_ms,
     minPriceMoveBps: Number(row.min_price_move_bps),
     slippageBps: Number(row.slippage_bps),
     minNetEdgeBps: Number(row.min_net_edge_bps),
-  };
+  });
 }

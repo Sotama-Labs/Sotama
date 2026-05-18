@@ -9,7 +9,11 @@ import { recordQuote, type CostBps } from "./basis-recorder";
 import { createApiServer } from "./api-server";
 import { isMarketOpen } from "./market-hours";
 import { closePool } from "@sotama/db";
-import { uiToAtomic } from "@sotama/market-core";
+import {
+  assertQuoteRpsBudget,
+  normalizeActiveQuoteSizes,
+  uiToAtomic,
+} from "@sotama/market-core";
 import type { PairConfig } from "@sotama/market-core";
 
 const STALE_SIGNAL_MS = 30 * 60_000;
@@ -19,10 +23,40 @@ function toSchedulerPair(p: PairConfig, lastPriceUsd: number = 0): SchedulerPair
     pairId: p.id,
     lastPriceUsd,
     sides: p.directions,
-    sizesUsd: p.sizesUsd,
+    sizesUsd: normalizeActiveQuoteSizes(p.sizesUsd),
     quoteIntervalMs: p.quoteIntervalMs,
     minPriceMoveBps: p.minPriceMoveBps,
   };
+}
+
+function maxFreshnessLagMsForPair(pair: PairConfig): number {
+  if (pair.base.maxPythFreshnessLagMs != null) return pair.base.maxPythFreshnessLagMs;
+  switch (pair.base.assetClass) {
+    case "Crypto":
+      return 2_500;
+    case "Equity":
+      return 10_000;
+    case "FX":
+    case "Metal":
+    case "Commodity":
+      return 15_000;
+    default:
+      return 5_000;
+  }
+}
+
+function runtimePair(p: PairConfig): PairConfig | null {
+  const sizesUsd = normalizeActiveQuoteSizes(p.sizesUsd);
+  if (sizesUsd.length === 0) return null;
+  return { ...p, sizesUsd: sizesUsd as PairConfig["sizesUsd"] };
+}
+
+function assertRuntimeBudget(pairs: Iterable<PairConfig>, maxRps: number): void {
+  assertQuoteRpsBudget({
+    pairs: [...pairs],
+    maxRps,
+    headroom: 0.85,
+  });
 }
 
 function inputAtomicForOrder(
@@ -58,10 +92,16 @@ async function main() {
     accessToken: cfg.PYTH_LAZER_ACCESS_TOKEN,
     feedIds: [],
     channel: cfg.PYTH_CHANNEL,
+    maxFreshnessLagMs: cfg.PYTH_MAX_FRESHNESS_LAG_MS,
   });
 
   const heartbeat = new Heartbeat();
-  const signals = new SignalEngine({ staleAfterMs: STALE_SIGNAL_MS });
+  const transactionCostBps =
+    cfg.SLIPPAGE_BUFFER_BPS + cfg.LANDING_COST_BPS + cfg.FAILURE_BUFFER_BPS;
+  const signals = new SignalEngine({
+    staleAfterMs: STALE_SIGNAL_MS,
+    transactionCostBps,
+  });
 
   /** lazer_id -> [pair_ids consuming it]. A single Lazer feed may back several pairs. */
   const lazerIdToPairs = new Map<number, Set<string>>();
@@ -72,22 +112,28 @@ async function main() {
     maxRps: cfg.JUPITER_MAX_RPS,
     bucketCapacity: cfg.JUPITER_MAX_RPS,
     nowMs: () => Date.now(),
-    onWork: async (_id, schedPair, side, sizeUsd, priceUsd) => {
+    onWork: async (_id, schedPair, side, sizeUsd, priceUsd, work) => {
       const pair = pairConfigs.get(schedPair.pairId);
       if (!pair) return;
       const inputMint = side === "buy_tokenized" ? pair.quote.mint : pair.tokenized.mint;
       const outputMint = side === "buy_tokenized" ? pair.tokenized.mint : pair.quote.mint;
       const amount = inputAtomicForOrder(pair, side, sizeUsd, priceUsd);
+      const quoteRequestStartedAtMs = Date.now();
       const result = await jup.order({
         inputMint,
         outputMint,
         amount,
         slippageBps: pair.slippageBps,
       });
+      const quoteResponseAtMs = Date.now();
       if (result.status === "rate_limited") heartbeat.countHttp429();
       else if (result.status === "error") heartbeat.countError();
       else if (result.status === "ok") heartbeat.observeQuoteLag(result.requestMs);
 
+      const basisAgeMs =
+        work.streamTimestampUs > 0
+          ? Math.max(0, quoteResponseAtMs - Math.floor(work.streamTimestampUs / 1000))
+          : Math.max(0, quoteResponseAtMs - work.queuedAtMs);
       const recorded = await recordQuote({
         pair,
         side,
@@ -95,25 +141,72 @@ async function main() {
         basePriceUsd: priceUsd,
         result,
         costsBps: costs,
+        timing: {
+          pythStreamTimestampUs: work.streamTimestampUs,
+          pythFeedUpdateTimestampUs: work.feedUpdateTimestampUs,
+          pythFreshnessLagMs: work.pythFreshnessLagMs,
+          quoteRequestStartedAt: new Date(quoteRequestStartedAtMs),
+          quoteResponseAt: new Date(quoteResponseAtMs),
+          quoteRequestMs: result.requestMs,
+          basisAgeMs,
+          quality: "live",
+        },
+        successRawSampleRate: cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE,
       });
       if (recorded.status === "ok") {
         await signals.onObservation({
           pair,
           side,
           sizeUsd,
+          basePriceUsd: priceUsd,
+          tokenPriceUsd: recorded.tokenPriceUsd,
           netEdgeBps: recorded.netBps,
+          quoteId: recorded.quoteId,
+          basisId: recorded.basisId,
+          observedAtMs: quoteResponseAtMs,
           nowMs: Date.now(),
         });
       }
     },
+    onError: (error, context) => {
+      heartbeat.countError();
+      console.error(`[scheduler] work failed id=${context.workId}`, error);
+    },
   });
 
   const indexPair = (p: PairConfig) => {
-    pairConfigs.set(p.id, p);
-    const set = lazerIdToPairs.get(p.base.pythLazerId) ?? new Set<string>();
-    set.add(p.id);
-    lazerIdToPairs.set(p.base.pythLazerId, set);
-    scheduler.upsertPair(toSchedulerPair(p));
+    const normalized = runtimePair(p);
+    if (!normalized) {
+      console.warn(
+        `[pairs] ${p.id} has no active quote size from [250,1000]; disabling runtime scheduling`,
+      );
+      unindexPair(p.id);
+      return;
+    }
+
+    const previous = pairConfigs.get(normalized.id);
+    const candidate = new Map(pairConfigs);
+    candidate.set(normalized.id, normalized);
+    try {
+      assertRuntimeBudget(candidate.values(), cfg.JUPITER_MAX_RPS);
+    } catch (e) {
+      heartbeat.countError();
+      console.error(`[pairs] rejecting ${normalized.id}: ${String((e as Error).message ?? e)}`);
+      if (!previous) return;
+      return;
+    }
+
+    if (previous && previous.base.pythLazerId !== normalized.base.pythLazerId) {
+      const oldSet = lazerIdToPairs.get(previous.base.pythLazerId);
+      oldSet?.delete(normalized.id);
+      if (oldSet?.size === 0) lazerIdToPairs.delete(previous.base.pythLazerId);
+    }
+
+    pairConfigs.set(normalized.id, normalized);
+    const set = lazerIdToPairs.get(normalized.base.pythLazerId) ?? new Set<string>();
+    set.add(normalized.id);
+    lazerIdToPairs.set(normalized.base.pythLazerId, set);
+    scheduler.upsertPair(toSchedulerPair(normalized));
   };
   const unindexPair = (id: string) => {
     const p = pairConfigs.get(id);
@@ -159,7 +252,7 @@ async function main() {
   stream.on((t: PythTickEvent) => {
     const pairs = lazerIdToPairs.get(t.pythLazerId);
     if (!pairs) return;
-    const lagMs = Math.max(0, Date.now() - Math.floor(t.publishTimeUs / 1000));
+    const lagMs = Math.max(0, Date.now() - Math.floor(t.streamTimestampUs / 1000));
     heartbeat.observeStreamLag(lagMs);
     const nowMs = Date.now();
     for (const pairId of pairs) {
@@ -168,7 +261,16 @@ async function main() {
       // markets that aren't trading. Other asset classes (Crypto, Metal,
       // FX, Commodity) are always considered open.
       if (pair && !isMarketOpen(pair.base.assetClass, nowMs)) continue;
-      scheduler.onPriceTick(pairId, t.priceUsd);
+      if (!pair) continue;
+      if (t.freshnessLagMs > maxFreshnessLagMsForPair(pair)) {
+        heartbeat.countInvalidFeed();
+        continue;
+      }
+      scheduler.onPriceTick(pairId, t.priceUsd, {
+        streamTimestampUs: t.streamTimestampUs,
+        feedUpdateTimestampUs: t.feedUpdateTimestampUs,
+        pythFreshnessLagMs: t.freshnessLagMs,
+      });
     }
   });
 
@@ -180,6 +282,7 @@ async function main() {
   });
   console.log(`api server listening on :${cfg.API_PORT}`);
   const hbHandle = setInterval(() => {
+    heartbeat.observeLazerHealth(stream.health());
     heartbeat
       .tick({
         activePairs: scheduler.activePairCount,

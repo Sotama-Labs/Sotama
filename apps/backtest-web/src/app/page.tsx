@@ -44,7 +44,7 @@ export default async function HomePage() {
         <div className="bt-empty">
           <p className="hig-headline" style={{ margin: 0 }}>No pairs configured</p>
           <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
-            Open <code style={{ background: "var(--fill-3)", padding: "0.05rem 0.35rem", borderRadius: 4 }}>/admin</code> to add a pair.
+            Pair management is owner-controlled in the bot database until the admin builder ships.
           </p>
         </div>
       ) : (

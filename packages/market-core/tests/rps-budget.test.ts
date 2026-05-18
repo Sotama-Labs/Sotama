@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import { TokenBucket } from "../src/rps-budget";
+import { assertQuoteRpsBudget, estimateQuoteRps, TokenBucket } from "../src/rps-budget";
 
 describe("rps-budget", () => {
   it("starts full and allows up to capacity bursts", () => {
@@ -32,5 +32,21 @@ describe("rps-budget", () => {
   it("rejects bad config", () => {
     expect(() => new TokenBucket({ capacity: 0, refillPerSec: 1, nowMs: () => 0 })).to.throw();
     expect(() => new TokenBucket({ capacity: 1, refillPerSec: 0, nowMs: () => 0 })).to.throw();
+  });
+  it("estimates enabled quote workload", () => {
+    expect(estimateQuoteRps([
+      { directions: ["buy", "sell"], sizesUsd: [250, 1000], quoteIntervalMs: 2000 },
+      { directions: ["buy"], sizesUsd: [250], quoteIntervalMs: 1000 },
+    ])).to.equal(3);
+  });
+  it("rejects workloads above the configured headroom", () => {
+    expect(() =>
+      assertQuoteRpsBudget({
+        pairs: [
+          { directions: ["buy", "sell"], sizesUsd: [250, 1000], quoteIntervalMs: 1000 },
+        ],
+        maxRps: 4,
+      }),
+    ).to.throw(/above 85%/);
   });
 });

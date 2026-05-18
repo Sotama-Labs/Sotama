@@ -11,7 +11,7 @@ const valid: PairConfig = {
   base: { pythSymbol: "Metal.XAU/USD", pythLazerId: 7, exponent: -8, assetClass: "Metal" },
   tokenized: { mint: TOKEN_MINT, symbol: "XAUT0", decimals: 6 },
   quote: { mint: USDC_MINT, symbol: "USDC", decimals: 6 },
-  sizesUsd: [100, 500, 1000],
+  sizesUsd: [250, 1000],
   directions: ["buy_tokenized", "sell_tokenized"],
   quoteIntervalMs: 2000,
   minPriceMoveBps: 2,
@@ -25,6 +25,9 @@ describe("PairConfigSchema", () => {
   });
   it("rejects empty sizesUsd", () => {
     expect(() => PairConfigSchema.parse({ ...valid, sizesUsd: [] })).to.throw();
+  });
+  it("rejects inactive quote sizes for the current tuning phase", () => {
+    expect(() => PairConfigSchema.parse({ ...valid, sizesUsd: [100, 500] })).to.throw();
   });
   it("rejects negative thresholds", () => {
     expect(() => PairConfigSchema.parse({ ...valid, minNetEdgeBps: -1 })).to.throw();

@@ -11,6 +11,7 @@ export const BotConfigSchema = z.object({
   // ── Pyth Lazer ────────────────────────────────────────────────────
   PYTH_CHANNEL: z.string().default("fixed_rate@1000ms"),
   PYTH_LAZER_ACCESS_TOKEN: z.string().min(1),
+  PYTH_MAX_FRESHNESS_LAG_MS: z.coerce.number().int().min(0).default(5_000),
 
   // ── Jupiter Pro ───────────────────────────────────────────────────
   /** When unset, derived from `JUPITER_API_KEY`: paid URL if a key is
@@ -18,6 +19,7 @@ export const BotConfigSchema = z.object({
   JUPITER_BASE_URL: z.string().url().optional(),
   JUPITER_API_KEY: z.string().min(1).optional(),
   JUPITER_MAX_RPS: z.coerce.number().default(9),
+  JUPITER_SUCCESS_RAW_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.02),
 
   // ── Helius RPC ────────────────────────────────────────────────────
   /** Full Helius RPC URL with API key baked in, e.g.

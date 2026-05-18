@@ -12,6 +12,9 @@ export type BestSideDto = {
   basePriceUsd: number;
   tokenPriceUsd: number;
   observedAt: string;
+  quality?: "live" | "warm" | "stale" | "invalid";
+  pythFreshnessLagMs?: number | null;
+  basisAgeMs?: number | null;
 };
 
 export type BestSpreadDto = {
@@ -39,6 +42,9 @@ export type HeartbeatDto = {
   errorCount1m: number;
   streamLagMs: number | null;
   quoteLagMs: number | null;
+  activeLazerEndpointCount?: number | null;
+  lazerEndpointHealth?: unknown | null;
+  invalidFeedCount1m?: number;
 };
 
 export type DashboardSnapshotDto = {
@@ -52,6 +58,41 @@ export type HealthResponseDto = {
   heartbeat: HeartbeatDto | null;
 };
 
+export type QuoteSurfaceRowDto = {
+  side: "buy_tokenized" | "sell_tokenized";
+  sizeUsd: number;
+  basePriceUsd: number;
+  tokenPriceUsd: number;
+  grossBps: number;
+  netBps: number;
+  observedAt: string;
+  quality: "live" | "warm" | "stale" | "invalid";
+  pythFreshnessLagMs: number | null;
+  quoteRequestMs: number | null;
+  basisAgeMs: number | null;
+};
+
+export type BasisSeriesPointDto = {
+  side: "buy_tokenized" | "sell_tokenized";
+  sizeUsd: number;
+  netBps: number;
+  tokenPriceUsd: number;
+  quality: "live" | "warm" | "stale" | "invalid";
+  observedAt: string;
+};
+
+export type SignalHistoryDto = {
+  id: string;
+  sizeUsd: number;
+  entryAt: string;
+  exitAt: string;
+  entryEdgeBps: number;
+  exitEdgeBps: number;
+  pnlUsd: number;
+  outcome: string;
+  exitReason: string | null;
+};
+
 export type PairDetailDto = {
   pair: PairConfig;
   bestBuy: BestSideDto | null;
@@ -59,4 +100,8 @@ export type PairDetailDto = {
   bestSpread: BestSpreadDto | null;
   quoteAgeMs: number | null;
   observationCount24h: number;
+  quoteSurface: QuoteSurfaceRowDto[];
+  basisSeries: BasisSeriesPointDto[];
+  signalHistory: SignalHistoryDto[];
+  profitability: import("./profitability").ProfitabilitySummary;
 };

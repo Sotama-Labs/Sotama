@@ -13,10 +13,27 @@ function fmtBps(v: number | null | undefined, signed: boolean = true): string {
   const sign = signed && v > 0 ? "+" : "";
   return `${sign}${v.toFixed(1)} bps`;
 }
+function fmtUsd(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 4,
+  }).format(v);
+}
+function fmtMs(v: number | null | undefined): string {
+  return v == null ? "—" : `${Math.round(v).toLocaleString()} ms`;
+}
 function favorableColor(kind: "buy" | "sell", ratio: number | null | undefined): string {
   if (ratio == null) return "var(--label-tertiary)";
   const favorable = kind === "buy" ? ratio < 1 : ratio > 1;
   return favorable ? "var(--green)" : "var(--red)";
+}
+function qualityColor(quality: string): string {
+  if (quality === "live") return "var(--green)";
+  if (quality === "warm") return "var(--orange)";
+  if (quality === "stale" || quality === "invalid") return "var(--red)";
+  return "var(--label-tertiary)";
 }
 
 export default async function PairDetailPage({
@@ -56,11 +73,26 @@ export default async function PairDetailPage({
   }
   if (!detail) notFound();
 
-  const { pair, bestBuy, bestSell, bestSpread, quoteAgeMs, observationCount24h } = detail;
+  const {
+    pair,
+    bestBuy,
+    bestSell,
+    bestSpread,
+    quoteAgeMs,
+    observationCount24h,
+    quoteSurface,
+    basisSeries,
+    signalHistory,
+    profitability,
+  } = detail;
   const level = levelForAgeMs(quoteAgeMs);
   const showBuy = pair.directions.includes("buy_tokenized");
   const showSell = pair.directions.includes("sell_tokenized");
   const showSpread = showBuy && showSell && bestSpread !== null;
+  const oldestBasisAgeMs =
+    quoteSurface.length === 0
+      ? null
+      : Math.max(...quoteSurface.map((row) => row.basisAgeMs ?? 0));
 
   return (
     <main className="bt-shell">
@@ -168,16 +200,206 @@ export default async function PairDetailPage({
         <div className="bt-empty">
           <p className="hig-headline" style={{ margin: 0 }}>Newly added — collecting data</p>
           <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
-            Quote surface, charts, and profitability metrics populate as the bot streams quotes.
+            Quote surface and profitability metrics populate as the bot streams quotes.
           </p>
         </div>
       ) : (
-        <div className="bt-empty">
-          <p className="hig-headline" style={{ margin: 0 }}>Quote surface and charts coming next</p>
-          <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
-            {observationCount24h.toLocaleString()} basis observations stored. Per-size quote surface, basis chart with
-            threshold overlay, cumulative PnL, drawdown, and edge histogram land in the next iteration.
-          </p>
+        <div style={{ display: "grid", gap: "1rem" }}>
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+              <div>
+                <p className="hig-headline" style={{ margin: 0 }}>Quote surface</p>
+                <p className="hig-caption-1" style={{ color: "var(--label-tertiary)", margin: "0.25rem 0 0" }}>
+                  Latest executable quote per side and size.
+                </p>
+              </div>
+              <span className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
+                {quoteSurface.length} live rows
+              </span>
+            </div>
+            <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                <thead>
+                  <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Side</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Size</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Token price</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Net edge</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Pyth lag</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Quote</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Quality</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {quoteSurface.map((row) => (
+                    <tr
+                      key={`${row.side}-${row.sizeUsd}`}
+                      style={{ borderTop: "1px solid var(--separator)" }}
+                    >
+                      <td className="hig-footnote" style={{ padding: "0.65rem 0.35rem" }}>
+                        {row.side === "buy_tokenized" ? "Buy tokenized" : "Sell tokenized"}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        ${row.sizeUsd.toLocaleString()}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtUsd(row.tokenPriceUsd)}
+                      </td>
+                      <td
+                        className="hig-footnote bt-num"
+                        style={{
+                          padding: "0.65rem 0.35rem",
+                          color: row.netBps >= pair.minNetEdgeBps ? "var(--green)" : "var(--label-primary)",
+                        }}
+                      >
+                        {fmtBps(row.netBps)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtMs(row.pythFreshnessLagMs)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtMs(row.quoteRequestMs)}
+                      </td>
+                      <td
+                        className="hig-footnote"
+                        style={{ padding: "0.65rem 0.35rem", color: qualityColor(row.quality) }}
+                      >
+                        {row.quality}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: "0.875rem",
+            }}
+          >
+            <Card>
+              <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Paper PnL (7d)</div>
+              <div
+                className="hig-title-3 bt-num"
+                style={{
+                  marginTop: 4,
+                  color: profitability.cumulativePnlUsd > 0 ? "var(--green)" : profitability.cumulativePnlUsd < 0 ? "var(--red)" : "var(--label-primary)",
+                }}
+              >
+                {fmtUsd(profitability.cumulativePnlUsd)}
+              </div>
+              <div className="hig-caption-1" style={{ color: "var(--label-tertiary)", marginTop: 2 }}>
+                spot inventory only · no synthetic shorts
+              </div>
+            </Card>
+            <Card>
+              <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Win rate</div>
+              <div className="hig-title-3 bt-num" style={{ marginTop: 4 }}>
+                {(profitability.winRate * 100).toFixed(1)}%
+              </div>
+              <div className="hig-caption-1" style={{ color: "var(--label-tertiary)", marginTop: 2 }}>
+                {profitability.signalCount.toLocaleString()} closed signals
+              </div>
+            </Card>
+            <Card>
+              <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Max drawdown</div>
+              <div className="hig-title-3 bt-num" style={{ marginTop: 4 }}>
+                {fmtUsd(profitability.maxDrawdownUsd)}
+              </div>
+              <div className="hig-caption-1" style={{ color: "var(--label-tertiary)", marginTop: 2 }}>
+                avg hold {profitability.avgHoldSeconds.toFixed(0)}s
+              </div>
+            </Card>
+          </div>
+
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+              <p className="hig-headline" style={{ margin: 0 }}>Signal history</p>
+              <span className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
+                {signalHistory.length} recent
+              </span>
+            </div>
+            {signalHistory.length === 0 ? (
+              <p className="hig-footnote" style={{ color: "var(--label-secondary)", margin: "0.75rem 0 0" }}>
+                No closed spot positions in the current window.
+              </p>
+            ) : (
+              <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 680 }}>
+                  <thead>
+                    <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>Exit</th>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>Size</th>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>Entry edge</th>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>Exit edge</th>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>PnL</th>
+                      <th style={{ padding: "0.5rem 0.35rem" }}>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {signalHistory.map((s) => (
+                      <tr key={s.id} style={{ borderTop: "1px solid var(--separator)" }}>
+                        <td className="hig-footnote" style={{ padding: "0.65rem 0.35rem" }}>
+                          {new Date(s.exitAt).toLocaleString()}
+                        </td>
+                        <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                          ${s.sizeUsd.toLocaleString()}
+                        </td>
+                        <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                          {fmtBps(s.entryEdgeBps)}
+                        </td>
+                        <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                          {fmtBps(s.exitEdgeBps)}
+                        </td>
+                        <td
+                          className="hig-footnote bt-num"
+                          style={{
+                            padding: "0.65rem 0.35rem",
+                            color: s.pnlUsd > 0 ? "var(--green)" : s.pnlUsd < 0 ? "var(--red)" : "var(--label-primary)",
+                          }}
+                        >
+                          {fmtUsd(s.pnlUsd)}
+                        </td>
+                        <td className="hig-footnote" style={{ padding: "0.65rem 0.35rem" }}>
+                          {s.exitReason ?? s.outcome}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <p className="hig-headline" style={{ margin: 0 }}>Data quality</p>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: "0.75rem",
+                marginTop: "0.75rem",
+              }}
+            >
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Series points</div>
+                <div className="hig-headline bt-num">{basisSeries.length.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Live rows</div>
+                <div className="hig-headline bt-num">
+                  {quoteSurface.filter((row) => row.quality === "live").length.toLocaleString()} / {quoteSurface.length}
+                </div>
+              </div>
+              <div>
+                <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Oldest basis age</div>
+                <div className="hig-headline bt-num">{fmtMs(oldestBasisAgeMs)}</div>
+              </div>
+            </div>
+          </Card>
         </div>
       )}
 

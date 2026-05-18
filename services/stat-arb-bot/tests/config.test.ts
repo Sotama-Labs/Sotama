@@ -34,6 +34,18 @@ describe("loadConfig", () => {
     expect(cfg.jupiterBaseUrl).to.equal("https://custom.jup.example");
   });
 
+  it("loads freshness and raw quote retention defaults", () => {
+    const cfg = loadConfig(base as any);
+    expect(cfg.PYTH_MAX_FRESHNESS_LAG_MS).to.equal(5000);
+    expect(cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE).to.equal(0.02);
+  });
+
+  it("rejects invalid raw quote sample rates", () => {
+    expect(() =>
+      loadConfig({ ...base, JUPITER_SUCCESS_RAW_SAMPLE_RATE: "2" } as any),
+    ).to.throw();
+  });
+
   it("accepts Helius URLs", () => {
     const cfg = loadConfig({
       ...base,

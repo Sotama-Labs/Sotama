@@ -1,7 +1,10 @@
 import { z } from "zod";
 
+export const ACTIVE_QUOTE_SIZES_USD = [250, 1000] as const;
+
 const AssetClassEnum = z.enum(["Crypto", "Equity", "Commodity", "FX", "Metal"]);
 const DirectionEnum = z.enum(["buy_tokenized", "sell_tokenized"]);
+const ActiveQuoteSizeEnum = z.union([z.literal(250), z.literal(1000)]);
 
 export const PairConfigSchema = z.object({
   id: z.string().min(1),
@@ -12,6 +15,7 @@ export const PairConfigSchema = z.object({
     pythLazerId: z.number().int().nonnegative(),
     exponent: z.number().int(),
     assetClass: AssetClassEnum,
+    maxPythFreshnessLagMs: z.number().int().nonnegative().optional(),
   }),
   tokenized: z.object({
     mint: z.string().min(32).max(64),
@@ -24,7 +28,7 @@ export const PairConfigSchema = z.object({
     symbol: z.literal("USDC"),
     decimals: z.literal(6),
   }),
-  sizesUsd: z.array(z.number().positive()).min(1).max(8),
+  sizesUsd: z.array(ActiveQuoteSizeEnum).min(1).max(ACTIVE_QUOTE_SIZES_USD.length),
   directions: z.array(DirectionEnum).min(1),
   quoteIntervalMs: z.number().int().min(500),
   minPriceMoveBps: z.number().nonnegative(),
@@ -34,3 +38,7 @@ export const PairConfigSchema = z.object({
 
 export type PairConfig = z.infer<typeof PairConfigSchema>;
 export type PairDirection = z.infer<typeof DirectionEnum>;
+
+export function normalizeActiveQuoteSizes(sizesUsd: readonly number[]): number[] {
+  return ACTIVE_QUOTE_SIZES_USD.filter((size) => sizesUsd.includes(size));
+}

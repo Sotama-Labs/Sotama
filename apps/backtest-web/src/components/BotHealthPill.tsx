@@ -18,9 +18,29 @@ export function BotHealthPill({ heartbeat }: { heartbeat: HeartbeatDto | null })
       </StatusPill>
     );
   }
+  if ((heartbeat.invalidFeedCount1m ?? 0) > 0) {
+    return (
+      <StatusPill kind="warn">
+        stale Pyth · {heartbeat.invalidFeedCount1m} rejected
+      </StatusPill>
+    );
+  }
+  if (
+    heartbeat.activeLazerEndpointCount != null &&
+    heartbeat.activeLazerEndpointCount < 2
+  ) {
+    return (
+      <StatusPill kind="warn">
+        Lazer degraded · {heartbeat.activeLazerEndpointCount ?? 0}/3
+      </StatusPill>
+    );
+  }
   return (
     <StatusPill kind="ok">
-      bot live · {heartbeat.activePairs} pairs · {heartbeat.currentRps.toFixed(1)} rps
+      bot live · {heartbeat.activePairs} pairs
+      {heartbeat.activeLazerEndpointCount == null
+        ? ` · ${heartbeat.currentRps.toFixed(1)} rps`
+        : ` · ${heartbeat.activeLazerEndpointCount}/3 Lazer`}
     </StatusPill>
   );
 }

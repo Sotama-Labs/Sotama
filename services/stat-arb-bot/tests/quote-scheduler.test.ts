@@ -101,4 +101,31 @@ describe("QuoteScheduler", () => {
     expect(seen.length).to.equal(0);
     expect(sched.activePairCount).to.equal(0);
   });
+
+  it("routes async work failures to onError", async () => {
+    let t = 0;
+    const errors: string[] = [];
+    const sched = new QuoteScheduler({
+      maxRps: 10,
+      bucketCapacity: 10,
+      nowMs: () => t,
+      onWork: async () => {
+        throw new Error("boom");
+      },
+      onError: (error, context) => {
+        errors.push(`${context.workId}:${(error as Error).message}`);
+      },
+    });
+    sched.upsertPair({
+      pairId: "p1",
+      lastPriceUsd: 100,
+      sides: ["buy_tokenized"],
+      sizesUsd: [100],
+      quoteIntervalMs: 60_000,
+      minPriceMoveBps: 1,
+    });
+    sched.onPriceTick("p1", 100);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(errors).to.deep.equal(["p1|buy_tokenized|100:boom"]);
+  });
 });

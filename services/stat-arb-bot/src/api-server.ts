@@ -2,9 +2,9 @@
  *
  *  The Vercel dashboard fetches these endpoints over HTTPS; the bot is the
  *  only process with private-network access to Fly Postgres. Endpoints are
- *  unauthenticated — the data (pair configs, latest basis, paper signals)
- *  is non-sensitive. Admin write endpoints will be added later behind
- *  ADMIN_PASSWORD when the dashboard's pair-builder lands. */
+ *  read-only. Treat this as internal strategy data; production access should
+ *  be restricted by the dashboard and hosting layer before exposing detailed
+ *  diagnostics outside the owner/admin context. */
 
 import http from "node:http";
 import {
@@ -13,9 +13,11 @@ import {
   latestBasisPerKey,
   latestHeartbeat,
   basisHistory,
+  closedSignals,
   type BasisObservationRow,
 } from "@sotama/db";
 import type {
+  BasisSeriesPointDto,
   BestSideDto,
   BestSpreadDto,
   DashboardSnapshotDto,
@@ -23,10 +25,15 @@ import type {
   HeartbeatDto,
   PairDetailDto,
   PairPanelDto,
+  QuoteSurfaceRowDto,
+  SignalHistoryDto,
 } from "@sotama/market-core";
+import { summarize } from "@sotama/market-core";
 
 const LATEST_WITHIN_MS = 5 * 60_000;
 const HISTORY_WINDOW_MS = 24 * 3600 * 1000;
+const SIGNAL_WINDOW_MS = 7 * 24 * 3600 * 1000;
+const BASIS_SERIES_LIMIT = 720;
 const HEARTBEAT_STALE_MS = 30_000;
 
 export type ApiServerOptions = {
@@ -129,9 +136,12 @@ async function handlePairDetail(
     return;
   }
 
-  const sinceMs = Date.now() - HISTORY_WINDOW_MS;
-  const [latest, ...historyArrays] = await Promise.all([
+  const nowMs = Date.now();
+  const sinceMs = nowMs - HISTORY_WINDOW_MS;
+  const signalSinceMs = nowMs - SIGNAL_WINDOW_MS;
+  const [latest, signals, ...historyArrays] = await Promise.all([
     latestBasisPerKey({ withinMs: LATEST_WITHIN_MS }),
+    closedSignals({ pairId: id, sinceMs: signalSinceMs }),
     ...pair.sizesUsd.flatMap((size) =>
       pair.directions.map((side) =>
         basisHistory({ pairId: id, side, sizeUsd: size, sinceMs }),
@@ -142,7 +152,10 @@ async function handlePairDetail(
   const forPair = latest.filter((b) => b.pairId === id);
   const byPair = groupBasis(forPair);
   const panel = buildPanel(pair, byPair, Date.now());
-  const observationCount24h = historyArrays.reduce((acc, rows) => acc + rows.length, 0);
+  const historyRows = historyArrays
+    .flat()
+    .sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
+  const observationCount24h = historyRows.length;
 
   const body: PairDetailDto = {
     pair,
@@ -151,6 +164,18 @@ async function handlePairDetail(
     bestSpread: panel.bestSpread,
     quoteAgeMs: panel.quoteAgeMs,
     observationCount24h,
+    quoteSurface: toQuoteSurface(forPair),
+    basisSeries: downsample(historyRows, BASIS_SERIES_LIMIT).map(toBasisSeriesPoint),
+    signalHistory: signals.slice(-50).map(toSignalHistory),
+    profitability: summarize(
+      signals.map((s) => ({
+        entryAt: s.entryAt.getTime(),
+        exitAt: s.exitAt.getTime(),
+        pnlUsd: s.pnlUsd,
+        edgeBps: s.entryEdgeBps,
+      })),
+      nowMs,
+    ),
   };
   sendJson(res, 200, body);
 }
@@ -234,6 +259,9 @@ function toBestSide(b: BasisObservationRow, ratio: number): BestSideDto {
     basePriceUsd: b.basePriceUsd,
     tokenPriceUsd: b.tokenPriceUsd,
     observedAt: b.observedAt.toISOString(),
+    quality: b.quality,
+    pythFreshnessLagMs: b.pythFreshnessLagMs,
+    basisAgeMs: b.basisAgeMs,
   };
 }
 
@@ -271,6 +299,9 @@ function toHeartbeatDto(hb: {
   errorCount1m: number;
   streamLagMs: number | null;
   quoteLagMs: number | null;
+  activeLazerEndpointCount?: number | null;
+  lazerEndpointHealth?: unknown | null;
+  invalidFeedCount1m?: number;
 }): HeartbeatDto {
   return {
     observedAt: hb.observedAt.toISOString(),
@@ -280,7 +311,63 @@ function toHeartbeatDto(hb: {
     errorCount1m: hb.errorCount1m,
     streamLagMs: hb.streamLagMs,
     quoteLagMs: hb.quoteLagMs,
+    activeLazerEndpointCount: hb.activeLazerEndpointCount ?? null,
+    lazerEndpointHealth: hb.lazerEndpointHealth ?? null,
+    invalidFeedCount1m: hb.invalidFeedCount1m ?? 0,
   };
+}
+
+function toQuoteSurface(rows: BasisObservationRow[]): QuoteSurfaceRowDto[] {
+  return [...rows]
+    .sort((a, b) => a.sizeUsd - b.sizeUsd || a.side.localeCompare(b.side))
+    .map((b) => ({
+      side: b.side,
+      sizeUsd: b.sizeUsd,
+      basePriceUsd: b.basePriceUsd,
+      tokenPriceUsd: b.tokenPriceUsd,
+      grossBps: b.grossBps,
+      netBps: b.netBps,
+      observedAt: b.observedAt.toISOString(),
+      quality: b.quality ?? "live",
+      pythFreshnessLagMs: b.pythFreshnessLagMs ?? null,
+      quoteRequestMs: b.quoteRequestMs ?? null,
+      basisAgeMs: b.basisAgeMs ?? null,
+    }));
+}
+
+function toBasisSeriesPoint(b: BasisObservationRow): BasisSeriesPointDto {
+  return {
+    side: b.side,
+    sizeUsd: b.sizeUsd,
+    netBps: b.netBps,
+    tokenPriceUsd: b.tokenPriceUsd,
+    quality: b.quality ?? "live",
+    observedAt: b.observedAt.toISOString(),
+  };
+}
+
+function toSignalHistory(s: Awaited<ReturnType<typeof closedSignals>>[number]): SignalHistoryDto {
+  return {
+    id: s.id.toString(),
+    sizeUsd: s.sizeUsd,
+    entryAt: s.entryAt.toISOString(),
+    exitAt: s.exitAt.toISOString(),
+    entryEdgeBps: s.entryEdgeBps,
+    exitEdgeBps: s.exitEdgeBps,
+    pnlUsd: s.pnlUsd,
+    outcome: s.outcome,
+    exitReason: s.exitReason,
+  };
+}
+
+function downsample<T>(rows: T[], limit: number): T[] {
+  if (rows.length <= limit) return rows;
+  const step = rows.length / limit;
+  const out: T[] = [];
+  for (let i = 0; i < limit; i += 1) {
+    out.push(rows[Math.floor(i * step)]!);
+  }
+  return out;
 }
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {

@@ -1,61 +1,148 @@
 import type { PairConfig, PairDirection } from "@sotama/market-core";
 import { openSignal, closeSignal, openSignalsByKey } from "@sotama/db";
 
-/** V1 paper-trade lifecycle.
+/** Spot-only paper-trade lifecycle.
  *
- *  Entry: when net_edge_bps >= pair.minNetEdgeBps and no signal is open
- *  for this (pair, side, size) key.
- *
- *  Exit: when net_edge_bps <= 0 (basis closed) or the open signal has been
- *  alive longer than `staleAfterMs` (no convergence).
- *
- *  PnL is paper: size_usd * (exit_edge - entry_edge) / 10000. This treats
- *  the strategy as if we could execute at the observed basis on both legs,
- *  which is an optimistic bound. Real implementation would subtract another
- *  round-trip's worth of costs. */
+ * `buy_tokenized` may open tokenized inventory when the executable buy edge
+ * clears the pair threshold. `sell_tokenized` never opens a synthetic short;
+ * it can only close inventory from an earlier paper buy for the same pair and
+ * size. PnL is calculated from executable token buy/sell prices, not from the
+ * movement of a same-side edge series.
+ */
 export class SignalEngine {
-  constructor(private readonly cfg: { staleAfterMs: number }) {}
+  constructor(
+    private readonly cfg: {
+      staleAfterMs: number;
+      transactionCostBps: number;
+    },
+  ) {}
 
   async onObservation(args: {
     pair: PairConfig;
     side: PairDirection;
     sizeUsd: number;
+    basePriceUsd: number;
+    tokenPriceUsd: number;
     netEdgeBps: number;
+    quoteId: bigint;
+    basisId: bigint;
+    observedAtMs: number;
     nowMs: number;
   }): Promise<void> {
-    const { pair, side, sizeUsd, netEdgeBps, nowMs } = args;
-    const open = await openSignalsByKey({ pairId: pair.id, side, sizeUsd });
-
-    if (open.length === 0 && netEdgeBps >= pair.minNetEdgeBps) {
-      await openSignal({
-        pairId: pair.id,
-        side,
-        sizeUsd,
-        thresholdBps: pair.minNetEdgeBps,
-        entryEdgeBps: netEdgeBps,
-        entryAt: new Date(nowMs),
-      });
+    if (args.side === "buy_tokenized") {
+      await this.maybeOpenSpotInventory(args);
       return;
     }
+    await this.maybeCloseSpotInventory(args);
+  }
 
-    for (const o of open) {
-      const ageMs = nowMs - o.entryAt.getTime();
+  private async maybeOpenSpotInventory(args: {
+    pair: PairConfig;
+    sizeUsd: number;
+    basePriceUsd: number;
+    tokenPriceUsd: number;
+    netEdgeBps: number;
+    quoteId: bigint;
+    basisId: bigint;
+    observedAtMs: number;
+    nowMs: number;
+  }): Promise<void> {
+    const { pair, sizeUsd, tokenPriceUsd, netEdgeBps } = args;
+    if (!pair.directions.includes("sell_tokenized")) return;
+    if (tokenPriceUsd <= 0) return;
+
+    const open = await openSignalsByKey({
+      pairId: pair.id,
+      side: "buy_tokenized",
+      sizeUsd,
+    });
+    if (open.length > 0 || netEdgeBps < pair.minNetEdgeBps) return;
+
+    await openSignal({
+      pairId: pair.id,
+      side: "buy_tokenized",
+      sizeUsd,
+      thresholdBps: pair.minNetEdgeBps,
+      entryEdgeBps: netEdgeBps,
+      entryTokenPriceUsd: tokenPriceUsd,
+      entryBasePriceUsd: args.basePriceUsd,
+      entryQuoteId: args.quoteId,
+      entryBasisId: args.basisId,
+      tokenUnits: sizeUsd / tokenPriceUsd,
+      entryObservedAt: new Date(args.observedAtMs),
+      entryAt: new Date(args.nowMs),
+    });
+  }
+
+  private async maybeCloseSpotInventory(args: {
+    pair: PairConfig;
+    sizeUsd: number;
+    basePriceUsd: number;
+    tokenPriceUsd: number;
+    netEdgeBps: number;
+    quoteId: bigint;
+    basisId: bigint;
+    observedAtMs: number;
+    nowMs: number;
+  }): Promise<void> {
+    const open = await openSignalsByKey({
+      pairId: args.pair.id,
+      side: "buy_tokenized",
+      sizeUsd: args.sizeUsd,
+    });
+
+    for (const position of open) {
+      if (
+        position.tokenUnits == null ||
+        position.entryTokenPriceUsd == null ||
+        position.entryBasePriceUsd == null
+      ) {
+        continue;
+      }
+
+      const ageMs = args.nowMs - position.entryAt.getTime();
       const stale = ageMs >= this.cfg.staleAfterMs;
-      const converged = netEdgeBps <= 0;
+      const pnlUsd = computeSpotExitPnlUsd({
+        sizeUsd: position.sizeUsd,
+        tokenUnits: position.tokenUnits,
+        exitTokenPriceUsd: args.tokenPriceUsd,
+        transactionCostBps: this.cfg.transactionCostBps,
+      });
+      const converged = pnlUsd >= 0;
       if (!stale && !converged) continue;
-      const pnl = (sizeUsd * (netEdgeBps - o.entryEdgeBps)) / 10000;
+
       const outcome =
-        pnl > 0.01 ? "closed_win"
-        : pnl < -0.01 ? "closed_loss"
-        : stale ? "closed_stale"
+        stale && pnlUsd <= 0.01 ? "closed_stale"
+        : pnlUsd > 0.01 ? "closed_win"
+        : pnlUsd < -0.01 ? "closed_loss"
         : "closed_flat";
+
       await closeSignal({
-        id: o.id,
-        exitEdgeBps: netEdgeBps,
-        pnlUsd: pnl,
+        id: position.id,
+        exitEdgeBps: args.netEdgeBps,
+        exitSide: "sell_tokenized",
+        exitTokenPriceUsd: args.tokenPriceUsd,
+        exitBasePriceUsd: args.basePriceUsd,
+        exitQuoteId: args.quoteId,
+        exitBasisId: args.basisId,
+        exitObservedAt: new Date(args.observedAtMs),
+        exitReason: converged ? "converged" : "stale",
+        pnlUsd,
         outcome,
-        exitAt: new Date(nowMs),
+        exitAt: new Date(args.nowMs),
       });
     }
   }
+}
+
+export function computeSpotExitPnlUsd(args: {
+  sizeUsd: number;
+  tokenUnits: number;
+  exitTokenPriceUsd: number;
+  transactionCostBps: number;
+}): number {
+  const exitGrossUsd = args.tokenUnits * args.exitTokenPriceUsd;
+  const entryCostsUsd = args.sizeUsd * (args.transactionCostBps / 10000);
+  const exitCostsUsd = exitGrossUsd * (args.transactionCostBps / 10000);
+  return exitGrossUsd - args.sizeUsd - entryCostsUsd - exitCostsUsd;
 }

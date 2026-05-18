@@ -16,30 +16,35 @@ export type CostBps = {
   minProfitBps: number;
 };
 
+export type ObservationQuality = "live" | "warm" | "stale" | "invalid";
+
+export type QuoteTiming = {
+  pythStreamTimestampUs: number;
+  pythFeedUpdateTimestampUs: number;
+  pythFreshnessLagMs: number;
+  quoteRequestStartedAt: Date;
+  quoteResponseAt: Date;
+  quoteRequestMs: number;
+  basisAgeMs: number;
+  quality: ObservationQuality;
+};
+
 export type RecordedQuote =
   | {
       status: "ok";
       tokenPriceUsd: number;
       grossBps: number;
       netBps: number;
+      quoteId: bigint;
       basisId: bigint;
     }
   | { status: "rate_limited" | "error" | "stale" };
 
-/** Persists a Jupiter order outcome and the derived basis observation.
- *
- *  Layer-1 compacted storage policy:
- *  - **Success path**: write ONLY `basis_observations` (the time-series of
- *    derived ratios + edges). `jupiter_quotes` is skipped — its `out_amount`
- *    and price are already captured in basis_observations.token_price_usd,
- *    and the raw JSON adds ~1 KB/row of replay data the analytics never read.
- *  - **Error / rate-limited path**: write `jupiter_quotes` with `raw=null`
- *    so http_429s and outages stay diagnosable, without bloating storage.
- *
- *  Total writes per quote: 1 row (basis) on success, 1 row (jupiter_quotes
- *  diagnostic) on failure — down from 3-row (tick + quote + basis) per quote
- *  pre-compaction.
- */
+/** Persists every successful Jupiter quote with compact structured metadata,
+ * then links the derived basis observation to that quote row. Full raw JSON is
+ * retained only for sampled successes or meaningful edge events; structured
+ * fields remain present for every success so later tuning can explain routes,
+ * request latency, and quote IDs without turning Postgres into blob storage. */
 export async function recordQuote(args: {
   pair: PairConfig;
   side: PairDirection;
@@ -47,6 +52,8 @@ export async function recordQuote(args: {
   basePriceUsd: number;
   result: OrderResult;
   costsBps: CostBps;
+  timing: QuoteTiming;
+  successRawSampleRate: number;
 }): Promise<RecordedQuote> {
   const { pair, side, sizeUsd, basePriceUsd, result } = args;
   const inMint = side === "buy_tokenized" ? pair.quote.mint : pair.tokenized.mint;
@@ -92,6 +99,27 @@ export async function recordQuote(args: {
       : sellEdgeBps({ basePriceUsd, tokenSellPriceUsd: tokenPriceUsd });
 
   const netBps = netEdgeBps({ grossBps, ...args.costsBps });
+  const retainRaw =
+    Math.abs(netBps) >= pair.minNetEdgeBps ||
+    Math.random() < args.successRawSampleRate;
+
+  const quoteId = await insertJupiterQuote({
+    pairId: pair.id,
+    side,
+    sizeUsd,
+    router: result.router,
+    inMint,
+    outMint,
+    inAmount: result.inAmount,
+    outAmount: result.outAmount,
+    priceImpactPct: result.priceImpactPct,
+    quoteId: result.quoteId,
+    expiresAt: result.expiresAt,
+    contextSlot: result.contextSlot,
+    requestMs: result.requestMs,
+    status: "ok",
+    raw: retainRaw ? result.raw : null,
+  });
 
   const basisId = await insertBasisObservation({
     pairId: pair.id,
@@ -102,8 +130,16 @@ export async function recordQuote(args: {
     grossBps,
     netBps,
     tickId: null,
-    quoteId: null,
+    quoteId,
+    pythStreamTimestampUs: args.timing.pythStreamTimestampUs,
+    pythFeedUpdateTimestampUs: args.timing.pythFeedUpdateTimestampUs,
+    pythFreshnessLagMs: args.timing.pythFreshnessLagMs,
+    quoteRequestStartedAt: args.timing.quoteRequestStartedAt,
+    quoteResponseAt: args.timing.quoteResponseAt,
+    quoteRequestMs: args.timing.quoteRequestMs,
+    basisAgeMs: args.timing.basisAgeMs,
+    quality: args.timing.quality,
   });
 
-  return { status: "ok", tokenPriceUsd, grossBps, netBps, basisId };
+  return { status: "ok", tokenPriceUsd, grossBps, netBps, quoteId, basisId };
 }
