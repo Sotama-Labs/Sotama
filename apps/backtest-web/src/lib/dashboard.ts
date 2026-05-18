@@ -1,12 +1,38 @@
 import { listAllPairs, latestBasisPerKey, latestHeartbeat } from "@sotama/db";
-import type { PairConfig, PairDirection } from "@sotama/market-core";
+import type { BasisObservationRow } from "@sotama/db";
+import type { PairConfig } from "@sotama/market-core";
+
+/** Best observation on one side of a pair. `ratio = tokenPrice / basePrice`.
+ *  - For buy: a ratio < 1 means the tokenized asset trades below reference
+ *    (favorable entry). "Best buy" = lowest observed ratio across sizes.
+ *  - For sell: a ratio > 1 means the tokenized asset trades above reference
+ *    (favorable exit). "Best sell" = highest observed ratio across sizes. */
+export type BestSide = {
+  ratio: number;
+  sizeUsd: number;
+  netBps: number;
+  basePriceUsd: number;
+  tokenPriceUsd: number;
+  observedAt: Date;
+};
+
+/** Round-trip cost (or arb gap if negative) at the smallest spread size.
+ *  `spreadBps = (buyTokenPrice - sellTokenPrice) / mid * 10000`.
+ *  Only computed when both directions have a fresh observation at the
+ *  same size — otherwise null on the panel. */
+export type BestSpread = {
+  spreadBps: number;
+  sizeUsd: number;
+  buyTokenPriceUsd: number;
+  sellTokenPriceUsd: number;
+  observedAt: Date;
+};
 
 export type PairPanel = {
   pair: PairConfig;
-  bestBuyNetBps: number | null;
-  bestSellNetBps: number | null;
-  bestBuySizeUsd: number | null;
-  bestSellSizeUsd: number | null;
+  bestBuy: BestSide | null;
+  bestSell: BestSide | null;
+  bestSpread: BestSpread | null;
   quoteAgeMs: number | null;
 };
 
@@ -29,37 +55,38 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
     latestHeartbeat(),
   ]);
 
-  const bestByPair = new Map<
+  const byPair = new Map<
     string,
-    { buy: { bps: number; size: number; at: Date } | null; sell: { bps: number; size: number; at: Date } | null }
+    { buyBySize: Map<number, BasisObservationRow>; sellBySize: Map<number, BasisObservationRow> }
   >();
   for (const b of basis) {
-    const cur = bestByPair.get(b.pairId) ?? { buy: null, sell: null };
-    const side: PairDirection = b.side;
-    const entry = { bps: b.netBps, size: b.sizeUsd, at: b.observedAt };
-    if (side === "buy_tokenized") {
-      if (!cur.buy || b.netBps > cur.buy.bps) cur.buy = entry;
-    } else {
-      if (!cur.sell || b.netBps > cur.sell.bps) cur.sell = entry;
-    }
-    bestByPair.set(b.pairId, cur);
+    const e = byPair.get(b.pairId) ?? {
+      buyBySize: new Map<number, BasisObservationRow>(),
+      sellBySize: new Map<number, BasisObservationRow>(),
+    };
+    if (b.side === "buy_tokenized") e.buyBySize.set(b.sizeUsd, b);
+    else e.sellBySize.set(b.sizeUsd, b);
+    byPair.set(b.pairId, e);
   }
 
   const now = Date.now();
   const panels: PairPanel[] = pairs.map((pair) => {
-    const best = bestByPair.get(pair.id) ?? { buy: null, sell: null };
+    const e =
+      byPair.get(pair.id) ?? {
+        buyBySize: new Map<number, BasisObservationRow>(),
+        sellBySize: new Map<number, BasisObservationRow>(),
+      };
+
+    const bestBuy = pickBest(e.buyBySize.values(), "buy");
+    const bestSell = pickBest(e.sellBySize.values(), "sell");
+    const bestSpread = pickBestSpread(e.buyBySize, e.sellBySize);
+
     const ages: number[] = [];
-    if (best.buy) ages.push(now - best.buy.at.getTime());
-    if (best.sell) ages.push(now - best.sell.at.getTime());
+    if (bestBuy) ages.push(now - bestBuy.observedAt.getTime());
+    if (bestSell) ages.push(now - bestSell.observedAt.getTime());
     const quoteAgeMs = ages.length === 0 ? null : Math.min(...ages);
-    return {
-      pair,
-      bestBuyNetBps: best.buy?.bps ?? null,
-      bestSellNetBps: best.sell?.bps ?? null,
-      bestBuySizeUsd: best.buy?.size ?? null,
-      bestSellSizeUsd: best.sell?.size ?? null,
-      quoteAgeMs,
-    };
+
+    return { pair, bestBuy, bestSell, bestSpread, quoteAgeMs };
   });
 
   return {
@@ -75,4 +102,58 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
         }
       : null,
   };
+}
+
+function pickBest(
+  iter: Iterable<BasisObservationRow>,
+  kind: "buy" | "sell",
+): BestSide | null {
+  let best: BestSide | null = null;
+  for (const b of iter) {
+    if (b.basePriceUsd <= 0) continue;
+    const ratio = b.tokenPriceUsd / b.basePriceUsd;
+    if (!best) {
+      best = toBest(b, ratio);
+      continue;
+    }
+    const better = kind === "buy" ? ratio < best.ratio : ratio > best.ratio;
+    if (better) best = toBest(b, ratio);
+  }
+  return best;
+}
+
+function toBest(b: BasisObservationRow, ratio: number): BestSide {
+  return {
+    ratio,
+    sizeUsd: b.sizeUsd,
+    netBps: b.netBps,
+    basePriceUsd: b.basePriceUsd,
+    tokenPriceUsd: b.tokenPriceUsd,
+    observedAt: b.observedAt,
+  };
+}
+
+function pickBestSpread(
+  buyBySize: Map<number, BasisObservationRow>,
+  sellBySize: Map<number, BasisObservationRow>,
+): BestSpread | null {
+  let best: BestSpread | null = null;
+  for (const [size, buyRow] of buyBySize) {
+    const sellRow = sellBySize.get(size);
+    if (!sellRow) continue;
+    const mid = (buyRow.tokenPriceUsd + sellRow.tokenPriceUsd) / 2;
+    if (mid <= 0) continue;
+    const spreadBps = ((buyRow.tokenPriceUsd - sellRow.tokenPriceUsd) / mid) * 10000;
+    const candidate: BestSpread = {
+      spreadBps,
+      sizeUsd: size,
+      buyTokenPriceUsd: buyRow.tokenPriceUsd,
+      sellTokenPriceUsd: sellRow.tokenPriceUsd,
+      observedAt: new Date(
+        Math.max(buyRow.observedAt.getTime(), sellRow.observedAt.getTime()),
+      ),
+    };
+    if (!best || Math.abs(spreadBps) < Math.abs(best.spreadBps)) best = candidate;
+  }
+  return best;
 }
