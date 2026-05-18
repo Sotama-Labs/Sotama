@@ -71,6 +71,9 @@ function readinessColor(status: string): string {
   return "var(--label-tertiary)";
 }
 
+const APR_MIN_AVG_HOLD_SECONDS = 60;
+const APR_MIN_CLOSED_TRADES = 30;
+
 type HoldHorizonChartRow = {
   horizonMs: number;
   pnlUsd: number;
@@ -81,9 +84,29 @@ type HoldHorizonChartRow = {
   avgHoldSeconds: number;
 };
 
+function aprSuppressionReason(row: HoldHorizonChartRow): string | null {
+  if (row.annualizedReturnPct == null || row.closedTrades === 0) return "no exits";
+  if (row.avgHoldSeconds < APR_MIN_AVG_HOLD_SECONDS) return "hold <60s";
+  if (row.closedTrades < APR_MIN_CLOSED_TRADES) return `n<${APR_MIN_CLOSED_TRADES}`;
+  return null;
+}
+
+function fmtAprEstimate(row: HoldHorizonChartRow): string {
+  return aprSuppressionReason(row) ?? fmtApr(row.annualizedReturnPct);
+}
+
+function aprEstimateColor(row: HoldHorizonChartRow): string {
+  if (aprSuppressionReason(row)) return "var(--label-tertiary)";
+  return (row.annualizedReturnPct ?? 0) > 0
+    ? "var(--green)"
+    : (row.annualizedReturnPct ?? 0) < 0
+      ? "var(--red)"
+      : "var(--label-primary)";
+}
+
 function HoldHorizonLineChart({ rows }: { rows: HoldHorizonChartRow[] }) {
   const points = rows
-    .filter((row) => row.annualizedReturnPct != null)
+    .filter((row) => row.annualizedReturnPct != null && !aprSuppressionReason(row))
     .map((row) => ({ ...row, annualizedReturnPct: row.annualizedReturnPct! }));
   if (points.length === 0) {
     return (
@@ -99,7 +122,7 @@ function HoldHorizonLineChart({ rows }: { rows: HoldHorizonChartRow[] }) {
           marginTop: "0.75rem",
         }}
       >
-        No closed trades with measurable hold time yet.
+        APR hidden until average hold is at least 60s with 30+ exits.
       </div>
     );
   }
@@ -515,10 +538,10 @@ export default async function PairDetailPage({
                         className="hig-footnote bt-num"
                         style={{
                           padding: "0.65rem 0.35rem",
-                          color: (row.annualizedReturnPct ?? 0) > 0 ? "var(--green)" : (row.annualizedReturnPct ?? 0) < 0 ? "var(--red)" : "var(--label-primary)",
+                          color: aprEstimateColor(row),
                         }}
                       >
-                        {fmtApr(row.annualizedReturnPct)}
+                        {fmtAprEstimate(row)}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
                         {fmtBps(row.avgRatioMoveBps)}
