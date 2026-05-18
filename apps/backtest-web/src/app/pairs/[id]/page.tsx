@@ -152,7 +152,7 @@ export default async function PairDetailPage({
         <Card>
           <div className="hig-footnote" style={{ color: "var(--label-secondary)" }}>Sizes (USD)</div>
           <div className="hig-headline bt-num" style={{ marginTop: 4 }}>
-            {pair.sizesUsd.map((s) => `$${s.toLocaleString()}`).join(" · ")}
+            {pair.sizesUsd.map((s: number) => `$${s.toLocaleString()}`).join(" · ")}
           </div>
           <div className="hig-caption-1" style={{ color: "var(--label-tertiary)", marginTop: 2 }}>
             min net edge {pair.minNetEdgeBps} bps · {pair.enabled ? "enabled" : "disabled"}
