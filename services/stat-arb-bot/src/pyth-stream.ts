@@ -172,13 +172,17 @@ export class PythStream {
         return;
       }
       case "streamUpdated": {
-        const parsed = msg?.payload?.parsed;
+        // Wire format flattens parsed + per-format payloads to the top
+        // level alongside `type` and `subscriptionId`:
+        //   { type, subscriptionId, parsed: {...}, solana: {...} }
+        // The Rust SDK wraps these under `payload` but the JSON-over-WS
+        // protocol does not.
+        const parsed = msg?.parsed;
         const feeds: any[] = parsed?.priceFeeds ?? [];
         const fallbackTimestamp = Number(parsed?.timestampUs ?? 0);
         if (!this.firstStreamUpdateLogged) {
           this.firstStreamUpdateLogged = true;
-          const raw = JSON.stringify(msg).slice(0, 800);
-          console.log(`[lazer] first streamUpdate raw: ${raw}`);
+          console.log(`[lazer] first streamUpdate: feeds=${feeds.length} sample=${JSON.stringify(feeds[0] ?? {})}`);
         }
         for (const f of feeds) {
           const event = this.toEvent(f, fallbackTimestamp);
