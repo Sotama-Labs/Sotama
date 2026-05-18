@@ -11,7 +11,12 @@ import type {
   PairDetailDto,
 } from "@sotama/market-core";
 
+/** /api/health + /api/dashboard return cached snapshots quickly (<1s
+ *  in the steady state). /api/pairs/:id runs hold-horizon replay + stat
+ *  summary + route stability when its cache is cold, which can take
+ *  10–15s on a 512MB Fly machine. */
 const REQUEST_TIMEOUT_MS = 6000;
+const PAIR_DETAIL_TIMEOUT_MS = 25000;
 
 function botBaseUrl(): string {
   const url = process.env.BOT_API_URL;
@@ -45,7 +50,7 @@ export async function fetchHealth(): Promise<HealthResponseDto> {
 export async function fetchPairDetail(id: string): Promise<PairDetailDto | null> {
   const url = `${botBaseUrl()}/api/pairs/${encodeURIComponent(id)}`;
   const res = await fetch(url, {
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(PAIR_DETAIL_TIMEOUT_MS),
     cache: "no-store",
   });
   if (res.status === 404) return null;

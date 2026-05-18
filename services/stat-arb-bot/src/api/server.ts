@@ -77,11 +77,7 @@ async function handleRequest(
     return handleHealth(res, ctx.schedulerTelemetry());
   }
   if (path === "/api/dashboard") {
-    return handleDashboard(
-      res,
-      { costInputsBps: ctx.costInputsBps },
-      ctx.schedulerTelemetry(),
-    );
+    return handleDashboard(res, {}, ctx.schedulerTelemetry());
   }
   const pairMatch = path.match(/^\/api\/pairs\/([^/]+)$/);
   if (pairMatch) {

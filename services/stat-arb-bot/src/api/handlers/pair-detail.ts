@@ -16,6 +16,7 @@ import type {
   PairDetailDto,
   PairStatSummary,
 } from "@sotama/market-core";
+import { TtlCache } from "../cache";
 import {
   buildCostScenarios,
   buildCostWaterfall,
@@ -60,7 +61,16 @@ export type PairDetailHandlerOptions = {
   costScenarioName?: string;
   /** Optional override for the route-failure haircut used in cost scenarios. */
   routeFailureHaircutBps?: number;
+  /** TTL for the cached pair-detail body. */
+  cacheTtlMs?: number;
 };
+
+/** Pair-detail recomputes hold-horizon replay, stat summary, and route
+ *  stability — heavy enough to take ~10s per pair on a 512MB Fly machine.
+ *  Cache aggressively so a researcher refreshing the page (or two browser
+ *  tabs polling) doesn't trigger redundant compute. */
+const DEFAULT_PAIR_DETAIL_TTL_MS = 10_000;
+const pairDetailCache = new TtlCache<PairDetailDto>(DEFAULT_PAIR_DETAIL_TTL_MS);
 
 export async function handlePairDetail(
   res: http.ServerResponse,
@@ -72,6 +82,19 @@ export async function handlePairDetail(
     sendJson(res, 404, { error: "pair not found", id });
     return;
   }
+  const body = await pairDetailCache.memo(
+    `pair:${id}`,
+    () => computePairDetail(pair, opts),
+    opts.cacheTtlMs,
+  );
+  sendJson(res, 200, body);
+}
+
+async function computePairDetail(
+  pair: NonNullable<Awaited<ReturnType<typeof getPair>>>,
+  opts: PairDetailHandlerOptions,
+): Promise<PairDetailDto> {
+  const id = pair.id;
 
   const costs = opts.costInputsBps;
   const transactionCostBps =
@@ -233,5 +256,5 @@ export async function handlePairDetail(
     bestSpread: panelCore.bestSpread,
     quoteAgeMs: panelCore.quoteAgeMs,
   };
-  sendJson(res, 200, body);
+  return body;
 }
