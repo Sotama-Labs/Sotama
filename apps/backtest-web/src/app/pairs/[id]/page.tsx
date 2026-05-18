@@ -264,6 +264,7 @@ export default async function PairDetailPage({
     quoteSurface.length === 0
       ? null
       : Math.max(...quoteSurface.map((row) => row.basisAgeMs ?? 0));
+  const holdHorizonRows = holdHorizonReplay ?? [];
 
   return (
     <main className="bt-shell">
@@ -468,7 +469,7 @@ export default async function PairDetailPage({
                 live rows only
               </span>
             </div>
-            <HoldHorizonLineChart rows={holdHorizonReplay} />
+            <HoldHorizonLineChart rows={holdHorizonRows} />
             <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1040 }}>
                 <thead>
@@ -487,7 +488,7 @@ export default async function PairDetailPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {holdHorizonReplay.map((row) => (
+                  {holdHorizonRows.map((row) => (
                     <tr key={row.horizonMs} style={{ borderTop: "1px solid var(--separator)" }}>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
                         {fmtDuration(row.horizonMs)}
