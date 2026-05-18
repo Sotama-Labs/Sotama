@@ -1,11 +1,8 @@
-import { BrandMark } from "@sotama/ui";
-import {
-  loadDashboardSnapshot,
-  type DashboardSnapshot,
-  type PairPanel,
-} from "@/lib/dashboard";
-import { PairCard } from "@/components/PairCard";
 import { BotHealthPill } from "@/components/BotHealthPill";
+import { PageHeader } from "@/components/PageHeader";
+import { PairOverview } from "@/components/PairOverview";
+import { SchedulerTelemetryPanel } from "@/components/panels/SchedulerTelemetryPanel";
+import { loadDashboardSnapshot, type DashboardSnapshot } from "@/lib/dashboard";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -20,38 +17,46 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="bt-shell">
-      <header className="bt-header">
-        <BrandMark subtitle="Backtest" />
-        <BotHealthPill heartbeat={snapshot?.heartbeat ?? null} />
-      </header>
+    <main className="bt-page">
+      <PageHeader trailing={<BotHealthPill heartbeat={snapshot?.heartbeat ?? null} />} />
 
-      <section style={{ marginBottom: "1.5rem" }}>
-        <h1 className="hig-title-1" style={{ margin: 0 }}>Tracked pairs</h1>
-        <p className="hig-subheadline" style={{ color: "var(--label-secondary)", margin: "0.25rem 0 0" }}>
-          Pyth reference vs Jupiter executable basis. Paper trading only.
+      <section style={{ margin: "0.5rem 0 1.5rem" }}>
+        <h1 className="hig-title-1" style={{ margin: 0 }}>
+          Stat-arb research desk
+        </h1>
+        <p className="hig-subheadline bt-page-meta" style={{ margin: "0.25rem 0 0" }}>
+          Onchain Solana asset / underlying reference. Paper-trade only — no live execution.
         </p>
       </section>
 
       {loadError ? (
         <div className="bt-empty">
-          <p className="hig-headline" style={{ margin: 0 }}>Database unreachable</p>
-          <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
+          <p className="hig-headline" style={{ margin: 0 }}>
+            Bot unreachable
+          </p>
+          <p
+            className="hig-footnote"
+            style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}
+          >
             {loadError}
           </p>
         </div>
       ) : !snapshot || snapshot.panels.length === 0 ? (
         <div className="bt-empty">
-          <p className="hig-headline" style={{ margin: 0 }}>No pairs configured</p>
-          <p className="hig-footnote" style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}>
+          <p className="hig-headline" style={{ margin: 0 }}>
+            No pairs configured
+          </p>
+          <p
+            className="hig-footnote"
+            style={{ color: "var(--label-secondary)", marginTop: "0.5rem" }}
+          >
             Pair management is owner-controlled in the bot database until the admin builder ships.
           </p>
         </div>
       ) : (
-        <div className="bt-pair-grid">
-          {snapshot.panels.map((p: PairPanel) => (
-            <PairCard key={p.pair.id} panel={p} />
-          ))}
+        <div className="bt-section-stack">
+          <PairOverview panels={snapshot.panels} />
+          <SchedulerTelemetryPanel telemetry={snapshot.schedulerTelemetry ?? null} />
         </div>
       )}
     </main>

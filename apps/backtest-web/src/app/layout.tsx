@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Sotama Backtest",
-  description: "Stat-arb research console",
+  description: "Stat-arb research desk for onchain/underlying pairs.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

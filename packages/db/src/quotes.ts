@@ -72,6 +72,30 @@ export async function recentQuotes(args: {
   return rows.map(rowToQuote);
 }
 
+/** Flat list of recent quote rows for a pair across every side+size. Used by
+ *  the route-stability aggregator in the API layer; the SQL is intentionally
+ *  light (no JSONB casts, no `raw`) because that column can be large and the
+ *  consumer never inspects it. */
+export async function recentQuotesForPair(args: {
+  pairId: string;
+  sinceMs: number;
+  limit?: number;
+}): Promise<JupiterQuoteRow[]> {
+  const limit = args.limit ?? 5000;
+  const { rows } = await getPool().query(
+    `SELECT id, pair_id, side, size_usd, router, in_mint, out_mint,
+            in_amount, out_amount, price_impact_pct, quote_id, expires_at,
+            context_slot, request_ms, status, NULL::jsonb AS raw, received_at
+     FROM jupiter_quotes
+     WHERE pair_id = $1
+       AND received_at >= to_timestamp($2 / 1000.0)
+     ORDER BY received_at DESC
+     LIMIT $3`,
+    [args.pairId, args.sinceMs, limit],
+  );
+  return rows.map(rowToQuote);
+}
+
 export async function quoteStatsByPair(args: {
   pairId: string;
   sinceMs: number;

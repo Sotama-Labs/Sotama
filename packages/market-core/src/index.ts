@@ -1,4 +1,4 @@
-export const MARKET_CORE_VERSION = "0.1.0";
+export const MARKET_CORE_VERSION = "0.2.0";
 
 export * from "./asset";
 export * from "./amount";
@@ -6,12 +6,18 @@ export * from "./pair-config";
 export * from "./effective-price";
 export * from "./edge";
 export * from "./cost-model";
+export * from "./cost-waterfall";
 export * from "./thresholds";
 export * from "./profitability";
 export * from "./hold-horizon";
 export * from "./quote-quality";
 export * from "./rps-budget";
 export * from "./pair-readiness";
+export * from "./display-orientation";
+export * from "./pair-class";
+export * from "./route-stability";
+export * from "./stat-summary";
+export * from "./research-verdict";
 export * from "./api-dto";
 export * from "./time-regime";
 export * from "./two-size-backtest";

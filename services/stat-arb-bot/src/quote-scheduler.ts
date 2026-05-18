@@ -36,6 +36,18 @@ export type SchedulerOnWork = (
   context: WorkContext,
 ) => void | Promise<void>;
 
+export type SchedulerOnAdmit = (
+  pairId: string,
+  side: PairDirection,
+  sizeUsd: number,
+) => void;
+
+export type SchedulerOnRpsRejection = (
+  pairId: string,
+  side: PairDirection,
+  sizeUsd: number,
+) => void;
+
 /** Owns the global Jupiter RPS budget. On every Pyth tick for a tracked pair,
  *  evaluates each (side, size) combination: would issuing a quote (a) provide
  *  new information (price moved beyond minPriceMoveBps OR quoteIntervalMs has
@@ -54,6 +66,14 @@ export class QuoteScheduler {
       nowMs: () => number;
       onWork: SchedulerOnWork;
       onError?: (error: unknown, context: WorkContext) => void;
+      /** Called once per (side, size) quote actually admitted into the
+       *  Jupiter budget — i.e. the bot will issue an HTTP request. */
+      onAdmit?: SchedulerOnAdmit;
+      /** Called when a (side, size) would have quoted but the global RPS
+       *  bucket was empty. Other reasons (interval-not-elapsed, no price
+       *  move) are deliberately silent — they are normal scheduler hygiene,
+       *  not capacity pressure. */
+      onRpsRejection?: SchedulerOnRpsRejection;
     },
   ) {
     this.bucket = new TokenBucket({
@@ -103,7 +123,11 @@ export class QuoteScheduler {
       for (const size of p.sizesUsd) {
         const id: WorkId = `${pairId}|${side}|${size}`;
         if (!this.shouldQuote(id, p, priceUsd)) continue;
-        if (!this.bucket.tryTake()) continue;
+        if (!this.bucket.tryTake()) {
+          this.cfg.onRpsRejection?.(pairId, side, size);
+          continue;
+        }
+        this.cfg.onAdmit?.(pairId, side, size);
         const queuedAtMs = this.cfg.nowMs();
         this.lastQuoteAt.set(id, queuedAtMs);
         this.lastQuotedPrice.set(id, priceUsd);

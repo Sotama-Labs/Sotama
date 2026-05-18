@@ -7,6 +7,7 @@ import { Heartbeat } from "./heartbeat";
 import { SignalEngine } from "./signal-engine";
 import { recordQuote, type CostBps } from "./basis-recorder";
 import { createApiServer } from "./api-server";
+import { SchedulerTelemetry } from "./scheduler-telemetry";
 import { isExecutableTimeRegime, timeRegimeFor } from "./market-hours";
 import { closePool } from "@sotama/db";
 import {
@@ -118,6 +119,7 @@ async function main() {
   });
 
   const heartbeat = new Heartbeat();
+  const schedulerTelemetry = new SchedulerTelemetry();
   const transactionCostBps =
     cfg.SLIPPAGE_BUFFER_BPS + cfg.LANDING_COST_BPS + cfg.FAILURE_BUFFER_BPS;
   const signals = new SignalEngine({
@@ -137,6 +139,8 @@ async function main() {
     maxRps: cfg.JUPITER_MAX_RPS,
     bucketCapacity: cfg.JUPITER_MAX_RPS,
     nowMs: () => Date.now(),
+    onAdmit: (pairId) => schedulerTelemetry.recordAdmitted(pairId),
+    onRpsRejection: (pairId) => schedulerTelemetry.recordDroppedRps(pairId),
     onWork: async (_id, schedPair, side, sizeUsd, priceUsd, work) => {
       const pair = pairConfigs.get(schedPair.pairId);
       if (!pair) return;
@@ -322,9 +326,11 @@ async function main() {
     for (const pairId of pairs) {
       const pair = pairConfigs.get(pairId);
       if (!pair) continue;
+      schedulerTelemetry.recordScheduled(pairId);
       const maxFreshnessLagMs = maxFreshnessLagMsForPair(pair);
       if (t.freshnessLagMs > maxFreshnessLagMs) {
         heartbeat.countInvalidFeed();
+        schedulerTelemetry.recordDroppedStalePyth(pairId);
         const lastWarnAt = lastStalePythWarnByPair.get(pairId) ?? 0;
         if (nowMs - lastWarnAt >= 30_000) {
           lastStalePythWarnByPair.set(pairId, nowMs);
@@ -346,6 +352,9 @@ async function main() {
         cryptoHighVolMoveBps: cfg.CRYPTO_HIGH_VOL_MOVE_BPS,
         pythMarketSession: t.marketSession,
       });
+      if (!isExecutableTimeRegime(timeRegime)) {
+        schedulerTelemetry.recordDroppedMarketSession(pairId);
+      }
       scheduler.onPriceTick(pairId, t.priceUsd, {
         streamTimestampUs: t.streamTimestampUs,
         feedUpdateTimestampUs: t.feedUpdateTimestampUs,
@@ -366,7 +375,8 @@ async function main() {
   const apiServer = createApiServer({
     port: cfg.API_PORT,
     corsOrigin: cfg.API_CORS_ORIGIN,
-    transactionCostBps,
+    costInputsBps: costs,
+    schedulerTelemetry: () => schedulerTelemetry.snapshot(),
   });
   console.log(`api server listening on :${cfg.API_PORT}`);
   const hbHandle = setInterval(() => {

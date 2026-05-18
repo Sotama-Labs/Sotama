@@ -1,6 +1,9 @@
 /** Token-bucket rate limiter. `nowMs` is injected so tests can deterministically
  *  advance time without sleeping. Used by the bot's quote scheduler to enforce
- *  a shared Jupiter RPS budget across all pairs/sides/sizes. */
+ *  a shared Jupiter RPS budget across all pairs/sides/sizes.
+ *
+ *  Note: stays in market-core (not in the bot) so the dashboard's RPS budget
+ *  estimator and the runtime scheduler share one implementation. */
 export class TokenBucket {
   private tokens: number;
   private lastRefillMs: number;

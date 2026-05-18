@@ -31,7 +31,7 @@ export function BotHealthPill({ heartbeat }: { heartbeat: HeartbeatDto | null })
   ) {
     return (
       <StatusPill kind="warn">
-        Lazer degraded · {heartbeat.activeLazerEndpointCount ?? 0}/3
+        Lazer degraded · {heartbeat.activeLazerEndpointCount}/3
       </StatusPill>
     );
   }
