@@ -48,6 +48,8 @@ export class PythStream {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectBackoffMs = 1000;
   private stopped = false;
+  private keepaliveTimer: NodeJS.Timeout | null = null;
+  private firstStreamUpdateLogged = false;
 
   constructor(
     private readonly cfg: {
@@ -89,6 +91,8 @@ export class PythStream {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+    this.keepaliveTimer = null;
     if (this.ws) {
       this.ws.removeAllListeners();
       try { this.ws.close(); } catch { /* ignore */ }
@@ -107,7 +111,17 @@ export class PythStream {
     ws.on("open", () => {
       console.log(`[lazer] connected (feeds: [${this.feedIds.join(",")}])`);
       this.reconnectBackoffMs = 1000;
+      this.firstStreamUpdateLogged = false;
       this.subscribe();
+      // Lazer's Rust client sends a WS Ping every 20s to keep the
+      // subscription alive. Without it, the server tends to go quiet
+      // even after acknowledging the subscribe.
+      if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          try { this.ws.ping(); } catch { /* ignore */ }
+        }
+      }, 20_000);
     });
 
     ws.on("message", (data) => {
@@ -121,6 +135,8 @@ export class PythStream {
 
     ws.on("close", (code, reason) => {
       console.warn(`[lazer] closed code=${code} reason=${reason?.toString() ?? ""}`);
+      if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
       this.scheduleReconnect();
     });
 
@@ -159,6 +175,10 @@ export class PythStream {
         const parsed = msg?.payload?.parsed;
         const feeds: any[] = parsed?.priceFeeds ?? [];
         const fallbackTimestamp = Number(parsed?.timestampUs ?? 0);
+        if (!this.firstStreamUpdateLogged) {
+          this.firstStreamUpdateLogged = true;
+          console.log(`[lazer] first streamUpdate: feeds=${feeds.length} sample=${JSON.stringify(feeds[0] ?? {})}`);
+        }
         for (const f of feeds) {
           const event = this.toEvent(f, fallbackTimestamp);
           if (event) {
