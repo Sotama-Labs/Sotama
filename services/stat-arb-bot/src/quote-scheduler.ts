@@ -1,0 +1,96 @@
+import { TokenBucket } from "@sotama/market-core";
+import type { PairDirection } from "@sotama/market-core";
+
+export type SchedulerPair = {
+  pairId: string;
+  lastPriceUsd: number;
+  sides: PairDirection[];
+  sizesUsd: number[];
+  quoteIntervalMs: number;
+  minPriceMoveBps: number;
+};
+
+export type WorkId = string; // "pairId|side|sizeUsd"
+
+export type SchedulerOnWork = (
+  workId: WorkId,
+  pair: SchedulerPair,
+  side: PairDirection,
+  sizeUsd: number,
+  priceUsd: number,
+) => void;
+
+/** Owns the global Jupiter RPS budget. On every Pyth tick for a tracked pair,
+ *  evaluates each (side, size) combination: would issuing a quote (a) provide
+ *  new information (price moved beyond minPriceMoveBps OR quoteIntervalMs has
+ *  elapsed) and (b) fit under the RPS budget. If yes to both, take a token
+ *  and emit work. */
+export class QuoteScheduler {
+  private readonly bucket: TokenBucket;
+  private readonly pairs = new Map<string, SchedulerPair>();
+  private readonly lastQuoteAt = new Map<WorkId, number>();
+  private readonly lastQuotedPrice = new Map<WorkId, number>();
+
+  constructor(
+    private readonly cfg: {
+      maxRps: number;
+      bucketCapacity: number;
+      nowMs: () => number;
+      onWork: SchedulerOnWork;
+    },
+  ) {
+    this.bucket = new TokenBucket({
+      capacity: cfg.bucketCapacity,
+      refillPerSec: cfg.maxRps,
+      nowMs: cfg.nowMs,
+    });
+  }
+
+  upsertPair(p: SchedulerPair): void {
+    this.pairs.set(p.pairId, p);
+  }
+
+  removePair(pairId: string): void {
+    this.pairs.delete(pairId);
+    for (const k of [...this.lastQuoteAt.keys()]) {
+      if (k.startsWith(`${pairId}|`)) {
+        this.lastQuoteAt.delete(k);
+        this.lastQuotedPrice.delete(k);
+      }
+    }
+  }
+
+  get activePairCount(): number {
+    return this.pairs.size;
+  }
+
+  get budgetAvailable(): number {
+    return this.bucket.available;
+  }
+
+  onPriceTick(pairId: string, priceUsd: number): void {
+    const p = this.pairs.get(pairId);
+    if (!p) return;
+    p.lastPriceUsd = priceUsd;
+    for (const side of p.sides) {
+      for (const size of p.sizesUsd) {
+        const id: WorkId = `${pairId}|${side}|${size}`;
+        if (!this.shouldQuote(id, p, priceUsd)) continue;
+        if (!this.bucket.tryTake()) continue;
+        this.lastQuoteAt.set(id, this.cfg.nowMs());
+        this.lastQuotedPrice.set(id, priceUsd);
+        this.cfg.onWork(id, p, side, size, priceUsd);
+      }
+    }
+  }
+
+  private shouldQuote(id: WorkId, p: SchedulerPair, priceUsd: number): boolean {
+    const lastAt = this.lastQuoteAt.get(id) ?? -Infinity;
+    const lastPx = this.lastQuotedPrice.get(id);
+    const elapsed = this.cfg.nowMs() - lastAt;
+    if (elapsed >= p.quoteIntervalMs) return true;
+    if (lastPx == null || lastPx <= 0) return true;
+    const moveBps = Math.abs((priceUsd / lastPx - 1) * 10000);
+    return moveBps >= p.minPriceMoveBps;
+  }
+}

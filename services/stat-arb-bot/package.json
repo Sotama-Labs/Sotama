@@ -1,0 +1,33 @@
+{
+  "name": "@sotama/stat-arb-bot",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -b",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "ts-mocha -p ./tsconfig.test.json -t 10000 'tests/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@sotama/db": "workspace:*",
+    "@sotama/market-core": "workspace:*",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.13",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2",
+    "ts-mocha": "^11.1.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

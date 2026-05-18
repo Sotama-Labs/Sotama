@@ -1,0 +1,115 @@
+import {
+  effectiveBuyPriceUsd,
+  effectiveSellPriceUsd,
+  buyEdgeBps,
+  sellEdgeBps,
+  netEdgeBps,
+} from "@sotama/market-core";
+import type { PairConfig, PairDirection } from "@sotama/market-core";
+import { insertJupiterQuote, insertBasisObservation } from "@sotama/db";
+import type { OrderResult } from "./jupiter-client";
+
+export type CostBps = {
+  slippageBufferBps: number;
+  landingCostBps: number;
+  failureBufferBps: number;
+  minProfitBps: number;
+};
+
+export type RecordedQuote =
+  | {
+      status: "ok";
+      tokenPriceUsd: number;
+      grossBps: number;
+      netBps: number;
+      quoteId: bigint;
+      basisId: bigint;
+    }
+  | { status: "rate_limited" | "error" | "stale" };
+
+/** Persists a Jupiter order outcome and the derived basis observation.
+ *  Returns the computed edge so the signal engine can act on it without
+ *  re-deriving. */
+export async function recordQuote(args: {
+  pair: PairConfig;
+  side: PairDirection;
+  sizeUsd: number;
+  basePriceUsd: number;
+  pythTickId: bigint | null;
+  result: OrderResult;
+  costsBps: CostBps;
+}): Promise<RecordedQuote> {
+  const { pair, side, sizeUsd, basePriceUsd, result } = args;
+  const inMint = side === "buy_tokenized" ? pair.quote.mint : pair.tokenized.mint;
+  const outMint = side === "buy_tokenized" ? pair.tokenized.mint : pair.quote.mint;
+
+  if (result.status !== "ok") {
+    await insertJupiterQuote({
+      pairId: pair.id,
+      side,
+      sizeUsd,
+      router: null,
+      inMint,
+      outMint,
+      inAmount: 0n,
+      outAmount: 0n,
+      priceImpactPct: null,
+      requestMs: result.requestMs,
+      status: result.status === "rate_limited" ? "rate_limited" : "error",
+      raw: null,
+    });
+    return { status: result.status === "rate_limited" ? "rate_limited" : "error" };
+  }
+
+  let tokenPriceUsd: number;
+  if (side === "buy_tokenized") {
+    tokenPriceUsd = effectiveBuyPriceUsd({
+      inUsd: sizeUsd,
+      outAtomic: result.outAmount,
+      outDecimals: pair.tokenized.decimals,
+    });
+  } else {
+    tokenPriceUsd = effectiveSellPriceUsd({
+      inAtomic: result.inAmount,
+      inDecimals: pair.tokenized.decimals,
+      outUsdAtomic: result.outAmount,
+      outUsdDecimals: pair.quote.decimals,
+    });
+  }
+
+  const grossBps =
+    side === "buy_tokenized"
+      ? buyEdgeBps({ basePriceUsd, tokenBuyPriceUsd: tokenPriceUsd })
+      : sellEdgeBps({ basePriceUsd, tokenSellPriceUsd: tokenPriceUsd });
+
+  const netBps = netEdgeBps({ grossBps, ...args.costsBps });
+
+  const quoteId = await insertJupiterQuote({
+    pairId: pair.id,
+    side,
+    sizeUsd,
+    router: result.router,
+    inMint,
+    outMint,
+    inAmount: result.inAmount,
+    outAmount: result.outAmount,
+    priceImpactPct: result.priceImpactPct,
+    requestMs: result.requestMs,
+    status: "ok",
+    raw: result.raw,
+  });
+
+  const basisId = await insertBasisObservation({
+    pairId: pair.id,
+    side,
+    sizeUsd,
+    basePriceUsd,
+    tokenPriceUsd,
+    grossBps,
+    netBps,
+    tickId: args.pythTickId,
+    quoteId,
+  });
+
+  return { status: "ok", tokenPriceUsd, grossBps, netBps, quoteId, basisId };
+}
