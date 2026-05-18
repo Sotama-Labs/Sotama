@@ -48,7 +48,7 @@ async function main() {
   };
 
   const jup = new JupiterClient({
-    baseUrl: cfg.JUPITER_BASE_URL,
+    baseUrl: cfg.jupiterBaseUrl,
     apiKey: cfg.JUPITER_API_KEY,
   });
 
