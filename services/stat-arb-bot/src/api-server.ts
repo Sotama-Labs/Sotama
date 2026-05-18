@@ -49,7 +49,11 @@ const SIGNAL_WINDOW_MS = 7 * 24 * 3600 * 1000;
 const BASIS_SERIES_LIMIT = 720;
 const HEARTBEAT_STALE_MS = 30_000;
 const HOLD_HORIZONS_MS = [
+  60_000,
+  5 * 60_000,
+  15 * 60_000,
   30 * 60_000,
+  60 * 60_000,
   2 * 60 * 60_000,
   6 * 60 * 60_000,
   24 * 60 * 60_000,
@@ -444,6 +448,7 @@ function toHoldHorizonObservation(b: BasisObservationRow) {
     side: b.side,
     sizeUsd: b.sizeUsd,
     observedAtMs: b.observedAt.getTime(),
+    basePriceUsd: b.basePriceUsd,
     tokenPriceUsd: b.tokenPriceUsd,
     netBps: b.netBps,
     qualityStatus: b.qualityStatus,

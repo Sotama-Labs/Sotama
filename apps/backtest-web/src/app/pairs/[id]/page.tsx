@@ -32,6 +32,22 @@ function fmtDuration(ms: number): string {
 function fmtPct(v: number | null | undefined): string {
   return v == null ? "—" : `${(v * 100).toFixed(1)}%`;
 }
+function fmtReturnPct(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const pct = v * 100;
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${pct.toFixed(Math.abs(pct) >= 100 ? 1 : 2)}%`;
+}
+function fmtApr(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const pct = v * 100;
+  const sign = pct > 0 ? "+" : "";
+  const digits = Math.abs(pct) >= 1000 ? 0 : Math.abs(pct) >= 100 ? 1 : 2;
+  return `${sign}${pct.toLocaleString("en-US", {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  })}%`;
+}
 function favorableColor(kind: "buy" | "sell", ratio: number | null | undefined): string {
   if (ratio == null) return "var(--label-tertiary)";
   const favorable = kind === "buy" ? ratio < 1 : ratio > 1;
@@ -53,6 +69,137 @@ function readinessColor(status: string): string {
   if (status === "RESEARCH_ONLY") return "var(--orange)";
   if (status === "NOT_READY") return "var(--red)";
   return "var(--label-tertiary)";
+}
+
+type HoldHorizonChartRow = {
+  horizonMs: number;
+  pnlUsd: number;
+  returnPct: number;
+  annualizedReturnPct: number | null;
+  avgRatioMoveBps: number | null;
+  closedTrades: number;
+  avgHoldSeconds: number;
+};
+
+function HoldHorizonLineChart({ rows }: { rows: HoldHorizonChartRow[] }) {
+  const points = rows
+    .filter((row) => row.annualizedReturnPct != null)
+    .map((row) => ({ ...row, annualizedReturnPct: row.annualizedReturnPct! }));
+  if (points.length === 0) {
+    return (
+      <div
+        className="hig-footnote"
+        style={{
+          minHeight: 220,
+          display: "grid",
+          placeItems: "center",
+          color: "var(--label-secondary)",
+          borderTop: "1px solid var(--separator)",
+          borderBottom: "1px solid var(--separator)",
+          marginTop: "0.75rem",
+        }}
+      >
+        No closed trades with measurable hold time yet.
+      </div>
+    );
+  }
+
+  const width = 720;
+  const height = 230;
+  const left = 54;
+  const right = 18;
+  const top = 22;
+  const bottom = 42;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const maxAbsApr = Math.max(
+    0.01,
+    ...points.map((row) => Math.abs(row.annualizedReturnPct)),
+  );
+  const yMax = maxAbsApr;
+  const yMin = -maxAbsApr;
+  const xFor = (index: number) =>
+    left + (points.length === 1 ? plotWidth / 2 : (plotWidth * index) / (points.length - 1));
+  const yFor = (value: number) =>
+    top + ((yMax - value) / (yMax - yMin)) * plotHeight;
+  const line = points
+    .map((row, index) => `${xFor(index).toFixed(1)},${yFor(row.annualizedReturnPct).toFixed(1)}`)
+    .join(" ");
+  const zeroY = yFor(0);
+
+  return (
+    <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
+      <svg
+        role="img"
+        aria-label="Holding horizon annualized return line chart"
+        viewBox={`0 0 ${width} ${height}`}
+        style={{
+          display: "block",
+          minWidth: 640,
+          width: "100%",
+          height: "auto",
+          borderTop: "1px solid var(--separator)",
+          borderBottom: "1px solid var(--separator)",
+        }}
+      >
+        <title>Annualized return estimate by holding horizon</title>
+        <line x1={left} x2={width - right} y1={zeroY} y2={zeroY} stroke="var(--separator)" />
+        <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="var(--separator)" />
+        <text x={0} y={top + 4} className="hig-caption-1" fill="var(--label-tertiary)">
+          {fmtApr(yMax)}
+        </text>
+        <text x={0} y={zeroY + 4} className="hig-caption-1" fill="var(--label-tertiary)">
+          0%
+        </text>
+        <text x={0} y={height - bottom + 4} className="hig-caption-1" fill="var(--label-tertiary)">
+          {fmtApr(yMin)}
+        </text>
+        <polyline
+          points={line}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {points.map((row, index) => {
+          const x = xFor(index);
+          const y = yFor(row.annualizedReturnPct);
+          const positive = row.annualizedReturnPct >= 0;
+          return (
+            <g key={row.horizonMs}>
+              <circle
+                cx={x}
+                cy={y}
+                r={4.5}
+                fill={positive ? "var(--green)" : "var(--red)"}
+                stroke="var(--bg-system)"
+                strokeWidth={2}
+              />
+              <text
+                x={x}
+                y={height - 18}
+                textAnchor="middle"
+                className="hig-caption-1"
+                fill="var(--label-tertiary)"
+              >
+                {fmtDuration(row.horizonMs)}
+              </text>
+              <text
+                x={x}
+                y={Math.max(12, y - 10)}
+                textAnchor="middle"
+                className="hig-caption-1"
+                fill={positive ? "var(--green)" : "var(--red)"}
+              >
+                {fmtApr(row.annualizedReturnPct)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
 }
 
 export default async function PairDetailPage({
@@ -314,19 +461,24 @@ export default async function PairDetailPage({
               <div>
                 <p className="hig-headline" style={{ margin: 0 }}>Hold horizon replay</p>
                 <p className="hig-caption-1" style={{ color: "var(--label-tertiary)", margin: "0.25rem 0 0" }}>
-                  Waits for profitable exits, then compares forced timeout horizons.
+                  Profitability and annualized return from actual hold duration.
                 </p>
               </div>
               <span className="hig-caption-1" style={{ color: "var(--label-tertiary)" }}>
                 live rows only
               </span>
             </div>
+            <HoldHorizonLineChart rows={holdHorizonReplay} />
             <div style={{ overflowX: "auto", marginTop: "0.75rem" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1040 }}>
                 <thead>
                   <tr className="hig-caption-1" style={{ color: "var(--label-tertiary)", textAlign: "left" }}>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Horizon</th>
                     <th style={{ padding: "0.5rem 0.35rem" }}>PnL</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Return</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>APR est.</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Ratio move</th>
+                    <th style={{ padding: "0.5rem 0.35rem" }}>Deployed</th>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Trades</th>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Win rate</th>
                     <th style={{ padding: "0.5rem 0.35rem" }}>Timeouts</th>
@@ -348,6 +500,30 @@ export default async function PairDetailPage({
                         }}
                       >
                         {fmtUsd(row.pnlUsd)}
+                      </td>
+                      <td
+                        className="hig-footnote bt-num"
+                        style={{
+                          padding: "0.65rem 0.35rem",
+                          color: row.returnPct > 0 ? "var(--green)" : row.returnPct < 0 ? "var(--red)" : "var(--label-primary)",
+                        }}
+                      >
+                        {fmtReturnPct(row.returnPct)}
+                      </td>
+                      <td
+                        className="hig-footnote bt-num"
+                        style={{
+                          padding: "0.65rem 0.35rem",
+                          color: (row.annualizedReturnPct ?? 0) > 0 ? "var(--green)" : (row.annualizedReturnPct ?? 0) < 0 ? "var(--red)" : "var(--label-primary)",
+                        }}
+                      >
+                        {fmtApr(row.annualizedReturnPct)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtBps(row.avgRatioMoveBps)}
+                      </td>
+                      <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
+                        {fmtUsd(row.deployedUsd)}
                       </td>
                       <td className="hig-footnote bt-num" style={{ padding: "0.65rem 0.35rem" }}>
                         {row.closedTrades.toLocaleString()}
