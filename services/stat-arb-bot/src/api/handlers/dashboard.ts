@@ -1,42 +1,41 @@
 /** `GET /api/dashboard` — overview ranking of every tracked pair.
  *
- *  Deliberately lightweight: per-pair work uses only quoteStats + quality
- *  distribution + the latest-basis bucket already fetched in one shot at the
- *  top. Heavy artefacts (basisHistory, hold-horizon replay, stat summary,
- *  route stability) live on the pair-detail endpoint — see
- *  `handlers/pair-detail.ts`. The result is memoized with a short TTL so
- *  repeated browser polls don't hit the DB at all. */
+ *  Designed for high hit rate:
+ *    - One aggregated SQL query for the per-pair live-eligible counts
+ *      (no per-pair fanout to `basisQualityDistribution`).
+ *    - In-memory `TtlCache` with a 60 s fresh window and a generous stale
+ *      window so the dashboard survives Postgres flaps without 500s.
+ *    - Per-pair work uses only the latest-basis bucket already in hand —
+ *      no `basisHistory`, `recentQuotesForPair`, or in-process replay/stat. */
 
 import type http from "node:http";
 import {
-  basisQualityDistribution,
   latestBasisPerKey,
   latestHeartbeat,
+  liveEligibleCountsByPair,
   listAllPairs,
-  quoteStatsByPair,
 } from "@sotama/db";
 import type {
   DashboardSnapshotDto,
   PairConfig,
   PairPanelDto,
+  QuoteQualityDistributionDto,
   SchedulerTelemetryDto,
 } from "@sotama/market-core";
 import { TtlCache } from "../cache";
 import { sendJson } from "../http";
 import { HISTORY_WINDOW_MS, LATEST_WITHIN_MS } from "../constants";
 import { buildPanelCore, groupBasisByPair } from "../builders/panel";
-import { toQualityDistribution } from "../builders/quote-surface";
 import { buildLiteVerdict } from "../builders/lite-verdict";
 import { deriveTokenValidation, primaryBlockerSummary } from "../builders/verdict";
 
 export type DashboardHandlerOptions = {
-  /** TTL for the cached snapshot. Tunable; defaults to 15s — short enough
-   *  the operator sees fresh-ish ranking, long enough to absorb the
-   *  per-second polling some browsers do. */
+  /** TTL for the cached snapshot. Tunable; defaults to 60 s — long enough
+   *  for high hit rate, short enough that the operator sees recent data. */
   cacheTtlMs?: number;
 };
 
-const DEFAULT_CACHE_TTL_MS = 15_000;
+const DEFAULT_CACHE_TTL_MS = 60_000;
 const snapshotCache = new TtlCache<DashboardSnapshotDto>(DEFAULT_CACHE_TTL_MS);
 
 export async function handleDashboard(
@@ -71,8 +70,14 @@ async function buildSnapshot(
 
   const groupedLatest = groupBasisByPair(latestBasis);
   const nowMs = Date.now();
-  const panels = await Promise.all(
-    pairs.map((pair) => buildPanel(pair, groupedLatest, nowMs)),
+  const sinceMs = nowMs - HISTORY_WINDOW_MS;
+  const liveCounts = await liveEligibleCountsByPair({
+    pairIds: pairs.map((p) => p.id),
+    sinceMs,
+  });
+
+  const panels = pairs.map((pair) =>
+    buildPanel(pair, groupedLatest, liveCounts.get(pair.id) ?? 0, nowMs),
   );
 
   return {
@@ -96,11 +101,12 @@ async function buildSnapshot(
   };
 }
 
-async function buildPanel(
+function buildPanel(
   pair: PairConfig,
   groupedLatest: ReturnType<typeof groupBasisByPair>,
+  liveSampleCount24h: number,
   nowMs: number,
-): Promise<PairPanelDto> {
+): PairPanelDto {
   const buckets =
     groupedLatest.get(pair.id) ??
     ({
@@ -109,23 +115,10 @@ async function buildPanel(
     } as ReturnType<typeof groupBasisByPair> extends Map<string, infer V> ? V : never);
   const core = buildPanelCore({ pair, buckets, nowMs });
 
-  // Lite per-pair work: two aggregated queries that already happen in SQL.
-  // Skips basisHistory + recentQuotesForPair (24h scans) and all in-process
-  // replay/stat/route work — those run on the pair-detail endpoint instead.
-  const sinceMs = nowMs - HISTORY_WINDOW_MS;
-  const [qualityRows] = await Promise.all([
-    basisQualityDistribution({ pairId: pair.id, sinceMs }),
-    // quoteStatsByPair is fetched here purely to warm any DB-side cache and
-    // catch errors early; the lite verdict does not consume it yet.
-    quoteStatsByPair({ pairId: pair.id, sinceMs }),
-  ]);
-
-  const qualityDistribution = toQualityDistribution(qualityRows);
-  const tokenValidation = deriveTokenValidation(pair);
-  // Microstructure check: a live-eligible row whose `netBps` (gross edge minus
-  // configured costs) clears the pair's threshold means we have evidence of a
-  // real dislocation, not the natural Jupiter bid/ask spread. Without it the
-  // verdict belongs in NO_EDGE, never PAPER_EDGE.
+  // A pair has executable edge evidence on the overview when any LIVE_ELIGIBLE
+  // latest-basis row clears the per-pair `minNetEdgeBps` threshold. Without
+  // that, what looks like a "favorable" ratio is usually just the natural
+  // Jupiter bid/ask spread (buy > 1 / sell < 1) — not real edge.
   const hasLiveEdgeAboveThreshold = [
     ...buckets.buyBySize.values(),
     ...buckets.sellBySize.values(),
@@ -133,6 +126,20 @@ async function buildPanel(
     (row) =>
       row.qualityStatus === "LIVE_ELIGIBLE" && row.netBps >= pair.minNetEdgeBps,
   );
+
+  // The lite verdict only inspects the live sample count; emit a single
+  // synthetic distribution row so the existing input shape stays unchanged.
+  const qualityDistribution: QuoteQualityDistributionDto[] =
+    liveSampleCount24h > 0
+      ? [
+          {
+            qualityStatus: "LIVE_ELIGIBLE",
+            observationCount: liveSampleCount24h,
+            observationPct: 1,
+          },
+        ]
+      : [];
+  const tokenValidation = deriveTokenValidation(pair);
   const verdict = buildLiteVerdict({
     pair,
     qualityDistribution,
@@ -140,9 +147,6 @@ async function buildPanel(
     hasLiveEdgeAboveThreshold,
     cleanWindowMs: HISTORY_WINDOW_MS,
   });
-  const liveSampleCount24h =
-    qualityDistribution.find((row) => row.qualityStatus === "LIVE_ELIGIBLE")
-      ?.observationCount ?? 0;
 
   return {
     pair,

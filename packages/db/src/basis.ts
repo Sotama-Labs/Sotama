@@ -175,6 +175,30 @@ export type QualityDistributionRow = {
   observationPct: number;
 };
 
+/** Live-eligible observation counts for many pairs in a single round-trip.
+ *  Used by the dashboard handler so it doesn't fan out N queries per refresh.
+ *  Pairs with zero live rows in the window are simply absent from the map. */
+export async function liveEligibleCountsByPair(args: {
+  pairIds: readonly string[];
+  sinceMs: number;
+}): Promise<Map<string, number>> {
+  if (args.pairIds.length === 0) return new Map();
+  const { rows } = await getPool().query(
+    `SELECT pair_id, COUNT(*)::int AS live_count
+     FROM basis_observations
+     WHERE quality_status = 'LIVE_ELIGIBLE'
+       AND observed_at >= to_timestamp($1 / 1000.0)
+       AND pair_id = ANY($2::text[])
+     GROUP BY pair_id`,
+    [args.sinceMs, args.pairIds as readonly string[]],
+  );
+  const out = new Map<string, number>();
+  for (const r of rows as Array<{ pair_id: string; live_count: number }>) {
+    out.set(r.pair_id, Number(r.live_count));
+  }
+  return out;
+}
+
 export async function basisQualityDistribution(args: {
   pairId: string;
   sinceMs: number;

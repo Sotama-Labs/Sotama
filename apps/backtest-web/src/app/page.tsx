@@ -4,8 +4,10 @@ import { PairOverview } from "@/components/PairOverview";
 import { SchedulerTelemetryPanel } from "@/components/panels/SchedulerTelemetryPanel";
 import { loadDashboardSnapshot, type DashboardSnapshot } from "@/lib/dashboard";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+// 30-second SSR cache — most browser refreshes serve the same rendered HTML
+// from Vercel's edge without any function invocation. The bot's in-memory
+// cache absorbs the rare revalidate that does go through.
+export const revalidate = 30;
 
 export default async function HomePage() {
   let snapshot: DashboardSnapshot | null = null;

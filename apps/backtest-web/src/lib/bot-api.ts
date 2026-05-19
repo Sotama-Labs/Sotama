@@ -11,13 +11,18 @@ import type {
   PairDetailDto,
 } from "@sotama/market-core";
 
-/** /api/health + /api/dashboard return cached snapshots quickly (<1s
- *  in the steady state). Cold-miss dashboard compute is ~6s on a 512MB
- *  Fly machine; 10s budget keeps the rare cold poll from timing out.
- *  /api/pairs/:id runs hold-horizon replay + stat summary + route
- *  stability when its cache is cold, which can take 10–15s. */
-const REQUEST_TIMEOUT_MS = 10000;
-const PAIR_DETAIL_TIMEOUT_MS = 25000;
+/** Cold-miss budgets for the bot's HTTPS API. Steady-state hits are <100 ms
+ *  (Vercel-side cache + bot in-memory cache). The longer pair-detail budget
+ *  handles the rare cold compute when the 5-minute pair-detail cache
+ *  expires. */
+const REQUEST_TIMEOUT_MS = 10_000;
+const PAIR_DETAIL_TIMEOUT_MS = 25_000;
+
+/** Vercel `next.revalidate` windows (seconds). Operator endorsed slower
+ *  polling, so these are intentionally generous. */
+const DASHBOARD_REVALIDATE_S = 30;
+const HEALTH_REVALIDATE_S = 30;
+const PAIR_DETAIL_REVALIDATE_S = 60;
 
 function botBaseUrl(): string {
   const url = process.env.BOT_API_URL;
@@ -25,14 +30,17 @@ function botBaseUrl(): string {
   return url.replace(/\/+$/, "");
 }
 
-async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function getJson<T>(
+  path: string,
+  options: { revalidateS: number; tags?: string[] },
+): Promise<T> {
   const url = `${botBaseUrl()}${path}`;
   const res = await fetch(url, {
-    ...init,
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    // Next.js caches fetches by default; opt out so the dashboard reflects
-    // fresh quote state on every render.
-    cache: "no-store",
+    // Next.js caches at the data layer; multiple browser hits within
+    // `revalidate` seconds hit the cache, not the bot. Combined with the
+    // bot's own in-memory TTL cache this gives a 2-layer hit pipeline.
+    next: { revalidate: options.revalidateS, tags: options.tags },
   });
   if (!res.ok && res.status !== 503) {
     throw new Error(`bot ${path} returned HTTP ${res.status}`);
@@ -41,18 +49,27 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function fetchDashboard(): Promise<DashboardSnapshotDto> {
-  return getJson<DashboardSnapshotDto>("/api/dashboard");
+  return getJson<DashboardSnapshotDto>("/api/dashboard", {
+    revalidateS: DASHBOARD_REVALIDATE_S,
+    tags: ["bot-dashboard"],
+  });
 }
 
 export async function fetchHealth(): Promise<HealthResponseDto> {
-  return getJson<HealthResponseDto>("/api/health");
+  return getJson<HealthResponseDto>("/api/health", {
+    revalidateS: HEALTH_REVALIDATE_S,
+    tags: ["bot-health"],
+  });
 }
 
 export async function fetchPairDetail(id: string): Promise<PairDetailDto | null> {
   const url = `${botBaseUrl()}/api/pairs/${encodeURIComponent(id)}`;
   const res = await fetch(url, {
     signal: AbortSignal.timeout(PAIR_DETAIL_TIMEOUT_MS),
-    cache: "no-store",
+    next: {
+      revalidate: PAIR_DETAIL_REVALIDATE_S,
+      tags: [`bot-pair:${id}`],
+    },
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`bot pair ${id} returned HTTP ${res.status}`);

@@ -19,7 +19,10 @@ import { TimeRegimePanel } from "@/components/panels/TimeRegimePanel";
 import { TokenValidationPanel } from "@/components/panels/TokenValidationPanel";
 import { VerdictPanel } from "@/components/panels/VerdictPanel";
 
-export const dynamic = "force-dynamic";
+// Pair detail SSR cache. Hold-horizon replay, stat summary, and route
+// stability change on the minute scale at best; the bot caches its
+// per-pair response for 5 minutes already.
+export const revalidate = 60;
 
 export default async function PairDetailPage({
   params,
