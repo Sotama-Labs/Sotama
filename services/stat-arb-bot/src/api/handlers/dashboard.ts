@@ -47,7 +47,7 @@ export async function handleDashboard(
   const snapshot = await snapshotCache.memo(
     "snapshot",
     () => buildSnapshot(schedulerTelemetry),
-    opts.cacheTtlMs,
+    { ttlMs: opts.cacheTtlMs },
   );
   // `schedulerTelemetry` is a live snapshot — overlay onto the (possibly
   // cached) body so the dashboard sees fresh counts even on cache hits.

@@ -87,7 +87,7 @@ export async function handlePairDetail(
   const body = await pairDetailCache.memo(
     `pair:${id}`,
     () => computePairDetail(pair, opts),
-    opts.cacheTtlMs,
+    { ttlMs: opts.cacheTtlMs },
   );
   sendJson(res, 200, body);
 }
