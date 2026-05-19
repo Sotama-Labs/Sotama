@@ -12,10 +12,11 @@ import type {
 } from "@sotama/market-core";
 
 /** /api/health + /api/dashboard return cached snapshots quickly (<1s
- *  in the steady state). /api/pairs/:id runs hold-horizon replay + stat
- *  summary + route stability when its cache is cold, which can take
- *  10–15s on a 512MB Fly machine. */
-const REQUEST_TIMEOUT_MS = 6000;
+ *  in the steady state). Cold-miss dashboard compute is ~6s on a 512MB
+ *  Fly machine; 10s budget keeps the rare cold poll from timing out.
+ *  /api/pairs/:id runs hold-horizon replay + stat summary + route
+ *  stability when its cache is cold, which can take 10–15s. */
+const REQUEST_TIMEOUT_MS = 10000;
 const PAIR_DETAIL_TIMEOUT_MS = 25000;
 
 function botBaseUrl(): string {
