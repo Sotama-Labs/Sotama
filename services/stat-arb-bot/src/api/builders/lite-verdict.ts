@@ -8,8 +8,13 @@
  *  Lite verdict status mapping:
  *    NOT_READY    — token mint rejected, no live samples, or no quotes
  *    COLLECT_MORE — live samples < threshold (default 200)
- *    PAPER_EDGE   — enough live samples; full verdict needed to differentiate
- *                   PAPER_EDGE vs CANDIDATE vs NO_EDGE → tap to view detail
+ *    NO_EDGE      — enough samples but no live-eligible row clears the pair's
+ *                   `minNetEdgeBps` threshold (the natural Jupiter bid/ask
+ *                   spread alone produces buy>1 / sell<1 ratios — that is
+ *                   microstructure, NOT executable edge)
+ *    PAPER_EDGE   — enough samples + at least one live row clears the
+ *                   per-pair net-edge threshold; pair detail's full verdict
+ *                   (replay + stats + route stability) refines further
  *
  *  We intentionally never emit `CANDIDATE` from lite verdict — promoting a
  *  pair to "candidate" requires hold-horizon + route-stability evidence the
@@ -26,6 +31,10 @@ export type LiteVerdictInputs = {
   pair: PairConfig;
   qualityDistribution: readonly QuoteQualityDistributionDto[];
   tokenValidation: TokenValidationSnapshot;
+  /** True iff at least one freshest live-eligible (side, size) row has
+   *  `netBps >= pair.minNetEdgeBps`. The dashboard handler computes this
+   *  cheaply from the latest-basis-per-key snapshot it already fetched. */
+  hasLiveEdgeAboveThreshold: boolean;
   /** Minimum live-eligible samples before promoting past COLLECT_MORE. */
   minCleanSamples?: number;
   /** Window the live-sample count was measured over. */
@@ -108,10 +117,24 @@ export function buildLiteVerdict(input: LiteVerdictInputs): PairResearchVerdict 
     };
   }
 
+  if (!input.hasLiveEdgeAboveThreshold) {
+    return {
+      status: "NO_EDGE",
+      confidence: "MEDIUM",
+      summary: `No live row clears the ${input.pair.minNetEdgeBps} bps net-edge threshold — the latest ratios are sitting inside the natural Jupiter bid/ask spread.`,
+      blockers,
+      positives,
+      cleanSampleCount,
+      cleanWindowMs: input.cleanWindowMs,
+      costScenarioName: "BASE",
+      recommendedNextAction: "Wait for a dislocation past the spread; consider widening size ladders if liquidity allows.",
+    };
+  }
+
   return {
     status: "PAPER_EDGE",
     confidence: "LOW",
-    summary: "Enough clean samples — open the pair page for the full verdict.",
+    summary: "At least one live row clears the net-edge threshold — open pair detail for replay + route confirmation.",
     blockers,
     positives,
     cleanSampleCount,

@@ -122,10 +122,22 @@ async function buildPanel(
 
   const qualityDistribution = toQualityDistribution(qualityRows);
   const tokenValidation = deriveTokenValidation(pair);
+  // Microstructure check: a live-eligible row whose `netBps` (gross edge minus
+  // configured costs) clears the pair's threshold means we have evidence of a
+  // real dislocation, not the natural Jupiter bid/ask spread. Without it the
+  // verdict belongs in NO_EDGE, never PAPER_EDGE.
+  const hasLiveEdgeAboveThreshold = [
+    ...buckets.buyBySize.values(),
+    ...buckets.sellBySize.values(),
+  ].some(
+    (row) =>
+      row.qualityStatus === "LIVE_ELIGIBLE" && row.netBps >= pair.minNetEdgeBps,
+  );
   const verdict = buildLiteVerdict({
     pair,
     qualityDistribution,
     tokenValidation,
+    hasLiveEdgeAboveThreshold,
     cleanWindowMs: HISTORY_WINDOW_MS,
   });
   const liveSampleCount24h =
