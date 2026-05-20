@@ -17,6 +17,9 @@ export function PairCard({ panel }: { panel: PairPanelDto }) {
   const primary = opportunity.bestBuy ?? opportunity.bestSell ?? panel.bestDiagnosticBuy ?? panel.bestDiagnosticSell;
   const ageMs = opportunity.quoteAgeMs ?? panel.quoteAgeMs;
   const level = levelForAgeMs(ageMs);
+  const statusNote = panel.pair.enabled
+    ? panel.primaryBlocker
+    : "Pair paused; the bot is not scheduling feed or route probes.";
   return (
     <Link
       href={`/pairs/${encodeURIComponent(panel.pair.id)}`}
@@ -36,6 +39,7 @@ export function PairCard({ panel }: { panel: PairPanelDto }) {
           <div className="bt-chip-row">
             <PairClassChip pairClass={panel.pairClass} />
             <ReferenceStatusChip status={panel.referenceStatus} />
+            {!panel.pair.enabled ? <span className="hig-caption-1 bt-paused-chip">Paused</span> : null}
           </div>
           <div className="bt-pair-card__metrics">
             <div className="bt-pair-card__metric">
@@ -70,11 +74,11 @@ export function PairCard({ panel }: { panel: PairPanelDto }) {
               </span>
             </div>
           </div>
-          {panel.primaryBlocker ? (
+          {statusNote ? (
             <p
               className="hig-caption-1 bt-pair-card__note bt-clamp-2"
             >
-              {panel.primaryBlocker}
+              {statusNote}
             </p>
           ) : (
             <p

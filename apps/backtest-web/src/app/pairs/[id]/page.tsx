@@ -63,6 +63,22 @@ export default async function PairDetailPage({
 
   const ageMs = detail.currentOpportunity.quoteAgeMs ?? detail.quoteAgeMs;
   const level = levelForAgeMs(ageMs);
+  const verdict = detail.pair.enabled
+    ? detail.verdict
+    : {
+        ...detail.verdict,
+        status: "NOT_READY" as const,
+        confidence: "LOW" as const,
+        summary: "Pair is paused; the bot is not scheduling feed or route probes.",
+        blockers: [
+          {
+            code: "PAIR_DISABLED",
+            detail: "Pair is paused; enable it before expecting Pyth updates or Jupiter route probes.",
+          },
+        ],
+        positives: [],
+        recommendedNextAction: "Enable the pair after confirming the token mint and route are intended.",
+      };
 
   return (
     <main className="bt-page">
@@ -88,6 +104,7 @@ export default async function PairDetailPage({
           </span>
           <PairClassChip pairClass={detail.pairClass} />
           <ReferenceStatusChip status={detail.referenceStatus} />
+          {!detail.pair.enabled ? <span className="hig-caption-1 bt-paused-chip">Paused</span> : null}
         </div>
         <p
           className="hig-subheadline bt-page-meta"
@@ -96,12 +113,13 @@ export default async function PairDetailPage({
           {detail.pair.base.pythSymbol} · {detail.pair.tokenized.symbol} (
           {detail.pair.tokenized.mint.slice(0, 6)}…{detail.pair.tokenized.mint.slice(-4)}) ·
           {" "}sizes {detail.pair.sizesUsd.map((s) => `$${s.toLocaleString()}`).join(" · ")}
+          {!detail.pair.enabled ? " · not scheduled" : ""}
         </p>
       </section>
 
       <div className="bt-section-stack">
         <div className="bt-detail-top">
-          <VerdictPanel verdict={detail.verdict} />
+          <VerdictPanel verdict={verdict} />
           <OpportunityPanel
             pairLabel={detail.displayLabel}
             opportunity={detail.currentOpportunity}

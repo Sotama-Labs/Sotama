@@ -8,8 +8,24 @@ import {
 
 export function PairOverview({ panels }: { panels: readonly PairPanelDto[] }) {
   const grouped = groupByVerdict(panels);
+  const summary = overviewSummary(panels);
   return (
     <div className="bt-section-stack">
+      <div className="bt-overview-summary" aria-label="Pair overview summary">
+        {summary.map((tile) => (
+          <div key={tile.label} className="bt-overview-summary__tile">
+            <span className="hig-caption-1 bt-overview-summary__label">
+              {tile.label}
+            </span>
+            <span className="hig-title-3 bt-num bt-overview-summary__value">
+              {tile.value}
+            </span>
+            <span className="hig-caption-1 bt-overview-summary__hint">
+              {tile.hint}
+            </span>
+          </div>
+        ))}
+      </div>
       {VERDICT_ORDER.map((status) => {
         const items = grouped.get(status) ?? [];
         if (items.length === 0) return null;
@@ -61,4 +77,25 @@ function groupByVerdict(
     });
   }
   return out;
+}
+
+function overviewSummary(panels: readonly PairPanelDto[]): Array<{
+  label: string;
+  value: number;
+  hint: string;
+}> {
+  const live = panels.filter((panel) => panel.currentOpportunity.hasLiveOpportunity).length;
+  const active = panels.filter((panel) => panel.pair.enabled).length;
+  const disabled = panels.length - active;
+  const notReady = panels.filter(
+    (panel) => panel.pair.enabled && panel.verdict.status === "NOT_READY",
+  ).length;
+  const collecting = panels.filter((panel) => panel.verdict.status === "COLLECT_MORE").length;
+  return [
+    { label: "Active", value: active, hint: "scheduled by bot" },
+    { label: "Live", value: live, hint: "paired executable rows" },
+    { label: "Collecting", value: collecting, hint: "routes exist, samples low" },
+    { label: "Blocked", value: notReady, hint: "feed, route, or mint gap" },
+    { label: "Paused", value: disabled, hint: "not scheduled" },
+  ];
 }

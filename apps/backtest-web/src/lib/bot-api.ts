@@ -19,9 +19,10 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const PAIR_DETAIL_TIMEOUT_MS = 25_000;
 
 /** Vercel `next.revalidate` windows (seconds). Operator endorsed slower
- *  polling, so these are intentionally generous. */
+ *  polling, so these are intentionally generous for research payloads. Health
+ *  is deliberately no-store because the badge compares timestamps at render
+ *  time; serving a cached heartbeat makes a live bot look stale. */
 const DASHBOARD_REVALIDATE_S = 30;
-const HEALTH_REVALIDATE_S = 30;
 const PAIR_DETAIL_REVALIDATE_S = 60;
 
 function botBaseUrl(): string {
@@ -56,10 +57,14 @@ export async function fetchDashboard(): Promise<DashboardSnapshotDto> {
 }
 
 export async function fetchHealth(): Promise<HealthResponseDto> {
-  return getJson<HealthResponseDto>("/api/health", {
-    revalidateS: HEALTH_REVALIDATE_S,
-    tags: ["bot-health"],
+  const res = await fetch(`${botBaseUrl()}/api/health`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    cache: "no-store",
   });
+  if (!res.ok && res.status !== 503) {
+    throw new Error(`bot /api/health returned HTTP ${res.status}`);
+  }
+  return (await res.json()) as HealthResponseDto;
 }
 
 export async function fetchPairDetail(id: string): Promise<PairDetailDto | null> {

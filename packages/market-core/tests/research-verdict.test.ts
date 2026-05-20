@@ -153,6 +153,17 @@ const baseInput: ResearchVerdictInputs = {
 };
 
 describe("research verdict", () => {
+  it("reports paused pairs before feed or route readiness failures", () => {
+    const verdict = buildResearchVerdict({
+      ...baseInput,
+      pair: { ...pair, enabled: false },
+      pairReadiness: readinessMatrix("NOT_READY"),
+    });
+    expect(verdict.status).to.equal("NOT_READY");
+    expect(verdict.summary).to.contain("paused");
+    expect(verdict.blockers.map((b) => b.code)).to.deep.equal(["PAIR_DISABLED"]);
+  });
+
   it("returns NOT_READY when pair readiness is NOT_READY", () => {
     const verdict = buildResearchVerdict({
       ...baseInput,

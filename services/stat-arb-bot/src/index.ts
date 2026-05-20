@@ -1,5 +1,6 @@
 import { loadConfig } from "./config";
 import { PythStream, type PythTickEvent } from "./pyth-stream";
+import { PythSnapshotClient } from "./pyth-snapshot";
 import { JupiterClient } from "./jupiter-client";
 import { QuoteScheduler, type SchedulerPair } from "./quote-scheduler";
 import { PairLoader } from "./pair-loader";
@@ -117,6 +118,10 @@ async function main() {
     channel: cfg.PYTH_CHANNEL,
     maxFreshnessLagMs: cfg.PYTH_MAX_FRESHNESS_LAG_MS,
   });
+  const snapshots = new PythSnapshotClient({
+    hermesBaseUrl: cfg.PYTH_HERMES_URL,
+    lazerSymbolsUrl: cfg.PYTH_LAZER_SYMBOLS_URL,
+  });
 
   const heartbeat = new Heartbeat();
   const schedulerTelemetry = new SchedulerTelemetry();
@@ -133,7 +138,11 @@ async function main() {
   const pairConfigs = new Map<string, PairConfig>();
   /** pair_id -> prior accepted Pyth price. Used only to classify crypto high-vol regimes. */
   const lastRegimePriceByPair = new Map<string, number>();
+  /** pair_id -> last true Lazer stream tick. Snapshot fallback does not update this. */
+  const lastStreamTickAtByPair = new Map<string, number>();
   const lastStalePythWarnByPair = new Map<string, number>();
+  const lastSnapshotWarnByPair = new Map<string, number>();
+  const snapshotInFlightByPair = new Set<string>();
 
   const scheduler = new QuoteScheduler({
     maxRps: cfg.JUPITER_MAX_RPS,
@@ -274,6 +283,7 @@ async function main() {
     set.add(normalized.id);
     lazerIdToPairs.set(normalized.base.pythLazerId, set);
     scheduler.upsertPair(toSchedulerPair(normalized));
+    void queueSnapshotProbe(normalized, "pair_indexed");
   };
   const unindexPair = (id: string) => {
     const p = pairConfigs.get(id);
@@ -286,6 +296,9 @@ async function main() {
     }
     pairConfigs.delete(id);
     lastRegimePriceByPair.delete(id);
+    lastStreamTickAtByPair.delete(id);
+    lastSnapshotWarnByPair.delete(id);
+    snapshotInFlightByPair.delete(id);
     scheduler.removePair(id);
   };
   // Debounce: the pair loader fires onAdded/onRemoved/onUpdated in a
@@ -313,22 +326,66 @@ async function main() {
     onRemoved: (id) => { unindexPair(id); refreshSubscriptions(); },
   });
 
-  // Layer-1 compacted storage: every Pyth tick used to be persisted to
-  // `pyth_ticks` (~432k rows/day/pair on a 200 ms channel) but the price
-  // is already snapshotted onto every basis_observations row at quote
-  // time. Skip the raw insert and just hand the tick to the scheduler.
-  stream.on((t: PythTickEvent) => {
+  type PythTickSource = "stream" | "snapshot";
+
+  const shouldProbeSnapshot = (pair: PairConfig, nowMs: number): boolean => {
+    if (pair.base.assetClass === "Crypto") return false;
+    const lastStreamAt = lastStreamTickAtByPair.get(pair.id) ?? 0;
+    return nowMs - lastStreamAt >= cfg.PYTH_SNAPSHOT_AFTER_SILENCE_MS;
+  };
+
+  async function queueSnapshotProbe(
+    pair: PairConfig,
+    reason: "pair_indexed" | "stream_silent",
+  ): Promise<void> {
+    if (!shouldProbeSnapshot(pair, Date.now())) return;
+    if (snapshotInFlightByPair.has(pair.id)) return;
+    snapshotInFlightByPair.add(pair.id);
+    try {
+      const tick = await snapshots.latestForPair({
+        pair,
+        maxFreshnessLagMs: maxFreshnessLagMsForPair(pair),
+      });
+      if (!tick) {
+        warnSnapshot(pair.id, `[pyth] snapshot unavailable pair=${pair.id} reason=${reason}`);
+        return;
+      }
+      processPythTick(tick, "snapshot");
+    } catch (e) {
+      heartbeat.countError();
+      warnSnapshot(
+        pair.id,
+        `[pyth] snapshot failed pair=${pair.id} reason=${reason}: ${String((e as Error).message ?? e)}`,
+      );
+    } finally {
+      snapshotInFlightByPair.delete(pair.id);
+    }
+  }
+
+  function warnSnapshot(pairId: string, message: string): void {
+    const nowMs = Date.now();
+    const lastWarnAt = lastSnapshotWarnByPair.get(pairId) ?? 0;
+    if (nowMs - lastWarnAt < 60_000) return;
+    lastSnapshotWarnByPair.set(pairId, nowMs);
+    console.warn(message);
+  }
+
+  function processPythTick(t: PythTickEvent, source: PythTickSource): void {
     const pairs = lazerIdToPairs.get(t.pythLazerId);
     if (!pairs) return;
-    const lagMs = Math.max(0, Date.now() - Math.floor(t.streamTimestampUs / 1000));
-    heartbeat.observeStreamLag(lagMs);
     const nowMs = Date.now();
+    if (source === "stream") {
+      const lagMs = Math.max(0, nowMs - Math.floor(t.streamTimestampUs / 1000));
+      heartbeat.observeStreamLag(lagMs);
+    }
     for (const pairId of pairs) {
       const pair = pairConfigs.get(pairId);
       if (!pair) continue;
+      if (source === "stream") lastStreamTickAtByPair.set(pairId, nowMs);
       schedulerTelemetry.recordScheduled(pairId);
       const maxFreshnessLagMs = maxFreshnessLagMsForPair(pair);
-      if (t.freshnessLagMs > maxFreshnessLagMs) {
+      const pythIsStale = t.freshnessLagMs > maxFreshnessLagMs;
+      if (pythIsStale && source === "stream") {
         heartbeat.countInvalidFeed();
         schedulerTelemetry.recordDroppedStalePyth(pairId);
         const lastWarnAt = lastStalePythWarnByPair.get(pairId) ?? 0;
@@ -341,6 +398,7 @@ async function main() {
         }
         continue;
       }
+
       const previousPrice = lastRegimePriceByPair.get(pairId);
       const cryptoMoveBps =
         previousPrice != null && previousPrice > 0
@@ -352,7 +410,8 @@ async function main() {
         cryptoHighVolMoveBps: cfg.CRYPTO_HIGH_VOL_MOVE_BPS,
         pythMarketSession: t.marketSession,
       });
-      if (!isExecutableTimeRegime(timeRegime)) {
+      const executableRegime = isExecutableTimeRegime(timeRegime);
+      if (!executableRegime) {
         schedulerTelemetry.recordDroppedMarketSession(pairId);
       }
       scheduler.onPriceTick(pairId, t.priceUsd, {
@@ -365,13 +424,29 @@ async function main() {
             : (t.confidenceUsd / t.priceUsd) * 10000,
         pythMarketSession: t.marketSession,
         timeRegime,
-        allowSignals: isExecutableTimeRegime(timeRegime),
+        allowSignals: executableRegime && !pythIsStale,
       });
     }
+  }
+
+  // Layer-1 compacted storage: every Pyth tick used to be persisted to
+  // `pyth_ticks` (~432k rows/day/pair on a 200 ms channel) but the price
+  // is already snapshotted onto every basis_observations row at quote
+  // time. Skip the raw insert and just hand the tick to the scheduler.
+  stream.on((t: PythTickEvent) => {
+    processPythTick(t, "stream");
   });
 
   stream.start();
   const stopLoader = loader.start();
+  const snapshotHandle = setInterval(() => {
+    const nowMs = Date.now();
+    for (const pair of pairConfigs.values()) {
+      if (shouldProbeSnapshot(pair, nowMs)) {
+        void queueSnapshotProbe(pair, "stream_silent");
+      }
+    }
+  }, cfg.PYTH_SNAPSHOT_POLL_INTERVAL_MS);
   const apiServer = createApiServer({
     port: cfg.API_PORT,
     corsOrigin: cfg.API_CORS_ORIGIN,
@@ -393,6 +468,7 @@ async function main() {
     console.log(`shutdown ${sig}`);
     stopLoader();
     clearInterval(hbHandle);
+    clearInterval(snapshotHandle);
     stream.stop();
     apiServer.close();
     await closePool();

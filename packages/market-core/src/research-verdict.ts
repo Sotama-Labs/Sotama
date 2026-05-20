@@ -97,6 +97,26 @@ export function buildResearchVerdict(input: ResearchVerdictInputs): PairResearch
 
   const blockers: PairResearchVerdictReason[] = [];
   const positives: PairResearchVerdictReason[] = [];
+  const cleanSampleCount = sumLiveEligible(input.qualityDistribution);
+
+  if (!input.pair.enabled) {
+    return {
+      status: "NOT_READY",
+      confidence: "LOW",
+      summary: "Pair is paused; the bot is not scheduling feed or route probes.",
+      blockers: [
+        {
+          code: "PAIR_DISABLED",
+          detail: "Pair is paused; enable it before expecting Pyth updates or Jupiter route probes.",
+        },
+      ],
+      positives,
+      cleanSampleCount,
+      cleanWindowMs: input.cleanWindowMs,
+      costScenarioName: input.costScenarioName,
+      recommendedNextAction: "Enable the pair after confirming the token mint and route are intended.",
+    };
+  }
 
   // ── Pre-conditions: routes, feeds, mint --------------------------
   if (input.tokenValidation.status === "REJECTED") {
@@ -131,7 +151,6 @@ export function buildResearchVerdict(input: ResearchVerdictInputs): PairResearch
     });
   }
 
-  const cleanSampleCount = sumLiveEligible(input.qualityDistribution);
   if (cleanSampleCount === 0) {
     blockers.push({
       code: "NO_LIVE_SAMPLES",

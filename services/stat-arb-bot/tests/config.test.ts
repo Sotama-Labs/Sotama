@@ -37,6 +37,9 @@ describe("loadConfig", () => {
   it("loads freshness and raw quote retention defaults", () => {
     const cfg = loadConfig(base as any);
     expect(cfg.PYTH_MAX_FRESHNESS_LAG_MS).to.equal(5000);
+    expect(cfg.PYTH_HERMES_URL).to.equal("https://hermes.pyth.network");
+    expect(cfg.PYTH_SNAPSHOT_POLL_INTERVAL_MS).to.equal(60_000);
+    expect(cfg.PYTH_SNAPSHOT_AFTER_SILENCE_MS).to.equal(30_000);
     expect(cfg.JUPITER_SUCCESS_RAW_SAMPLE_RATE).to.equal(0.02);
     expect(cfg.CRYPTO_HIGH_VOL_MOVE_BPS).to.equal(50);
     expect(cfg.SIGNAL_MAX_HOLD_MS).to.equal(30 * 60_000);

@@ -93,4 +93,37 @@ describe("PairReadinessMatrix", () => {
     expect(sell250.status).to.equal("NOT_READY");
     expect(sell250.reasonCodes).to.include("SELL_ROUTE_MISSING");
   });
+
+  it("keeps stale diagnostic route probes out of NOT_READY when feeds and routes exist", () => {
+    const staleObs = (
+      side: "buy_tokenized" | "sell_tokenized",
+      sizeUsd: number,
+    ): PairReadinessObservation => ({
+      ...obs(side, sizeUsd),
+      qualityStatus: "STALE_PYTH",
+      timeRegime: "US_EQUITY_OVERNIGHT",
+    });
+    const matrix = buildPairReadinessMatrix({
+      pair,
+      observations: [
+        staleObs("buy_tokenized", 250),
+        staleObs("sell_tokenized", 250),
+        staleObs("buy_tokenized", 1000),
+        staleObs("sell_tokenized", 1000),
+      ],
+      quoteStats: [
+        stats("buy_tokenized", 250),
+        stats("sell_tokenized", 250),
+        stats("buy_tokenized", 1000),
+        stats("sell_tokenized", 1000),
+      ],
+      options: { minSampleCount: 2 },
+    });
+    const buy250 = matrix.rows.find((row) => row.side === "buy_tokenized" && row.sizeUsd === 250)!;
+
+    expect(matrix.status).to.equal("RESEARCH_ONLY");
+    expect(buy250.status).to.equal("RESEARCH_ONLY");
+    expect(buy250.reasonCodes).to.not.include("NO_FEED_UPDATES");
+    expect(buy250.reasonCodes).to.not.include("BUY_ROUTE_MISSING");
+  });
 });

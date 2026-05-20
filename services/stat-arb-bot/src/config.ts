@@ -12,6 +12,17 @@ export const BotConfigSchema = z.object({
   PYTH_CHANNEL: z.string().default("fixed_rate@1000ms"),
   PYTH_LAZER_ACCESS_TOKEN: z.string().min(1),
   PYTH_MAX_FRESHNESS_LAG_MS: z.coerce.number().int().min(0).default(5_000),
+  PYTH_HERMES_URL: z.string().url().default("https://hermes.pyth.network"),
+  PYTH_LAZER_SYMBOLS_URL: z
+    .string()
+    .url()
+    .default("https://history.pyth-lazer.dourolabs.app/v1/symbols"),
+  /** Non-crypto feeds can be silent outside the active reference session.
+   *  Poll the latest published Pyth price at low frequency so Jupiter route
+   *  diagnostics still run, while quality gates keep stale/off-session rows
+   *  out of live signal generation. */
+  PYTH_SNAPSHOT_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
+  PYTH_SNAPSHOT_AFTER_SILENCE_MS: z.coerce.number().int().min(1_000).default(30_000),
 
   // ── Jupiter Pro ───────────────────────────────────────────────────
   /** When unset, derived from `JUPITER_API_KEY`: paid URL if a key is
