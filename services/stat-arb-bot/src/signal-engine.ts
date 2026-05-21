@@ -1,19 +1,22 @@
+import { uiToAtomic } from "@sotama/market-core";
 import type { PairConfig, PairDirection, QuoteQualityStatus } from "@sotama/market-core";
-import { openSignal, closeSignal, openSignalsByKey } from "@sotama/db";
+import { attachTradeExecutionSignal, closeSignal, openSignal, openSignalsByKey } from "@sotama/db";
+import type { TradeExecutionResult, TradeExecutor } from "./trade-executor";
 
 /** Spot-only paper-trade lifecycle.
  *
  * `buy_tokenized` may open tokenized inventory when the executable buy edge
  * clears the pair threshold. `sell_tokenized` never opens a synthetic short;
- * it can only close inventory from an earlier paper buy for the same pair and
- * size. PnL is calculated from executable token buy/sell prices, not from the
- * movement of a same-side edge series.
+ * it can only close inventory from an earlier buy for the same pair and size.
+ * In live execution modes, a close can only use inventory created by a
+ * successful live entry execution.
  */
 export class SignalEngine {
   constructor(
     private readonly cfg: {
       staleAfterMs: number;
       transactionCostBps: number;
+      executor?: TradeExecutor;
     },
   ) {}
 
@@ -62,7 +65,12 @@ export class SignalEngine {
     });
     if (open.length > 0 || netEdgeBps < pair.minNetEdgeBps) return;
 
-    await openSignal({
+    const execution = await this.executeOpen(args);
+    if (this.requiresLiveSuccess() && execution?.status !== "success") return;
+
+    const executedTokenUnits =
+      execution == null ? null : this.cfg.executor?.outputTokenUnits(execution, pair) ?? null;
+    const signalId = await openSignal({
       pairId: pair.id,
       side: "buy_tokenized",
       sizeUsd,
@@ -72,12 +80,18 @@ export class SignalEngine {
       entryBasePriceUsd: args.basePriceUsd,
       entryQuoteId: args.quoteId,
       entryBasisId: args.basisId,
-      tokenUnits: sizeUsd / tokenPriceUsd,
+      tokenUnits: executedTokenUnits ?? sizeUsd / tokenPriceUsd,
       entryObservedAt: new Date(args.observedAtMs),
       entryQualityStatus: args.qualityStatus,
       entryQualityReason: args.qualityReason,
       entryAt: new Date(args.nowMs),
+      executionMode: execution?.mode ?? "paper",
+      entryExecutionId: execution?.executionId ?? null,
     });
+
+    if (execution?.executionId != null) {
+      await attachTradeExecutionSignal({ executionId: execution.executionId, signalId });
+    }
   }
 
   private async maybeCloseSpotInventory(args: {
@@ -119,6 +133,9 @@ export class SignalEngine {
       const converged = pnlUsd >= 0;
       if (!stale && !converged) continue;
 
+      const execution = await this.executeClose(args, position);
+      if (this.requiresLiveSuccess() && execution?.status !== "success") continue;
+
       const outcome =
         stale && pnlUsd <= 0.01 ? "closed_stale"
         : pnlUsd > 0.01 ? "closed_win"
@@ -140,8 +157,74 @@ export class SignalEngine {
         pnlUsd,
         outcome,
         exitAt: new Date(args.nowMs),
+        exitExecutionId: execution?.executionId ?? null,
       });
     }
+  }
+
+  private async executeOpen(args: {
+    pair: PairConfig;
+    sizeUsd: number;
+    basePriceUsd: number;
+    tokenPriceUsd: number;
+    netEdgeBps: number;
+  }): Promise<TradeExecutionResult | null> {
+    const executor = this.cfg.executor;
+    if (!executor?.enabled) return null;
+    return executor.execute({
+      action: "open",
+      pair: args.pair,
+      side: "buy_tokenized",
+      sizeUsd: args.sizeUsd,
+      basePriceUsd: args.basePriceUsd,
+      tokenPriceUsd: args.tokenPriceUsd,
+      edgeBps: args.netEdgeBps,
+      inputAmount: uiToAtomic(args.sizeUsd, args.pair.quote.decimals),
+      dedupeKey: `open:${args.pair.id}:${args.sizeUsd}`,
+    });
+  }
+
+  private async executeClose(
+    args: {
+      pair: PairConfig;
+      sizeUsd: number;
+      basePriceUsd: number;
+      tokenPriceUsd: number;
+      netEdgeBps: number;
+    },
+    position: {
+      id: bigint;
+      tokenUnits: number | null;
+      executionMode: string;
+      entryExecutionId: bigint | null;
+    },
+  ): Promise<TradeExecutionResult | null> {
+    const executor = this.cfg.executor;
+    if (!executor?.enabled) return null;
+    if (this.requiresLiveSuccess()) {
+      const liveEntry =
+        position.entryExecutionId != null &&
+        position.executionMode !== "paper" &&
+        position.executionMode !== "jupiter-dry-run";
+      if (!liveEntry || position.tokenUnits == null) return null;
+    }
+    return executor.execute({
+      action: "close",
+      pair: args.pair,
+      side: "sell_tokenized",
+      sizeUsd: args.sizeUsd,
+      basePriceUsd: args.basePriceUsd,
+      tokenPriceUsd: args.tokenPriceUsd,
+      edgeBps: args.netEdgeBps,
+      inputAmount: uiToAtomic(position.tokenUnits ?? 0, args.pair.tokenized.decimals),
+      signalId: position.id,
+      dedupeKey: `close:${position.id.toString()}`,
+    });
+  }
+
+  private requiresLiveSuccess(): boolean {
+    const mode = this.cfg.executor?.mode;
+    return mode === "jupiter-managed" || mode === "helius-sender";
   }
 }
 

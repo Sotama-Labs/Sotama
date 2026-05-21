@@ -13,6 +13,8 @@
   "dependencies": {
     "@sotama/db": "workspace:*",
     "@sotama/market-core": "workspace:*",
+    "@solana/kit": "^2.1.0",
+    "bs58": "^6.0.0",
     "pg": "^8.13.1",
     "pino": "^9.5.0",
     "ws": "^8.18.0",

@@ -45,6 +45,9 @@ describe("loadConfig", () => {
     expect(cfg.SIGNAL_MAX_HOLD_MS).to.equal(30 * 60_000);
     expect(cfg.QUALITY_MAX_QUOTE_LATENCY_MS).to.equal(1500);
     expect(cfg.QUALITY_ALLOWED_ROUTERS).to.deep.equal([]);
+    expect(cfg.TRADE_EXECUTION_MODE).to.equal("paper");
+    expect(cfg.TRADE_EXECUTION_RETAIN_RAW).to.equal(false);
+    expect(cfg.TRADE_EXECUTION_SENDER_EXCLUDE_ROUTERS).to.equal("jupiterz");
   });
 
   it("parses quality router allowlists", () => {
@@ -66,9 +69,21 @@ describe("loadConfig", () => {
       ...base,
       HELIUS_RPC_URL: "https://mainnet.helius-rpc.com/?api-key=xxx",
       HELIUS_WS_URL: "wss://mainnet.helius-rpc.com/?api-key=xxx",
+      HELIUS_SENDER_URL: "http://ams-sender.helius-rpc.com/fast",
     } as any);
     expect(cfg.HELIUS_RPC_URL).to.equal("https://mainnet.helius-rpc.com/?api-key=xxx");
     expect(cfg.HELIUS_WS_URL).to.equal("wss://mainnet.helius-rpc.com/?api-key=xxx");
+    expect(cfg.HELIUS_SENDER_URL).to.equal("http://ams-sender.helius-rpc.com/fast");
+  });
+
+  it("parses execution mode and boolean flags", () => {
+    const cfg = loadConfig({
+      ...base,
+      TRADE_EXECUTION_MODE: "jupiter-dry-run",
+      TRADE_EXECUTION_RETAIN_RAW: "false",
+    } as any);
+    expect(cfg.TRADE_EXECUTION_MODE).to.equal("jupiter-dry-run");
+    expect(cfg.TRADE_EXECUTION_RETAIN_RAW).to.equal(false);
   });
 
   it("rejects a non-URL JUPITER_BASE_URL", () => {

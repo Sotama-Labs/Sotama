@@ -16,6 +16,8 @@ export type OpenSignalInsert = {
   entryQualityStatus: QuoteQualityStatus;
   entryQualityReason: string;
   entryAt: Date;
+  executionMode?: string;
+  entryExecutionId?: bigint | null;
 };
 
 export async function openSignal(row: OpenSignalInsert): Promise<bigint> {
@@ -24,8 +26,8 @@ export async function openSignal(row: OpenSignalInsert): Promise<bigint> {
        (pair_id, side, entry_side, size_usd, threshold_bps, entry_edge_bps,
         entry_token_price_usd, entry_base_price_usd, entry_quote_id, entry_basis_id,
         token_units, entry_observed_at, entry_quality_status, entry_quality_reason,
-        entry_at, outcome)
-     VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open')
+        entry_at, outcome, execution_mode, entry_execution_id)
+     VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open',$15,$16)
      RETURNING id`,
     [
       row.pairId,
@@ -42,6 +44,8 @@ export async function openSignal(row: OpenSignalInsert): Promise<bigint> {
       row.entryQualityStatus,
       row.entryQualityReason,
       row.entryAt,
+      row.executionMode ?? "paper",
+      row.entryExecutionId == null ? null : row.entryExecutionId.toString(),
     ],
   );
   return BigInt(rows[0]!.id);
@@ -62,6 +66,7 @@ export type CloseSignalArgs = {
   pnlUsd: number;
   outcome: "closed_win" | "closed_loss" | "closed_flat" | "closed_stale";
   exitAt: Date;
+  exitExecutionId?: bigint | null;
 };
 
 export async function closeSignal(args: CloseSignalArgs): Promise<void> {
@@ -70,7 +75,8 @@ export async function closeSignal(args: CloseSignalArgs): Promise<void> {
      SET exit_at = $2, exit_edge_bps = $3, pnl_usd = $4, outcome = $5,
          exit_side = $6, exit_token_price_usd = $7, exit_base_price_usd = $8,
          exit_quote_id = $9, exit_basis_id = $10, exit_observed_at = $11,
-         exit_quality_status = $12, exit_quality_reason = $13, exit_reason = $14
+         exit_quality_status = $12, exit_quality_reason = $13, exit_reason = $14,
+         exit_execution_id = $15
      WHERE id = $1`,
     [
       args.id.toString(),
@@ -87,6 +93,7 @@ export async function closeSignal(args: CloseSignalArgs): Promise<void> {
       args.exitQualityStatus,
       args.exitQualityReason,
       args.exitReason,
+      args.exitExecutionId == null ? null : args.exitExecutionId.toString(),
     ],
   );
 }
@@ -106,6 +113,8 @@ export type OpenSignalRow = {
   entryObservedAt: Date | null;
   entryQualityStatus: QuoteQualityStatus;
   entryQualityReason: string;
+  executionMode: string;
+  entryExecutionId: bigint | null;
   entryAt: Date;
 };
 
@@ -118,7 +127,7 @@ export async function openSignalsByKey(args: {
     `SELECT id, pair_id, side, size_usd, threshold_bps, entry_edge_bps,
             entry_token_price_usd, entry_base_price_usd, entry_quote_id, entry_basis_id,
             token_units, entry_observed_at, entry_quality_status, entry_quality_reason,
-            entry_at
+            execution_mode, entry_execution_id, entry_at
      FROM paper_signals
      WHERE pair_id = $1 AND side = $2 AND size_usd = $3 AND exit_at IS NULL
      ORDER BY entry_at ASC`,
@@ -141,6 +150,8 @@ export async function openSignalsByKey(args: {
     entryObservedAt: r.entry_observed_at,
     entryQualityStatus: r.entry_quality_status ?? "LIVE_ELIGIBLE",
     entryQualityReason: r.entry_quality_reason ?? "legacy signal before quality gate",
+    executionMode: r.execution_mode ?? "paper",
+    entryExecutionId: r.entry_execution_id == null ? null : BigInt(r.entry_execution_id),
     entryAt: r.entry_at,
   }));
 }
@@ -157,6 +168,7 @@ export type ClosedSignalRow = OpenSignalRow & {
   exitQualityStatus: QuoteQualityStatus | null;
   exitQualityReason: string | null;
   exitReason: string | null;
+  exitExecutionId: bigint | null;
   pnlUsd: number;
   outcome: string;
 };
@@ -169,9 +181,11 @@ export async function closedSignals(args: {
     `SELECT id, pair_id, side, size_usd, threshold_bps, entry_edge_bps, entry_at,
             entry_token_price_usd, entry_base_price_usd, entry_quote_id, entry_basis_id,
             token_units, entry_observed_at, entry_quality_status, entry_quality_reason,
+            execution_mode, entry_execution_id,
             exit_at, exit_edge_bps, exit_side, exit_token_price_usd,
             exit_base_price_usd, exit_quote_id, exit_basis_id, exit_observed_at,
-            exit_quality_status, exit_quality_reason, exit_reason, pnl_usd, outcome
+            exit_quality_status, exit_quality_reason, exit_reason, exit_execution_id,
+            pnl_usd, outcome
      FROM paper_signals
      WHERE pair_id = $1
        AND exit_at IS NOT NULL
@@ -196,6 +210,8 @@ export async function closedSignals(args: {
     entryObservedAt: r.entry_observed_at,
     entryQualityStatus: r.entry_quality_status ?? "LIVE_ELIGIBLE",
     entryQualityReason: r.entry_quality_reason ?? "legacy signal before quality gate",
+    executionMode: r.execution_mode ?? "paper",
+    entryExecutionId: r.entry_execution_id == null ? null : BigInt(r.entry_execution_id),
     entryAt: r.entry_at,
     exitAt: r.exit_at,
     exitEdgeBps: Number(r.exit_edge_bps),
@@ -210,6 +226,7 @@ export async function closedSignals(args: {
     exitQualityStatus: r.exit_quality_status,
     exitQualityReason: r.exit_quality_reason,
     exitReason: r.exit_reason,
+    exitExecutionId: r.exit_execution_id == null ? null : BigInt(r.exit_execution_id),
     pnlUsd: Number(r.pnl_usd),
     outcome: r.outcome,
   }));

@@ -6,6 +6,8 @@ import { QuoteScheduler, type SchedulerPair } from "./quote-scheduler";
 import { PairLoader } from "./pair-loader";
 import { Heartbeat } from "./heartbeat";
 import { SignalEngine } from "./signal-engine";
+import { TradeExecutor } from "./trade-executor";
+import { loadExecutorWallet } from "./wallet";
 import { recordQuote, type CostBps } from "./basis-recorder";
 import { createApiServer } from "./api-server";
 import { SchedulerTelemetry } from "./scheduler-telemetry";
@@ -111,6 +113,26 @@ async function main() {
     baseUrl: cfg.jupiterBaseUrl,
     apiKey: cfg.JUPITER_API_KEY,
   });
+  const executorWallet = await loadExecutorWallet({
+    mode: cfg.TRADE_EXECUTION_MODE,
+    privateKeyBase58: cfg.TRADE_EXECUTOR_PRIVATE_KEY_BS58,
+    taker: cfg.TRADE_EXECUTOR_TAKER,
+  });
+  const tradeExecutor = new TradeExecutor(
+    {
+      mode: cfg.TRADE_EXECUTION_MODE,
+      taker: executorWallet?.taker,
+      signer: executorWallet?.signer,
+      minIntervalMs: cfg.TRADE_EXECUTION_MIN_INTERVAL_MS,
+      retainRaw: cfg.TRADE_EXECUTION_RETAIN_RAW,
+      heliusRpcUrl: cfg.HELIUS_RPC_URL,
+      heliusSenderUrl: cfg.HELIUS_SENDER_URL,
+      heliusSenderTipLamports: cfg.HELIUS_SENDER_TIP_LAMPORTS,
+      senderExcludeRouters: cfg.TRADE_EXECUTION_SENDER_EXCLUDE_ROUTERS,
+      confirmationTimeoutMs: cfg.TRADE_EXECUTION_CONFIRMATION_TIMEOUT_MS,
+    },
+    jup,
+  );
 
   const stream = new PythStream({
     accessToken: cfg.PYTH_LAZER_ACCESS_TOKEN,
@@ -130,6 +152,7 @@ async function main() {
   const signals = new SignalEngine({
     staleAfterMs: cfg.SIGNAL_MAX_HOLD_MS,
     transactionCostBps,
+    executor: tradeExecutor,
   });
 
   /** lazer_id -> [pair_ids consuming it]. A single Lazer feed may back several pairs. */

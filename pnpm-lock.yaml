@@ -196,12 +196,18 @@ importers:
 
   services/stat-arb-bot:
     dependencies:
+      '@solana/kit':
+        specifier: ^2.1.0
+        version: 2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(ws@7.5.10(bufferutil@4.1.0)(utf-8-validate@6.0.6))
       '@sotama/db':
         specifier: workspace:*
         version: link:../../packages/db
       '@sotama/market-core':
         specifier: workspace:*
         version: link:../../packages/market-core
+      bs58:
+        specifier: ^6.0.0
+        version: 6.0.0
       pg:
         specifier: ^8.13.1
         version: 8.21.0
