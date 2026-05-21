@@ -28,7 +28,7 @@ describe("QuoteScheduler", () => {
     expect(seen.length).to.equal(0);
   });
 
-  it("triggers immediately on a price move beyond minPriceMoveBps", () => {
+  it("does not let price moves bypass the route cooldown", () => {
     let t = 0;
     const seen: string[] = [];
     const sched = new QuoteScheduler({
@@ -48,6 +48,9 @@ describe("QuoteScheduler", () => {
     sched.onPriceTick("p1", 100);   // baseline
     seen.length = 0;
     sched.onPriceTick("p1", 100.06); // +6 bps, > 5
+    expect(seen).to.deep.equal([]);
+    t = 60_000;
+    sched.onPriceTick("p1", 100.06);
     expect(seen).to.deep.equal(["p1|buy_tokenized|100"]);
   });
 

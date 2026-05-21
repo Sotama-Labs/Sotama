@@ -49,10 +49,10 @@ export type SchedulerOnRpsRejection = (
 ) => void;
 
 /** Owns the global Jupiter RPS budget. On every Pyth tick for a tracked pair,
- *  evaluates each (side, size) combination: would issuing a quote (a) provide
- *  new information (price moved beyond minPriceMoveBps OR quoteIntervalMs has
- *  elapsed) and (b) fit under the RPS budget. If yes to both, take a token
- *  and emit work. */
+ *  evaluates each (side, size) combination: has that route's cooldown elapsed,
+ *  and does it fit under the shared RPS budget. The per-route cooldown is a
+ *  hard guardrail; Jupiter dashboards count bursty price-move probes the same
+ *  as ordinary probes. */
 export class QuoteScheduler {
   private readonly bucket: TokenBucket;
   private readonly pairs = new Map<string, SchedulerPair>();
@@ -122,7 +122,7 @@ export class QuoteScheduler {
     for (const side of p.sides) {
       for (const size of p.sizesUsd) {
         const id: WorkId = `${pairId}|${side}|${size}`;
-        if (!this.shouldQuote(id, p, priceUsd)) continue;
+        if (!this.shouldQuote(id, p)) continue;
         if (!this.bucket.tryTake()) {
           this.cfg.onRpsRejection?.(pairId, side, size);
           continue;
@@ -141,13 +141,12 @@ export class QuoteScheduler {
     }
   }
 
-  private shouldQuote(id: WorkId, p: SchedulerPair, priceUsd: number): boolean {
+  private shouldQuote(id: WorkId, p: SchedulerPair): boolean {
     const lastAt = this.lastQuoteAt.get(id) ?? -Infinity;
     const lastPx = this.lastQuotedPrice.get(id);
     const elapsed = this.cfg.nowMs() - lastAt;
-    if (elapsed >= p.quoteIntervalMs) return true;
     if (lastPx == null || lastPx <= 0) return true;
-    const moveBps = Math.abs((priceUsd / lastPx - 1) * 10000);
-    return moveBps >= p.minPriceMoveBps;
+    if (elapsed < p.quoteIntervalMs) return false;
+    return true;
   }
 }
