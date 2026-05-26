@@ -3,17 +3,20 @@
 import type http from "node:http";
 import {
   basisHistory,
-  basisQualityDistribution,
-  basisRegimeSummary,
   closedSignals,
   getPair,
-  latestBasisPerKey,
-  quoteStatsByPair,
   recentQuotesForPair,
+} from "@sotama/db";
+import type {
+  BasisObservationRow,
+  JupiterQuoteRow,
+  QualityDistributionRow,
+  TimeRegimeSummaryRow,
 } from "@sotama/db";
 import type {
   CostInputsBps,
   PairDetailDto,
+  PairReadinessQuoteStats,
   PairStatSummary,
 } from "@sotama/market-core";
 import { TtlCache } from "../cache";
@@ -32,7 +35,7 @@ import {
   BASIS_SERIES_LIMIT,
   HISTORY_WINDOW_MS,
   HOLD_HORIZONS_MS,
-  LATEST_WITHIN_MS,
+  PAIR_DETAIL_HISTORY_LIMIT_PER_BUCKET,
   SIGNAL_WINDOW_MS,
   STAT_OPPORTUNITY_THRESHOLD_BPS,
   STAT_WINDOWS_MS,
@@ -105,21 +108,26 @@ async function computePairDetail(
   const nowMs = Date.now();
   const sinceMs = nowMs - HISTORY_WINDOW_MS;
   const signalSinceMs = nowMs - SIGNAL_WINDOW_MS;
-  const [latest, signals, regimeRows, qualityRows, quoteStats, quoteRows, ...historyArrays] = await Promise.all([
-    latestBasisPerKey({ withinMs: LATEST_WITHIN_MS }),
+  const [signals, quoteRows, ...historyArrays] = await Promise.all([
     closedSignals({ pairId: id, sinceMs: signalSinceMs }),
-    basisRegimeSummary({ pairId: id, sinceMs }),
-    basisQualityDistribution({ pairId: id, sinceMs }),
-    quoteStatsByPair({ pairId: id, sinceMs }),
     recentQuotesForPair({ pairId: id, sinceMs }),
     ...pair.sizesUsd.flatMap((size) =>
       pair.directions.map((side) =>
-        basisHistory({ pairId: id, side, sizeUsd: size, sinceMs }),
+        basisHistory({
+          pairId: id,
+          side,
+          sizeUsd: size,
+          sinceMs,
+          limit: PAIR_DETAIL_HISTORY_LIMIT_PER_BUCKET,
+        }),
       ),
     ),
   ]);
 
-  const latestForPair = latest.filter((b) => b.pairId === id);
+  const historyRows = historyArrays
+    .flat()
+    .sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
+  const latestForPair = latestRowsBySideSize(historyRows);
   const buckets =
     groupBasisByPair(latestForPair).get(id) ??
     ({
@@ -127,11 +135,14 @@ async function computePairDetail(
       sellBySize: new Map(),
     } as ReturnType<typeof groupBasisByPair> extends Map<string, infer V> ? V : never);
   const panelCore = buildPanelCore({ pair, buckets, nowMs });
-
-  const historyRows = historyArrays
-    .flat()
-    .sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
+  const qualityRows = buildQualityDistributionRows(historyRows);
+  const regimeRows = buildRegimeSummaryRows(historyRows);
+  const quoteStats = buildQuoteStatsFromRows(quoteRows);
   const observationCount24h = historyRows.length;
+  const readinessObservations = historyRows.map(toReadinessObservation);
+  const backtestObservations = historyRows.map(toBacktestObservation);
+  const holdHorizonObservations = historyRows.map(toHoldHorizonObservation);
+  const statObservations = historyRows.map(toStatObservation);
 
   const liveEligibleSignals = signals.filter(
     (s) =>
@@ -141,11 +152,11 @@ async function computePairDetail(
 
   const pairReadiness = buildPairReadinessMatrix({
     pair,
-    observations: historyRows.map(toReadinessObservation),
+    observations: readinessObservations,
     quoteStats,
   });
   const twoSizeBacktest = runTwoSizeBacktestV2({
-    observations: historyRows.map(toBacktestObservation),
+    observations: backtestObservations,
     options: {
       minNetEdgeBps: pair.minNetEdgeBps,
       transactionCostBps,
@@ -154,7 +165,7 @@ async function computePairDetail(
     },
   });
   const holdHorizonReplay = runHoldHorizonReplay({
-    observations: historyRows.map(toHoldHorizonObservation),
+    observations: holdHorizonObservations,
     options: {
       minNetEdgeBps: pair.minNetEdgeBps,
       transactionCostBps,
@@ -170,7 +181,7 @@ async function computePairDetail(
           buildStatSummary({
             side,
             sizeUsd,
-            observations: historyRows.map(toStatObservation),
+            observations: statObservations,
             nowMs,
             options: {
               windowMs,
@@ -259,4 +270,161 @@ async function computePairDetail(
     quoteAgeMs: panelCore.quoteAgeMs,
   };
   return body;
+}
+
+function latestRowsBySideSize(rows: readonly BasisObservationRow[]): BasisObservationRow[] {
+  const byKey = new Map<string, BasisObservationRow>();
+  for (const row of rows) {
+    byKey.set(`${row.side}|${row.sizeUsd}`, row);
+  }
+  return [...byKey.values()];
+}
+
+function buildQualityDistributionRows(
+  rows: readonly BasisObservationRow[],
+): QualityDistributionRow[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const qualityStatus = row.qualityStatus ?? "LIVE_ELIGIBLE";
+    counts.set(qualityStatus, (counts.get(qualityStatus) ?? 0) + 1);
+  }
+  const total = rows.length;
+  return [...counts.entries()]
+    .map(([qualityStatus, observationCount]) => ({
+      qualityStatus: qualityStatus as QualityDistributionRow["qualityStatus"],
+      observationCount,
+      observationPct: total === 0 ? 0 : observationCount / total,
+    }))
+    .sort((a, b) => b.observationCount - a.observationCount ||
+      a.qualityStatus.localeCompare(b.qualityStatus));
+}
+
+function buildRegimeSummaryRows(
+  rows: readonly BasisObservationRow[],
+): TimeRegimeSummaryRow[] {
+  type Acc = {
+    timeRegime: NonNullable<BasisObservationRow["timeRegime"]>;
+    observationCount: number;
+    liveCount: number;
+    grossSum: number;
+    netSum: number;
+    maxNetBps: number | null;
+    minNetBps: number | null;
+    buyCount: number;
+    sellCount: number;
+    quoteRequestMsSum: number;
+    quoteRequestMsCount: number;
+    pythFreshnessLagMsSum: number;
+    pythFreshnessLagMsCount: number;
+    basisAgeMsSum: number;
+    basisAgeMsCount: number;
+  };
+  const byRegime = new Map<string, Acc>();
+  for (const row of rows) {
+    if (!row.timeRegime) continue;
+    const acc = byRegime.get(row.timeRegime) ?? {
+      timeRegime: row.timeRegime,
+      observationCount: 0,
+      liveCount: 0,
+      grossSum: 0,
+      netSum: 0,
+      maxNetBps: null,
+      minNetBps: null,
+      buyCount: 0,
+      sellCount: 0,
+      quoteRequestMsSum: 0,
+      quoteRequestMsCount: 0,
+      pythFreshnessLagMsSum: 0,
+      pythFreshnessLagMsCount: 0,
+      basisAgeMsSum: 0,
+      basisAgeMsCount: 0,
+    };
+    acc.observationCount += 1;
+    if (row.qualityStatus === "LIVE_ELIGIBLE") acc.liveCount += 1;
+    acc.grossSum += row.grossBps;
+    acc.netSum += row.netBps;
+    acc.maxNetBps = acc.maxNetBps == null ? row.netBps : Math.max(acc.maxNetBps, row.netBps);
+    acc.minNetBps = acc.minNetBps == null ? row.netBps : Math.min(acc.minNetBps, row.netBps);
+    if (row.side === "buy_tokenized") acc.buyCount += 1;
+    else acc.sellCount += 1;
+    if (row.quoteRequestMs != null) {
+      acc.quoteRequestMsSum += row.quoteRequestMs;
+      acc.quoteRequestMsCount += 1;
+    }
+    if (row.pythFreshnessLagMs != null) {
+      acc.pythFreshnessLagMsSum += row.pythFreshnessLagMs;
+      acc.pythFreshnessLagMsCount += 1;
+    }
+    if (row.basisAgeMs != null) {
+      acc.basisAgeMsSum += row.basisAgeMs;
+      acc.basisAgeMsCount += 1;
+    }
+    byRegime.set(row.timeRegime, acc);
+  }
+  return [...byRegime.values()]
+    .map((acc) => ({
+      timeRegime: acc.timeRegime,
+      observationCount: acc.observationCount,
+      liveCount: acc.liveCount,
+      livePct: acc.observationCount === 0 ? 0 : acc.liveCount / acc.observationCount,
+      avgGrossBps: acc.grossSum / acc.observationCount,
+      avgNetBps: acc.netSum / acc.observationCount,
+      maxNetBps: acc.maxNetBps,
+      minNetBps: acc.minNetBps,
+      buyCount: acc.buyCount,
+      sellCount: acc.sellCount,
+      avgQuoteRequestMs: avg(acc.quoteRequestMsSum, acc.quoteRequestMsCount),
+      avgPythFreshnessLagMs: avg(acc.pythFreshnessLagMsSum, acc.pythFreshnessLagMsCount),
+      avgBasisAgeMs: avg(acc.basisAgeMsSum, acc.basisAgeMsCount),
+    }))
+    .sort((a, b) => a.timeRegime.localeCompare(b.timeRegime));
+}
+
+function buildQuoteStatsFromRows(
+  rows: readonly JupiterQuoteRow[],
+): PairReadinessQuoteStats[] {
+  type Acc = {
+    side: JupiterQuoteRow["side"];
+    sizeUsd: number;
+    totalCount: number;
+    okCount: number;
+    routers: Map<string, number>;
+  };
+  const byKey = new Map<string, Acc>();
+  for (const row of rows) {
+    const key = `${row.side}|${row.sizeUsd}`;
+    const acc = byKey.get(key) ?? {
+      side: row.side,
+      sizeUsd: row.sizeUsd,
+      totalCount: 0,
+      okCount: 0,
+      routers: new Map<string, number>(),
+    };
+    acc.totalCount += 1;
+    if (row.status === "ok") {
+      acc.okCount += 1;
+      const router = row.router ?? "UNKNOWN";
+      acc.routers.set(router, (acc.routers.get(router) ?? 0) + 1);
+    }
+    byKey.set(key, acc);
+  }
+  return [...byKey.values()]
+    .map((acc) => ({
+      side: acc.side,
+      sizeUsd: acc.sizeUsd,
+      totalCount: acc.totalCount,
+      okCount: acc.okCount,
+      routerDistribution: [...acc.routers.entries()]
+        .map(([router, count]) => ({
+          router,
+          count,
+          pct: acc.totalCount === 0 ? 0 : count / acc.totalCount,
+        }))
+        .sort((a, b) => b.count - a.count || a.router.localeCompare(b.router)),
+    }))
+    .sort((a, b) => a.side.localeCompare(b.side) || a.sizeUsd - b.sizeUsd);
+}
+
+function avg(sum: number, count: number): number | null {
+  return count === 0 ? null : sum / count;
 }

@@ -71,19 +71,26 @@ export async function basisHistory(args: {
   side: PairDirection;
   sizeUsd: number;
   sinceMs: number;
+  limit?: number;
 }): Promise<BasisObservationRow[]> {
+  const limit = args.limit ?? null;
   const { rows } = await getPool().query(
-    `SELECT id, pair_id, side, size_usd, base_price_usd, token_price_usd,
-            gross_edge_bps, net_edge_bps, tick_id, quote_id,
-            pyth_stream_timestamp_us, pyth_feed_update_timestamp_us,
-            pyth_freshness_lag_ms, pyth_confidence_bps, pyth_market_session,
-            quote_request_started_at, quote_response_at, quote_request_ms,
-            basis_age_ms, quality, quality_status, quality_reason, time_regime, observed_at
-     FROM basis_observations
-     WHERE pair_id = $1 AND side = $2 AND size_usd = $3
-       AND observed_at >= to_timestamp($4 / 1000.0)
+    `SELECT *
+     FROM (
+       SELECT id, pair_id, side, size_usd, base_price_usd, token_price_usd,
+              gross_edge_bps, net_edge_bps, tick_id, quote_id,
+              pyth_stream_timestamp_us, pyth_feed_update_timestamp_us,
+              pyth_freshness_lag_ms, pyth_confidence_bps, pyth_market_session,
+              quote_request_started_at, quote_response_at, quote_request_ms,
+              basis_age_ms, quality, quality_status, quality_reason, time_regime, observed_at
+       FROM basis_observations
+       WHERE pair_id = $1 AND side = $2 AND size_usd = $3
+         AND observed_at >= to_timestamp($4 / 1000.0)
+       ORDER BY observed_at DESC
+       LIMIT COALESCE($5::int, 2147483647)
+     ) recent
      ORDER BY observed_at ASC`,
-    [args.pairId, args.side, args.sizeUsd, args.sinceMs],
+    [args.pairId, args.side, args.sizeUsd, args.sinceMs, limit],
   );
   return rows.map(mapBasisObservation);
 }

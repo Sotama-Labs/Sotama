@@ -1,8 +1,8 @@
 /** `GET /api/dashboard` — overview ranking of every tracked pair.
  *
  *  Designed for high hit rate:
- *    - One aggregated SQL query for the per-pair live-eligible counts
- *      (no per-pair fanout to `basisQualityDistribution`).
+ *    - Bounded recent samples per side+size, not request-time 24h aggregate
+ *      scans over high-frequency basis observations.
  *    - In-memory `TtlCache` with a 60 s fresh window and a generous stale
  *      window so the dashboard survives Postgres flaps without 500s.
  *    - Per-pair work uses only the latest-basis bucket already in hand —
@@ -10,11 +10,11 @@
 
 import type http from "node:http";
 import {
-  latestBasisPerKey,
+  basisHistory,
   latestHeartbeat,
-  liveEligibleCountsByPair,
   listAllPairs,
 } from "@sotama/db";
+import type { BasisObservationRow } from "@sotama/db";
 import type {
   DashboardSnapshotDto,
   PairConfig,
@@ -24,7 +24,11 @@ import type {
 } from "@sotama/market-core";
 import { TtlCache } from "../cache";
 import { sendJson } from "../http";
-import { HISTORY_WINDOW_MS, LATEST_WITHIN_MS } from "../constants";
+import {
+  DASHBOARD_HISTORY_LIMIT_PER_BUCKET,
+  HISTORY_WINDOW_MS,
+  LATEST_WITHIN_MS,
+} from "../constants";
 import { buildPanelCore, groupBasisByPair } from "../builders/panel";
 import { buildLiteVerdict } from "../builders/lite-verdict";
 import { deriveTokenValidation, primaryBlockerSummary } from "../builders/verdict";
@@ -62,19 +66,35 @@ export async function handleDashboard(
 async function buildSnapshot(
   schedulerTelemetry: SchedulerTelemetryDto | null,
 ): Promise<DashboardSnapshotDto> {
-  const [pairs, latestBasis, hb] = await Promise.all([
+  const [pairs, hb] = await Promise.all([
     listAllPairs(),
-    latestBasisPerKey({ withinMs: LATEST_WITHIN_MS }),
     latestHeartbeat(),
   ]);
 
-  const groupedLatest = groupBasisByPair(latestBasis);
   const nowMs = Date.now();
   const sinceMs = nowMs - HISTORY_WINDOW_MS;
-  const liveCounts = await liveEligibleCountsByPair({
-    pairIds: pairs.map((p) => p.id),
-    sinceMs,
-  });
+  const latestSinceMs = nowMs - LATEST_WITHIN_MS;
+  const basisArrays = await Promise.all(
+    pairs.flatMap((pair) =>
+      pair.sizesUsd.flatMap((sizeUsd) =>
+        pair.directions.map((side) =>
+          basisHistory({
+            pairId: pair.id,
+            side,
+            sizeUsd,
+            sinceMs,
+            limit: DASHBOARD_HISTORY_LIMIT_PER_BUCKET,
+          }),
+        ),
+      ),
+    ),
+  );
+  const basisRows = basisArrays.flat();
+  const latestBasis = latestRowsByPairSideSize(
+    basisRows.filter((row) => row.observedAt.getTime() >= latestSinceMs),
+  );
+  const groupedLatest = groupBasisByPair(latestBasis);
+  const liveCounts = liveEligibleCountsByPair(basisRows);
 
   const panels = pairs.map((pair) =>
     buildPanel(pair, groupedLatest, liveCounts.get(pair.id) ?? 0, nowMs),
@@ -164,4 +184,25 @@ function buildPanel(
     bestSpread: core.bestSpread,
     quoteAgeMs: core.quoteAgeMs,
   };
+}
+
+function latestRowsByPairSideSize(
+  rows: readonly BasisObservationRow[],
+): BasisObservationRow[] {
+  const byKey = new Map<string, BasisObservationRow>();
+  for (const row of rows) {
+    byKey.set(`${row.pairId}|${row.side}|${row.sizeUsd}`, row);
+  }
+  return [...byKey.values()];
+}
+
+function liveEligibleCountsByPair(
+  rows: readonly BasisObservationRow[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if ((row.qualityStatus ?? "LIVE_ELIGIBLE") !== "LIVE_ELIGIBLE") continue;
+    counts.set(row.pairId, (counts.get(row.pairId) ?? 0) + 1);
+  }
+  return counts;
 }
