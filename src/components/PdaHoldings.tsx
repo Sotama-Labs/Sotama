@@ -2,6 +2,7 @@
 
 import { usePdaHoldings } from "@/hooks/usePdaHoldings";
 import { fmt, shortAddress } from "@/lib/format";
+import { isDemoMode } from "@/lib/demo/demo";
 
 /**
  * Inline "this strategy currently holds X TOKEN + Y SOL" summary,
@@ -24,6 +25,9 @@ export function PdaHoldings({
 
   if (loading) return null;
   if (tokens.length === 0 && extraSol <= 0) {
+    // Demo mode: the PDA is a dummy address that doesn't exist on-chain,
+    // so a Solscan link would just 404 — render nothing instead.
+    if (isDemoMode()) return null;
     // Even with no holdings, surface the Solscan link — it's how the
     // user inspects the PDA's history directly.
     return (
@@ -65,19 +69,22 @@ export function PdaHoldings({
           {h.token ? h.token.symbol : shortAddress(h.mint)}
         </span>
       ))}
-      <a
-        href={`https://solscan.io/account/${pda}`}
-        target="_blank"
-        rel="noreferrer"
-        style={{
-          color: "var(--accent)",
-          textDecoration: "none",
-          marginLeft: "0.25rem",
-        }}
-        title="View this strategy's PDA on Solscan"
-      >
-        Solscan ↗
-      </a>
+      {/* Dummy demo PDAs don't exist on-chain — skip the (dead) Solscan link. */}
+      {!isDemoMode() && (
+        <a
+          href={`https://solscan.io/account/${pda}`}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            color: "var(--accent)",
+            textDecoration: "none",
+            marginLeft: "0.25rem",
+          }}
+          title="View this strategy's PDA on Solscan"
+        >
+          Solscan ↗
+        </a>
+      )}
     </span>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConnection } from "@solana/wallet-adapter-react";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { BorshCoder, EventParser, type Idl } from "@coral-xyz/anchor";
@@ -8,6 +8,8 @@ import type BN from "bn.js";
 import { getProgram, isProgramConfigured } from "@/lib/program";
 import type { Automation } from "@/lib/types";
 import { isTerminal } from "@/lib/types";
+import { isDemoMode } from "@/lib/demo/demo";
+import { demoHistory } from "@/lib/demo/seed";
 
 const POLL_INTERVAL_MS = 60_000;
 const SIG_PAGE_LIMIT = 1000;
@@ -105,6 +107,7 @@ export function useAutomationHistory(automations: Automation[]): AutomationHisto
   automationsRef.current = automations;
 
   const tick = useCallback(async () => {
+    if (isDemoMode()) return;
     if (!isProgramConfigured()) return;
     // Include terminal automations in the scan — that's exactly the
     // history we want to surface in StatsStrip. Only require a pubkey
@@ -299,6 +302,8 @@ export function useAutomationHistory(automations: Automation[]): AutomationHisto
   }, [connection]);
 
   useEffect(() => {
+    // Demo mode: no RPC log-walk — history comes from the seed.
+    if (isDemoMode()) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const loop = async () => {
@@ -319,7 +324,14 @@ export function useAutomationHistory(automations: Automation[]): AutomationHisto
     };
   }, [tick]);
 
-  return history;
+  // Demo mode: synthesize fills + executions from the seeded strategies so
+  // the Active Strategies stats (executions, volume) populate without RPC.
+  const demoHist = useMemo(
+    () => (isDemoMode() ? demoHistory(automations) : null),
+    [automations],
+  );
+
+  return demoHist ?? history;
 }
 
 export function useAutomationFills(automations: Automation[]): FillRecord[] {

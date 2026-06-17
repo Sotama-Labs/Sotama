@@ -6,6 +6,7 @@ import {
   type JupiterTriggerParams,
   type KeeperReason,
 } from "./jupiter-trigger-router";
+import { isDemoMode } from "./demo/demo";
 
 export type SubmitResult = {
   id: string;
@@ -38,6 +39,15 @@ export type SubmitResult = {
 export async function submitAutomation(automation: Automation): Promise<SubmitResult> {
   const decision = routeAutomation(automation);
 
+  // Demo mode: there's no keeper backend — skip the sidecar POST and
+  // return a simulated acceptance so the UI flow completes.
+  if (isDemoMode()) {
+    const base = { id: automation.id, status: "active" as const, forwardedToKeeper: false };
+    return decision.route === "jupiter_trigger"
+      ? { ...base, route: "jupiter_trigger", jupiterParams: decision.params }
+      : { ...base, route: "keeper", keeperReason: decision.reason };
+  }
+
   const res = await fetch("/api/automations", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -60,6 +70,7 @@ export async function submitAutomation(automation: Automation): Promise<SubmitRe
 }
 
 export async function deleteAutomation(id: string): Promise<void> {
+  if (isDemoMode()) return;
   const res = await fetch(`/api/automations?id=${encodeURIComponent(id)}`, {
     method: "DELETE",
   });

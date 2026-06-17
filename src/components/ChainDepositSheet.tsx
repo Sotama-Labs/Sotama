@@ -8,8 +8,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import type { Transaction } from "@solana/web3.js";
+import { Keypair, type Transaction } from "@solana/web3.js";
 import { fmt } from "@/lib/format";
+import { isDemoMode } from "@/lib/demo/demo";
 import {
   sendChainCreate,
   summarizeChain,
@@ -75,6 +76,24 @@ export function ChainDepositSheet({
   const handleConfirm = async () => {
     setConfirming(true);
     setErrorMsg(null);
+
+    // Demo mode: simulate the atomic chain create — no wallet, no RPC.
+    if (isDemoMode()) {
+      await new Promise<void>((resolve) => {
+        const id = window.setTimeout(resolve, 550);
+        cleanupRef.current = () => window.clearTimeout(id);
+      });
+      cleanupRef.current = null;
+      onConfirm({
+        signature: `Demo${Keypair.generate().publicKey.toBase58()}`,
+        nodes: nodes.map((_, i) => ({
+          pubkey: Keypair.generate().publicKey.toBase58(),
+          nonce: String(60 + i),
+          seedAmount: "0",
+        })),
+      });
+      return;
+    }
 
     if (!wallet.connected || !wallet.publicKey) {
       setErrorMsg("Connect a Solana wallet to fund this chain.");

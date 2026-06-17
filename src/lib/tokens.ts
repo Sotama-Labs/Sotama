@@ -4,6 +4,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import type { TokenRef, TokenMetadataSource } from "./types";
 import { RPC_URL, MAINNET_METADATA_RPC_URL } from "./rpc";
 import { fetchJupiterTokenMetadata } from "./jupiter";
+import { isDemoMode } from "./demo/demo";
 
 /** Token-2022 mint extension type code for the TransferHook extension.
  *  Hook code runs via CPI on every transfer and can fail closed, drain
@@ -355,11 +356,11 @@ export async function resolveToken(input: string): Promise<ResolveResult> {
         tokenProgram: fromJupiter.tokenProgram,
       };
     }
-    if (fromJupiter.tokenProgram === TOKEN_2022_PROGRAM) {
+    if (fromJupiter.tokenProgram === TOKEN_2022_PROGRAM && !isDemoMode()) {
       // One on-chain probe to confirm the mint isn't carrying the
       // hostile `transfer_hook` extension. The on-chain program would
       // also reject at create time, but failing here saves the user
-      // a wasted signing flow.
+      // a wasted signing flow. Skipped in demo mode (no RPC).
       const hasHook = await mintHasTransferHook(RPC_URL, fromJupiter.mint);
       if (hasHook) {
         return {
@@ -382,6 +383,9 @@ export async function resolveToken(input: string): Promise<ResolveResult> {
     writeCache(token);
     return { status: "ok", token };
   }
+
+  // Demo mode: Jupiter is the only token source — no DAS RPC fallbacks.
+  if (isDemoMode()) return { status: "manual", mint };
 
   const devnetAsset = await fetchDasAsset(RPC_URL, mint);
   const fromDevnet = dasToTokenRef(mint, devnetAsset, "devnet");

@@ -11,6 +11,7 @@ import {
 } from "./builder/SentenceRenderer";
 import { Check, Plus } from "./icons";
 import { PdaHoldings } from "./PdaHoldings";
+import { isDemoMode } from "@/lib/demo/demo";
 
 function AutomationRow({
   a,
@@ -200,7 +201,7 @@ function AutomationRow({
             <span>· {a.runs} {a.runs === 1 ? "execution" : "executions"}</span>
           )}
           {a.pubkey && <PdaHoldings pda={a.pubkey} refreshKey={refreshKey} />}
-          {a.pubkey && terminal && (
+          {a.pubkey && terminal && !isDemoMode() && (
             <a
               href={`https://orbmarkets.io/address/${a.pubkey}`}
               target="_blank"

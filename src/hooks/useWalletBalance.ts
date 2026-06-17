@@ -4,6 +4,7 @@ import { address } from "@solana/kit";
 import { useEffect, useState } from "react";
 import { HAS_HELIUS, RPC_URL, getRpc } from "@/lib/rpc";
 import { usePolling } from "./usePolling";
+import { isDemoMode, DEMO_SOL_BALANCE } from "@/lib/demo/demo";
 
 const POLL_MS = 20_000;
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -24,9 +25,10 @@ export function useWalletBalance(
   addr: string | null,
   { enabled = true }: { enabled?: boolean } = {},
 ): { sol: number | null; error: string | null } {
+  const demo = isDemoMode();
   const wsUrl = HAS_HELIUS ? deriveWsUrl(RPC_URL) : null;
   const [wsFailed, setWsFailed] = useState(false);
-  const useWs = !!wsUrl && !wsFailed;
+  const useWs = !demo && !!wsUrl && !wsFailed;
 
   const [wsSol, setWsSol] = useState<number | null>(null);
   const [wsError, setWsError] = useState<string | null>(null);
@@ -117,7 +119,7 @@ export function useWalletBalance(
 
   const { data: pollSol, error: pollError } = usePolling<number>({
     intervalMs: POLL_MS,
-    enabled: !useWs && enabled && !!addr,
+    enabled: !demo && !useWs && enabled && !!addr,
     deps: [addr],
     fn: async () => {
       if (!addr) return null;
@@ -125,6 +127,9 @@ export function useWalletBalance(
       return Number(value) / LAMPORTS_PER_SOL;
     },
   });
+
+  // Demo mode: fixed dummy balance, no RPC.
+  if (demo) return { sol: addr ? DEMO_SOL_BALANCE : null, error: null };
 
   const sol = useWs ? wsSol : pollSol;
   const error = useWs ? wsError : pollError;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import {
   createAssociatedTokenAccountIdempotentInstruction,
@@ -31,6 +31,7 @@ import {
   type OnChainTriggerSpec,
 } from "@/lib/program";
 import { lookupFeedForAsset } from "@/lib/oracles";
+import { isDemoMode } from "@/lib/demo/demo";
 import { Spinner } from "./icons";
 
 const SOLANA_NETWORK_FEE_SOL = 0.000045;
@@ -599,6 +600,22 @@ export function DepositSheet({
       return;
     }
 
+    // Demo mode: simulate the deposit + activation — no wallet signature,
+    // no RPC. The rule shows up funded in Active Strategies immediately.
+    if (isDemoMode()) {
+      await new Promise<void>((resolve) => {
+        const id = window.setTimeout(resolve, 450);
+        cleanupRef.current = () => window.clearTimeout(id);
+      });
+      cleanupRef.current = null;
+      onConfirm({
+        pubkey: Keypair.generate().publicKey.toBase58(),
+        signature: `Demo${Keypair.generate().publicKey.toBase58()}`,
+        nonce: String(50 + (Date.now() % 1000)),
+      });
+      return;
+    }
+
     if (!onChainSpec) {
       await new Promise<void>((resolve) => {
         const id = window.setTimeout(resolve, 250);
@@ -642,9 +659,14 @@ export function DepositSheet({
     }
   };
 
+  // In demo mode the deposit is always simulated as a successful funding,
+  // so present the funded-style copy regardless of whether a real on-chain
+  // spec resolved — keeps the button/summary consistent with the outcome.
+  const treatAsOnChain = isDemoMode() || !!onChainSpec;
+
   const summary = unsupportedReason
     ? unsupportedReason
-    : onChainSpec
+    : treatAsOnChain
     ? "Funds release when the trigger fires."
     : "Saved locally — keeper coverage for this rule shape lands in the next release.";
 
@@ -836,13 +858,13 @@ export function DepositSheet({
           >
             {confirming ? (
               <>
-                <Spinner /> {onChainSpec ? "Signing…" : "Saving…"}
+                <Spinner /> {treatAsOnChain ? "Signing…" : "Saving…"}
               </>
             ) : unsupportedReason ? (
               "Cannot Activate"
             ) : tokens.length === 0 ? (
-              onChainSpec ? "Activate" : "Save locally"
-            ) : onChainSpec ? (
+              treatAsOnChain ? "Activate" : "Save locally"
+            ) : treatAsOnChain ? (
               "Deposit & Activate"
             ) : (
               "Save locally"

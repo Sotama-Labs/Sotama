@@ -6,6 +6,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { getProgram, isProgramConfigured } from "@/lib/program";
 import type { Automation } from "@/lib/types";
 import { isTerminal } from "@/lib/types";
+import { isDemoMode } from "@/lib/demo/demo";
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -30,6 +31,9 @@ export function useOnChainAutomationSync(
   patchRef.current = patch;
 
   const tick = useCallback(async () => {
+    // Demo mode: seeded automations already carry their final runs /
+    // executedAt, so there's nothing to poll — and no RPC to call.
+    if (isDemoMode()) return;
     if (!isProgramConfigured()) return;
     const items = automationsRef.current.filter((a) => a.pubkey && !isTerminal(a));
     if (items.length === 0) return;

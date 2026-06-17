@@ -19,6 +19,8 @@ import type {
 import { displaySymbolFromBase } from "./assets";
 import { lookupPythFeedMetadata } from "./oracles";
 import { CANONICAL_MINTS, resolveToken, SOL_MINT } from "./tokens";
+import { isDemoMode } from "./demo/demo";
+import { seedDemoAutomations } from "./demo/seed";
 
 const OWNER_MEMCMP_OFFSET = 8;
 const U64_MAX = "18446744073709551615";
@@ -548,6 +550,10 @@ export async function fetchOwnedOnChainAutomations(
   connection: Connection,
   owner: PublicKey,
 ): Promise<Automation[]> {
+  // Demo mode: return the seeded strategies instead of reading PDAs off
+  // Solana. This is what populates Active Strategies with dummy triggers
+  // + executions for the public demo — no RPC involved.
+  if (isDemoMode()) return seedDemoAutomations();
   if (!isProgramConfigured()) return [];
 
   const dummy = Keypair.generate();

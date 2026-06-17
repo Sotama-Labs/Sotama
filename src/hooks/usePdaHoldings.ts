@@ -5,6 +5,8 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { RPC_URL } from "@/lib/rpc";
 import { resolveToken } from "@/lib/tokens";
 import type { TokenRef } from "@/lib/types";
+import { isDemoMode } from "@/lib/demo/demo";
+import { demoHoldings } from "@/lib/demo/seed";
 
 /** SPL Token program (Token, not Token-2022). */
 const TOKEN_PROGRAM_ID = new PublicKey(
@@ -314,6 +316,7 @@ export function usePdaHoldings(
   }: { enabled?: boolean; refreshKey?: number | string } = {},
 ): PdaHoldingsResult {
   const [state, setState] = useState<PdaHoldingsResult>(() => {
+    if (isDemoMode()) return demoHoldings(pda);
     if (!pda || !enabled) return EMPTY;
     // Synchronous cache lookup on mount — avoids a "loading" flash for
     // rows whose PDA was already fetched in this session.
@@ -328,6 +331,11 @@ export function usePdaHoldings(
   });
 
   useEffect(() => {
+    // Demo mode: dummy holdings, no RPC.
+    if (isDemoMode()) {
+      setState(demoHoldings(pda));
+      return;
+    }
     if (!pda || !enabled) {
       setState(EMPTY);
       return;

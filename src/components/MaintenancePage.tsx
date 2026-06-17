@@ -73,14 +73,14 @@ export function MaintenancePage() {
               textTransform: "uppercase",
             }}
           >
-            Maintenance
+            Beta
           </p>
           <h1
             id="maintenance-title"
             className="hig-title-1"
             style={{ margin: 0, color: "var(--label-primary)" }}
           >
-            Sotama is under maintenance
+            Sotama is still being built
           </h1>
           <p
             className="hig-body"
@@ -90,30 +90,52 @@ export function MaintenancePage() {
               textWrap: "pretty",
             }}
           >
-            We're updating the app and will bring access back online shortly.
+            Due to the high costs of data providers, we have temporarily disabled
+            the application. However, you can check out the demo site by clicking
+            the button below.
           </p>
         </div>
 
-        <a
-          href="https://sotama.xyz"
+        <div
           style={{
-            minHeight: "2.75rem",
-            display: "inline-flex",
+            display: "flex",
+            flexDirection: "column",
             alignItems: "center",
-            justifyContent: "center",
-            padding: "0 1rem",
-            background: "var(--accent)",
-            borderRadius: "var(--radius-control-m)",
-            color: "white",
-            fontWeight: 600,
-            fontSize: "0.9375rem",
-            lineHeight: "1.25rem",
-            textDecoration: "none",
-            boxShadow: "var(--shadow-1)",
+            gap: "0.875rem",
           }}
         >
-          Visit sotama.xyz
-        </a>
+          <a
+            href="/demo"
+            style={{
+              minHeight: "2.75rem",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "0 1.25rem",
+              background: "var(--accent)",
+              borderRadius: "var(--radius-control-m)",
+              color: "white",
+              fontWeight: 600,
+              fontSize: "0.9375rem",
+              lineHeight: "1.25rem",
+              textDecoration: "none",
+              boxShadow: "var(--shadow-1)",
+            }}
+          >
+            Explore the demo
+          </a>
+          <a
+            href="https://sotama.xyz"
+            style={{
+              color: "var(--label-secondary)",
+              fontSize: "0.875rem",
+              lineHeight: "1.125rem",
+              textDecoration: "none",
+            }}
+          >
+            Visit sotama.xyz
+          </a>
+        </div>
       </section>
     </main>
   );

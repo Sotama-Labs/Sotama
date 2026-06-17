@@ -26,6 +26,7 @@ import {
   SPL_TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
 } from "@/lib/program";
+import { isDemoMode } from "@/lib/demo/demo";
 
 /** Thrown when the on-chain account at `target.pubkey` exists but is
  *  owned by a different program than the currently-configured Sotama
@@ -85,6 +86,12 @@ export async function closeAutomationOnChain(
   if (!wallet.publicKey) throw new Error("wallet not connected");
   if (!target.pubkey) {
     throw new Error("automation has no on-chain pubkey — nothing to close");
+  }
+
+  // Demo mode: simulate the close (refund) without touching the chain.
+  // The caller marks the record closed locally on a non-throwing return.
+  if (isDemoMode()) {
+    return "DemoCloseSig1111111111111111111111111111111111111111111111111111111111";
   }
 
   // Find the action with a deposit so we know which close-ix to use.
